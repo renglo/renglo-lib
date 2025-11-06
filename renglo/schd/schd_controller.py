@@ -1,11 +1,11 @@
 from flask import current_app
 
-from tank.app_data.data_controller import DataController
-from tank.app_docs.docs_controller import DocsController
-from tank.app_blueprint.blueprint_controller import BlueprintController
+from renglo.data.data_controller import DataController
+from renglo.docs.docs_controller import DocsController
+from renglo.blueprint.blueprint_controller import BlueprintController
 
-from tank.app_schd.schd_loader import SchdLoader
-from tank.app_schd.schd_model import SchdModel
+from renglo.schd.schd_loader import SchdLoader
+from renglo.schd.schd_model import SchdModel
 
 from datetime import datetime
 

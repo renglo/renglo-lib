@@ -1,14 +1,14 @@
 """
-Tank Library - Core controllers, models, and utilities for Tank applications
+Renglo Library - Core controllers, models, and utilities for Renglo applications
 """
 
 from setuptools import setup, find_packages
 
 setup(
-    name="tank-lib",
+    name="renglo-lib",
     version="1.0.0",
-    description="Core Tank functionality - controllers, models, and utilities",
-    author="Tank Team",
+    description="Core Renglo functionality - controllers, models, and utilities",
+    author="Renglo Team",
     packages=find_packages(),
     python_requires=">=3.12",
     install_requires=[
@@ -25,8 +25,8 @@ setup(
     ],
     include_package_data=True,
     package_data={
-        'tank': [
-            'app_chat/blueprints/*.json',
+        'renglo': [
+            'chat/blueprints/*.json',
         ],
     },
 )

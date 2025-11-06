@@ -1,10 +1,10 @@
 #
-from tank.app_data.data_controller import DataController
-from tank.app_docs.docs_controller import DocsController
-from tank.app_chat.chat_controller import ChatController
-from tank.app_schd.schd_controller import SchdController
+from renglo.data.data_controller import DataController
+from renglo.docs.docs_controller import DocsController
+from renglo.chat.chat_controller import ChatController
+from renglo.schd.schd_controller import SchdController
 
-from tank.app_agent.agent_utilities import AgentUtilities
+from renglo.agent.agent_utilities import AgentUtilities
 
 
 from openai import OpenAI

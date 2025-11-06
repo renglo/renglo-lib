@@ -9,9 +9,9 @@ import json, collections
 import boto3
 from decimal import Decimal
 
-from tank.app_data.data_model import DataModel
-from tank.app_blueprint.blueprint_controller import BlueprintController
-from tank.app_auth.auth_controller import AuthController
+from renglo.data.data_model import DataModel
+from renglo.blueprint.blueprint_controller import BlueprintController
+from renglo.auth.auth_controller import AuthController
 
 
 # Add this custom JSON encoder class at the top level of your file
@@ -359,8 +359,6 @@ class DataController:
         return index_string
     
 
-
-    #TANK-FE *
     def construct_post_item(self,portfolio,org,ring,payload):
         '''
         Creates a new item following the blueprint fields and data submitted via the request.
@@ -512,7 +510,7 @@ class DataController:
         return item
 
 
-    #TANK-FE *
+
     def construct_put_item(self,portfolio,org,ring,idx,payload):
         '''
         Creates an updated item based on an existing item following the blueprint .
@@ -928,8 +926,6 @@ class DataController:
         
         
 
-
-    #TANK-FE *
     def get_a_b(self,portfolio,org,ring,limit=1000,lastkey=None,sort=None):
         '''
         Get page of items
@@ -1015,7 +1011,6 @@ class DataController:
     
 
 
-    #TANK-FE *
     def post_a_b(self,portfolio,org,ring,payload):
         '''
         Creates new item
@@ -1060,7 +1055,6 @@ class DataController:
 
 
     
-    #TANK-FE *
     def get_a_b_c(self,portfolio,org,ring,idx):
         '''
         Gets an existing item
@@ -1111,7 +1105,6 @@ class DataController:
     
 
 
-    #TANK-FE *
     def put_a_b_c(self,portfolio,org,ring,idx,payload):
         '''
         Partial updates to an existing document. 
@@ -1158,7 +1151,6 @@ class DataController:
         
         
     
-    #TANK-FE *
     def delete_a_b_c(self,portfolio,org,ring,idx):
         '''
         Delete an existing document.

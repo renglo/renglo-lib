@@ -145,8 +145,8 @@ class SchdLoader:
             # Instantiate the class
             # Check if it needs config (convention: handlers ending in 'onboardings' need config)
             if 'onboarding' in module_name.lower():
-                # Pass tank config to handlers that need it
-                config = current_app.tank_config if hasattr(current_app, 'tank_config') else {}
+                # Pass config to handlers that need it
+                config = current_app.renglo_config if hasattr(current_app, 'renglo_config') else {}
                 print(f'Creating instance with config')
                 instance = class_(config=config)
             else:

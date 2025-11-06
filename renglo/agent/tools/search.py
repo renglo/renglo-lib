@@ -12,7 +12,7 @@ To use this tool, add it to the manifest (path/to/manifest.json):
     "tools": [
         {
             "name": "search_documents",
-            "module": "tank.app_agent.tools.search",
+            "module": "renglo_lib.app_agent.tools.search",
             "class": "SearchTool",
             "config": {
                 "index_path": "/path/to/search/index",

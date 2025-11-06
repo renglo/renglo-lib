@@ -8,7 +8,7 @@ from datetime import datetime
 from ..common import *
 import uuid
 from decimal import Decimal
-from tank.app_auth.auth_model import AuthModel
+from renglo.auth.auth_model import AuthModel
 from flask_cognito import cognito_auth_required, current_user, current_cognito_jwt
 import re
 import time
@@ -59,7 +59,6 @@ class AuthController:
         return user_id
 
 
-    #TANK-FE
     def invite_user(self,email,team_id,portfolio_id,sender_id):
         '''
         Invites user to a team
@@ -167,7 +166,6 @@ class AuthController:
 
 
 
-    #TANK-FE
     def get_user_id(self,email):
         # DO NOT EXPOSE THIS FUNCTION TO API
         response = self.AUM.check_user_by_email(email)
@@ -181,7 +179,6 @@ class AuthController:
 
 
 
-    #TANK-FE
     def user_portfolios(self,user_id):
         '''
         input:
@@ -204,7 +201,6 @@ class AuthController:
         return user_portfolio_list
 
 
-    #TANK-FE
     def is_user_team_org_same_portfolio(self,**kwargs):
 
         '''
@@ -231,7 +227,6 @@ class AuthController:
         return False
     
 
-    #TANK-FE
     def is_user_team_same_portfolio(self,**kwargs):
 
         '''
@@ -255,7 +250,7 @@ class AuthController:
         return False
             
 
-    #TANK-FE
+
     def get_tree_full(self,**kwargs):
         # Auth Tree after resolving each document ID 
         # Instead of creating a function to query each entity separately (many functions), 
@@ -528,9 +523,6 @@ class AuthController:
 
 
 
-
-
-    #TANK-FE
     def list_entity(self,type,**kwargs):
 
         portfolios = []
@@ -582,8 +574,6 @@ class AuthController:
 
 
 
-
-    #TANK-FE
     def get_entity(self,type,**kwargs):
 
         #if(type== 'user' and 'user_id' in kwargs and 'portfolio_id' in kwargs ):
@@ -652,8 +642,7 @@ class AuthController:
         return result
 
        
-    
-    #TANK-FE
+
     def create_entity(self,type,**kwargs):
 
         current_app.logger.debug('Data:')
@@ -727,7 +716,7 @@ class AuthController:
     
 
 
-    #TANK-FE
+
     def unlink_entity(self,**doc):
         '''
         Document is not deleted permanently but marked as unlinked
@@ -780,7 +769,6 @@ class AuthController:
 
 
 
-    #TANK-FE
     def update_entity(self,type,**kwargs):
         #data = request.json 
            
@@ -849,9 +837,6 @@ class AuthController:
         current_app.logger.debug('Returned object:'+str(result))
 
         return result
-
-
-        
 
 
 
@@ -1935,7 +1920,7 @@ class AuthController:
         transaction.append(response_3b)
 
 
-        #4. Create Tank User Entity
+        #4. Create User Entity
         #Input: email, cognito_username, first, last
         data = {}
         bridge['user_id'] = data['user_id'] = create_md5_hash(bridge['cognito_username'],9)
@@ -2208,7 +2193,6 @@ class AuthController:
     
     
 
-    #TANK-FE
     def remove_user_from_team_funnel(self,**kwargs):
         bridge = {}
         result = {}

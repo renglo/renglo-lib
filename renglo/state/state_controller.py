@@ -6,8 +6,8 @@ from botocore.exceptions import ClientError
 from datetime import datetime
 import uuid
 from decimal import Decimal
-from tank.app_state.state_model import StateModel
-from tank.app_auth.auth_controller import AuthController
+from renglo.state.state_model import StateModel
+from renglo.auth.auth_controller import AuthController
 
 
 class StateController:

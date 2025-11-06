@@ -1,4 +1,4 @@
-from tank.app_agent.agent_core import AgentCore
+from renglo.agent.agent_core import AgentCore
 
 class AgentController:
 

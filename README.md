@@ -24,9 +24,9 @@ pip install -e /path/to/tank-lib
 ## Usage
 
 ```python
-from tank.app_data.data_controller import DataController
-from tank.app_auth.auth_controller import AuthController
-from tank.app_chat.chat_controller import ChatController
+from renglo.data.data_controller import DataController
+from renglo.auth.auth_controller import AuthController
+from renglo.chat.chat_controller import ChatController
 
 # Use controllers
 dc = DataController()

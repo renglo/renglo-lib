@@ -1,6 +1,6 @@
 # chat_controller.py
 from flask import current_app
-from tank.app_chat.chat_model import ChatModel
+from renglo.chat.chat_model import ChatModel
 from flask_cognito import current_cognito_jwt
 from datetime import datetime
 from ..common import *

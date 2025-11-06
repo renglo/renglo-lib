@@ -30,7 +30,6 @@ class AuthModel:
  #-------------------------------------------------AWS COGNITO
 
 
-     #TANK-FE
     def check_user_by_email(self,email):
         try:
             # Get the email from the request

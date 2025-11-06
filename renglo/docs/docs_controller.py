@@ -1,5 +1,5 @@
 from flask import current_app, jsonify
-from tank.app_docs.docs_model import DocsModel
+from renglo.docs.docs_model import DocsModel
 
 class DocsController:
 

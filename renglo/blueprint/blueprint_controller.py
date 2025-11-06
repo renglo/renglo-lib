@@ -6,8 +6,8 @@ from botocore.exceptions import ClientError
 from datetime import datetime
 import uuid
 from decimal import Decimal
-from tank.app_blueprint.blueprint_model import BlueprintModel
-from tank.app_auth.auth_controller import AuthController
+from renglo.blueprint.blueprint_model import BlueprintModel
+from renglo.auth.auth_controller import AuthController
 
 
 class BlueprintController:
@@ -99,7 +99,7 @@ class BlueprintController:
         urlparts = urllib.parse.urlparse(blueprint)
 
         #1b. Simple check to validate URL
-        # scheme='https', netloc='tank1.helloirma.com', path='/_blueprint/irma/metrics', params='', query='v=1.0.1', fragment=''
+        # scheme='https', netloc='renglo1.helloirma.com', path='/_blueprint/irma/metrics', params='', query='v=1.0.1', fragment=''
         if self.validate_blueprint_string(urlparts.path):
             blueprint_origin=urllib.parse.urlunparse(('https', urlparts.netloc, urlparts.path , '', '', ''))
         else:

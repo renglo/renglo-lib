@@ -5,8 +5,8 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 from datetime import datetime
 from flask import current_app, jsonify
-from tank.app_auth.auth_controller import AuthController
-from tank.app_blueprint.blueprint_controller import BlueprintController
+from renglo.auth.auth_controller import AuthController
+from renglo.blueprint.blueprint_controller import BlueprintController
 
 
 class DataModel:
@@ -24,7 +24,6 @@ class DataModel:
             
     
    
-    #TANK-FE *
     def post_a_b(self,portfolio,org,ring,item):
 
        
@@ -207,8 +206,6 @@ class DataModel:
         
         
 
-
-    #TANk-FE * 
     def get_a_b_c(self,portfolio,org,ring,idx):
 
         #irn = 'irn:data:'+portfolio+':'+org+':'+ring+':*'
@@ -292,7 +289,7 @@ class DataModel:
             return {'error': str(e)}
                                                                                                                                         
 
-    #TANK-FE *    
+   
     def delete_a_b_c(self,portfolio,org,ring,idx):
 
         #irn = 'irn:data:'+portfolio+':'+org+':'+ring+':*'
