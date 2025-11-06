@@ -1,11 +1,11 @@
-# Tank Library
+# Renglo Library
 
-Core Tank functionality including controllers, models, and utilities.
+Core Renglo functionality including controllers, models, and utilities.
 
 ## What's Included
 
 - **Controllers**: DataController, AuthController, ChatController, DocsController, etc.
-- **Models**: Data models for all Tank entities
+- **Models**: Data models for all Renglo entities
 - **Utilities**: Common functions, config, helpers
 - **Integrations**: Third-party integrations (GupShup, etc.)
 
@@ -13,12 +13,12 @@ Core Tank functionality including controllers, models, and utilities.
 
 ### From Git (Production/Regular Developers)
 ```bash
-pip install tank-lib @ git+https://github.com/yourorg/tank-lib@v1.0.0
+pip install renglo-lib @ git+https://github.com/yourorg/renglo-lib@v1.0.0
 ```
 
 ### Local Editable (Core Developers)
 ```bash
-pip install -e /path/to/tank-lib
+pip install -e /path/to/renglo-lib
 ```
 
 ## Usage
@@ -35,9 +35,11 @@ result = dc.get_document('portfolio', 'org', 'ring', 'idx')
 
 ## For Developers
 
-This library contains NO Flask routes. Routes are in `tank-api`.
+This library contains NO Flask routes. Routes are in `renglo-api`.
 
-## Version
 
-Current version: 1.0.0
+## Installation
+
+Refer to the readme here: 
+https://github.com/renglo/system/blob/main/README.md
 
