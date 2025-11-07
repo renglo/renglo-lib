@@ -712,7 +712,7 @@ class DataController:
             current_app.logger.error(result['error'])
             
             result['success'] = False
-            result['message'] = 'Items could not be retrieved'
+            result['message'] = 'Items could not be retrieved (@get_a_index)'
             result['error'] = result['error']
             status = 400
             return result
@@ -770,7 +770,7 @@ class DataController:
             current_app.logger.error(result['error'])
             
             result['success'] = False
-            result['message'] = 'Items could not be retrieved'
+            result['message'] = 'Items could not be retrieved (@get_a_b_index)'
             result['error'] = result['error']
             status = 400
             return result
@@ -880,7 +880,7 @@ class DataController:
             current_app.logger.error(response['error'])
             
             result['success'] = False
-            result['message'] = 'Items could not be retrieved'
+            result['message'] = 'Items could not be retrieved(@get_a_b_query)'
             result['error'] = response['error']
             status = 400
             return result
@@ -958,7 +958,7 @@ class DataController:
             current_app.logger.error(response['error'])
             
             result['success'] = False
-            result['message'] = 'Items could not be retrieved'
+            result['message'] = 'Items could not be retrieved (@get_a_b)'
             result['error'] = response['error']
             status = 400
             return result

@@ -18,7 +18,9 @@ class DataModel:
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
 
         self.dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Adjust region if needed
-        table_name = self.config.get('DYNAMODB_RINGDATA_TABLE', 'default_ringdata_table')
+        table_name = self.config.get('DYNAMODB_RINGDATA_TABLE')
+        if not table_name:
+            raise ValueError("DYNAMODB_RINGDATA_TABLE configuration is required but not found")
         self.data_table = self.dynamodb.Table(table_name)
         self.DYNAMODB_RINGDATA_TABLE = table_name  
             
@@ -47,6 +49,9 @@ class DataModel:
         
         # Sort key (SK) prefix for querying documents based on org, ring, and a generated prefix
         prefix_doc_index = f'{org}:{ring}'  # This is the prefix we will use in begins_with for SK
+        
+        print('portfolio_index:',portfolio_index)
+        print('prefix_doc_index:',prefix_doc_index)
                 
         try:
             # Build the query parameters with KeyConditionExpression
@@ -55,6 +60,8 @@ class DataModel:
                 'KeyConditionExpression': Key('portfolio_index').eq(portfolio_index) & Key('doc_index').begins_with(prefix_doc_index),
                 'Limit': limit
             }
+            
+            print('query_params:',query_params)
 
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
             if lastkey:                  
