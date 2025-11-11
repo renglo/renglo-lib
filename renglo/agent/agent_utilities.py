@@ -496,15 +496,18 @@ class AgentUtilities:
             # Create base parameters
             params = {
                 'model': prompt['model'],
-                'messages': prompt['messages'],
-                'temperature': prompt['temperature']
+                'messages': prompt['messages']
             }
         
             # Add optional parameters if they exist
+            if 'temperature' in prompt:
+                params['temperature'] = prompt['temperature']
             if 'tools' in prompt:
                 params['tools'] = prompt['tools']
             if 'tool_choice' in prompt:
                 params['tool_choice'] = prompt['tool_choice']
+            if 'response_format' in prompt:
+                params['response_format'] = prompt['response_format']
                 
             response = self.AI_1.chat.completions.create(**params) 
             
