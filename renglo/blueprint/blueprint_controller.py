@@ -250,7 +250,7 @@ class BlueprintController:
         data['handle'] = handle
         data['name'] = name
         data['label'] = name
-        data['uri'] = current_app.config['TANK_BASE_URL']+"/_blueprint"+"/"+handle+"/"+name+"/"+data['version']
+        data['uri'] = current_app.config['BASE_URL']+"/_blueprint"+"/"+handle+"/"+name+"/"+data['version']
 
        
         #return data

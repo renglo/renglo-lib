@@ -111,8 +111,8 @@ def load_config():
     # Load from environment variables (overwrites file-based config)
     # This allows Lambda/production to use environment variables
     env_var_keys = [
-        'WL_NAME', 'TANK_BASE_URL', 'TANK_FE_BASE_URL', 'TANK_DOC_BASE_URL',
-        'TANK_AWS_REGION', 'TANK_API_GATEWAY_ARN', 'TANK_ROLE_ARN', 'TANK_ENV',
+        'WL_NAME', 'BASE_URL', 'FE_BASE_URL', 'DOC_BASE_URL',
+        'AWS_REGION', 'API_GATEWAY_ARN', 'ROLE_ARN', 'SYS_ENV',
         'DYNAMODB_ENTITY_TABLE', 'DYNAMODB_BLUEPRINT_TABLE', 'DYNAMODB_RINGDATA_TABLE',
         'DYNAMODB_REL_TABLE', 'DYNAMODB_CHAT_TABLE',
         'CSRF_SESSION_KEY', 'SECRET_KEY',

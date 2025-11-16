@@ -1793,14 +1793,14 @@ class AuthController:
                 'You have been invited by '+ bridge['senderdoc']['name']+' '+bridge['senderdoc']['slot_a']+' to team '+ bridge['portfoliodoc']['name']+'/'+ bridge['teamdoc']['name'] +
                 '. Your invite code is: '+
                 rel_data['hash']+
-                '. Follow this link: '+TANK_BASE_URL+'/invite?code='+
+                '. Follow this link: '+BASE_URL+'/invite?code='+
                 rel_data['hash']+' .' ,
             body_html='<html><body>'+
                         '<h1>Hello from '+WL_NAME+'</h1>'+
                         '<h2>You have been invited by '+ bridge['senderdoc']['name']+' '+bridge['senderdoc']['slot_a']+' to team '+ bridge['portfoliodoc']['name']+'/'+ bridge['teamdoc']['name'] +
                         '<div>Your invite code is: '+rel_data['hash']+'</div>'+
                         '<div>Follow this link:</div>'+
-                        '<div>'+TANK_BASE_URL+'/invite?code='+rel_data['hash']+'&email='+kwargs['email']+'</div>' 
+                        '<div>'+BASE_URL+'/invite?code='+rel_data['hash']+'&email='+kwargs['email']+'</div>' 
                       '</body></html>'
         )
         response_4['message'] = 'Sent invite to team '+kwargs['team_id']+' via email to '+kwargs['email'] 

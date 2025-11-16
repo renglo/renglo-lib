@@ -8,7 +8,7 @@ class SchdModel:
     
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
-        aws_region = self.config.get('TANK_AWS_REGION', 'us-east-1')
+        aws_region = self.config.get('AWS_REGION', 'us-east-1')
         self.client = boto3.client('events', region_name=aws_region)
         
 
@@ -69,8 +69,8 @@ class SchdModel:
                     Targets=[
                         {
                             'Id': rule_name+'_target',
-                            'Arn':  self.config.get('TANK_API_GATEWAY_ARN', '')+'/'+self.config.get('TANK_ENV', '')+'/POST/_schd/ping', # ARN of the API Gateway
-                            'RoleArn': self.config.get('TANK_ROLE_ARN', ''),  # IAM role to allow EventBridge to invoke HTTPS
+                            'Arn':  self.config.get('API_GATEWAY_ARN', '')+'/'+self.config.get('SYS_ENV', '')+'/POST/_schd/ping', # ARN of the API Gateway
+                            'RoleArn': self.config.get('ROLE_ARN', ''),  # IAM role to allow EventBridge to invoke HTTPS
                             'Input': json.dumps(payload),
                             'HttpParameters': {
                                 'HeaderParameters': {
