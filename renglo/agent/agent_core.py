@@ -539,7 +539,8 @@ class AgentCore:
             validated_result = validation['output']
            
             # Saving : A) The tool call, or B) The message to the user
-            self.AGU.save_chat(validated_result)  
+            self.AGU.save_chat(validated_result, connection_id=self._get_context().connection_id)  
+ 
                       
             return {
                 'success': True,
@@ -655,9 +656,11 @@ class AgentCore:
 
             # Save the message after it's created
             if interface:
-                self.AGU.save_chat(tool_out,interface=interface)
+                self.AGU.save_chat(tool_out,interface=interface,connection_id=self._get_context().connection_id)
+                
             else:
-                self.AGU.save_chat(tool_out)
+                self.AGU.save_chat(tool_out,connection_id=self._get_context().connection_id)
+                
                 
             
             print(f'flag3')

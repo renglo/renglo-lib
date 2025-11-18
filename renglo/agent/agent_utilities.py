@@ -201,7 +201,7 @@ class AgentUtilities:
             current_history.append(doc['_out'])
             self.message_history = current_history
 
-    def save_chat(self, output, interface=False):
+    def save_chat(self, output, interface=False, connection_id=None):
         """
         Save chat message to storage and context.
         
@@ -235,7 +235,7 @@ class AgentUtilities:
             self.update_chat_message_document(doc)
             self.update_chat_message_context(doc)
             # Print to live chat
-            self.print_chat(output, message_type)
+            self.print_chat(output, message_type, True, connection_id=connection_id)
             # Print to API
             self.print_api(output['content'], message_type)
             
@@ -250,7 +250,7 @@ class AgentUtilities:
             self.update_chat_message_context(doc, reset=True)
               
             if interface:  
-                self.print_chat(doc, message_type, True)
+                self.print_chat(doc, message_type, as_is=True, connection_id=connection_id)
 
     def print_api(self, message, type='text', public_user=None):
         """
@@ -496,7 +496,8 @@ class AgentUtilities:
             # Create base parameters
             params = {
                 'model': prompt['model'],
-                'messages': prompt['messages']
+                'messages': prompt['messages'],
+                'temperature': prompt['temperature']
             }
         
             # Add optional parameters if they exist
