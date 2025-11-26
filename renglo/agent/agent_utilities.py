@@ -23,7 +23,15 @@ class DecimalEncoder(json.JSONEncoder):
 
 
 class AgentUtilities:
-    def __init__(self, config, portfolio, org, entity_type, entity_id, thread):
+    def __init__(self, 
+                 config, 
+                 portfolio, 
+                 org, 
+                 entity_type, 
+                 entity_id, 
+                 thread,
+                 connection_id = None
+                 ):
         """
         Initialize AgentUtilities with configuration and required parameters.
         
@@ -45,6 +53,7 @@ class AgentUtilities:
         self.thread = thread
         self.message_history = []
         self.chat_id = None
+        self.connection_id = connection_id
         
         # OpenAI Client
         try:    
@@ -201,7 +210,7 @@ class AgentUtilities:
             current_history.append(doc['_out'])
             self.message_history = current_history
 
-    def save_chat(self, output, interface=False, connection_id=None):
+    def save_chat(self, output, interface=False, connection_id=None, c_id=None):
         """
         Save chat message to storage and context.
         
@@ -230,12 +239,12 @@ class AgentUtilities:
         elif output.get('content') and output.get('role') == 'assistant':
             # This is a human readable message from the agent to the user
             message_type = 'text'
-            doc = {'_out': self.sanitize(output), '_type': message_type}
+            doc = {'_out': self.sanitize(output), '_type': message_type, '_c_id': c_id}
             # Memorize to permanent storage
             self.update_chat_message_document(doc)
             self.update_chat_message_context(doc)
             # Print to live chat
-            self.print_chat(output, message_type, True, connection_id=connection_id)
+            self.print_chat(output, message_type, as_is=True, connection_id=connection_id)
             # Print to API
             self.print_api(output['content'], message_type)
             
@@ -244,7 +253,7 @@ class AgentUtilities:
             print(f'Including Tool Response in the chat: {output}')
             # This is the tool response
             message_type = 'tool_rs'            
-            doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface}
+            doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_c_id': c_id}
             # Memorize to permanent storage
             self.update_chat_message_document(doc, output['tool_call_id'])
             self.update_chat_message_context(doc, reset=True)
@@ -296,7 +305,7 @@ class AgentUtilities:
             print(f"Error in {action}: {e}")
             return {'success': False, 'action': action, 'input': message, 'output': str(e)}
 
-    def print_chat(self, output, type='text', as_is=False, connection_id=None):
+    def print_chat(self, output, type='text', as_is=False, connection_id=None, c_id = None):
         """
         Print message to chat via WebSocket.
         
@@ -311,20 +320,24 @@ class AgentUtilities:
         """
         print(f'Running: Print Chat: {output}')
         
+        if not connection_id:
+            #Try the context
+            connection_id = self.connection_id
+        
         if as_is:
             doc = output  
         elif isinstance(output, dict) and 'role' in output and 'content' in output and output['role'] and output['content']: 
             # Content responses from LLM  
-            doc = {'_out': {'role': output['role'], 'content': self.sanitize(output['content'])}, '_type': type}      
+            doc = {'_out': {'role': output['role'], 'content': self.sanitize(output['content'])}, '_type': type, '_c_id:':c_id}      
         elif isinstance(output, str):
             # Any text response
-            doc = {'_out': {'role': 'assistant', 'content': str(output)}, '_type': type}     
+            doc = {'_out': {'role': 'assistant', 'content': str(output)}, '_type': type, '_c_id:':c_id}     
         else:
             # Everything else
-            doc = {'_out': {'role': 'assistant', 'content': self.sanitize(output)}, '_type': type} 
+            doc = {'_out': {'role': 'assistant', 'content': self.sanitize(output)}, '_type': type, '_c_id:':c_id} 
             
         if not connection_id or not self.apigw_client:
-            print(f'WebSocket not configured or this is a RESTful post to the chat.')
+            #print(f'WebSocket not configured or this is a RESTful post to the chat.')
             return False
              
         try:
@@ -366,9 +379,12 @@ class AgentUtilities:
         else:
             payload = {}
 
+        # Sanitize changes early to prevent serialization errors in logging
+        changes = self.sanitize(changes)
         print("MUTATE_WORKSPACE>>", changes)
        
         # 1. Get the workspace in this thread
+        print(f'Looking for workspaces @:{self.portfolio}:{self.org}:{self.entity_type}:{self.entity_id}:{self.thread} ')
         workspaces_list = self.CHC.list_workspaces(
             self.portfolio,
             self.org,
@@ -376,7 +392,7 @@ class AgentUtilities:
             self.entity_id,
             self.thread
         ) 
-        print('WORKSPACES_LIST >>', workspaces_list) 
+        #print('WORKSPACES_LIST >>', workspaces_list) 
         
         if not workspaces_list['success']:
             return False
@@ -400,7 +416,7 @@ class AgentUtilities:
                 self.entity_id,
                 self.thread
             ) 
-            print('UPDATED WORKSPACES_LIST >>>>', workspaces_list) 
+            #print('UPDATED WORKSPACES_LIST >>>>', workspaces_list) 
             
         if not workspace_id:
             workspace = workspaces_list['items'][-1]
@@ -409,6 +425,9 @@ class AgentUtilities:
                 if w['_id'] == workspace_id:
                     workspace = w
                     
+        # CRITICAL: Sanitize workspace immediately after retrieval from database
+        # This converts all Decimals before any merging or manipulation
+        workspace = self.sanitize(workspace)
         print('Selected workspace >>>>', workspace) 
         if 'state' not in workspace:
             workspace['state'] = {
@@ -424,7 +443,10 @@ class AgentUtilities:
             if key == 'belief':
                 # output = {"date":"345"}
                 if isinstance(output, dict):
-                    workspace['state']['beliefs'] = {**workspace['state']['beliefs'], **output}  # Creates a new dictionary that combines both dictionaries
+                    # Sanitize output before merging, then sanitize the merged result
+                    sanitized_output = self.sanitize(output)
+                    merged_beliefs = {**workspace['state']['beliefs'], **sanitized_output}
+                    workspace['state']['beliefs'] = self.sanitize(merged_beliefs)
                     
             if key == 'desire':
                 if isinstance(output, str):
@@ -432,7 +454,8 @@ class AgentUtilities:
                     
             if key == 'intent':
                 if isinstance(output, dict):
-                    workspace['state']['intent'] = output 
+                    # Sanitize nested intent data to ensure no Decimals slip through
+                    workspace['state']['intent'] = self.sanitize(output) 
                     
             if key == 'belief_history':
                 if isinstance(output, dict):
@@ -452,7 +475,8 @@ class AgentUtilities:
                     workspace['cache'] = {}
                 if isinstance(output, dict):
                     for k, v in output.items():
-                        workspace['cache'][k] = v
+                        # Sanitize nested values to ensure no Decimals slip through
+                        workspace['cache'][k] = self.sanitize(v)
             
             if key == 'is_active':
                 if isinstance(output, bool):
@@ -464,16 +488,36 @@ class AgentUtilities:
                     
             if key == 'follow_up':
                 if isinstance(output, dict):
-                    workspace['state']['follow_up'] = output  # Output overrides existing data
+                    # Sanitize nested follow_up data to ensure no Decimals slip through
+                    workspace['state']['follow_up'] = self.sanitize(output)
                     
             if key == 'slots':
                 if isinstance(output, dict):
-                    workspace['state']['slots'] = output  # Output overrides existing data
+                    # Sanitize nested slots data to ensure no Decimals slip through
+                    workspace['state']['slots'] = self.sanitize(output)
+                    
+            if key == 'plan':
+                if isinstance(output, dict):
+                    plan_id = output['id']
+                    if 'plan' not in workspace:
+                        workspace['plan'] = {}
+                    # Sanitize nested plan data to ensure no Decimals slip through
+                    workspace['plan'][plan_id] = self.sanitize(output)
+                    
+            if key == 'continuity':
+                if isinstance(output, dict):
+                    plan_id = output['plan_id']
+                    if 'continuity' not in workspace:
+                        workspace['continuity'] = {}
+                    # Sanitize nested continuity data to ensure no Decimals slip through
+                    workspace['continuity'][plan_id] = self.sanitize(output)
                         
         # 3. Update document in DB
         try:
+            # Sanitize the entire workspace object to convert Decimals before updating
+            sanitized_workspace = self.sanitize(workspace)
             self.update_workspace_document(
-                workspace,
+                sanitized_workspace,
                 workspace['_id']
             )
             return True
@@ -492,15 +536,21 @@ class AgentUtilities:
         Returns:
             The LLM response or False if error
         """
+        
+        
         try:
             # Create base parameters
             params = {
-                'model': prompt['model'],
-                'messages': prompt['messages'],
-                'temperature': prompt['temperature']
+                'model': '',
+                'messages': '',
+                'temperature': 0.0
             }
         
             # Add optional parameters if they exist
+            if 'model' in prompt:
+                params['model'] = prompt['model']
+            if 'messages' in prompt:
+                params['messages'] = prompt['messages']
             if 'temperature' in prompt:
                 params['temperature'] = prompt['temperature']
             if 'tools' in prompt:
@@ -688,8 +738,9 @@ class AgentUtilities:
                     break
             else:
                 return False
-                    
-        return workspace
+        
+        # Sanitize workspace before returning to ensure no Decimals are present
+        return self.sanitize(workspace)
 
     def sanitize(self, obj):
         """
