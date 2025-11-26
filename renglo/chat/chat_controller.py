@@ -7,6 +7,7 @@ from ..common import *
 import uuid
 import json
 import boto3
+from decimal import Decimal
 
 
 class ChatController:
@@ -242,12 +243,15 @@ class ChatController:
         
     def _convert_floats_to_strings(self, obj):
         """
-        Recursively converts float values to strings in a dictionary or list structure.
+        Recursively converts float and Decimal values to strings in a dictionary or list structure.
         """
         if isinstance(obj, dict):
             return {k: self._convert_floats_to_strings(v) for k, v in obj.items()}
         elif isinstance(obj, list):
             return [self._convert_floats_to_strings(item) for item in obj]
+        elif isinstance(obj, Decimal):
+            # Convert Decimal to int if it's a whole number, otherwise float
+            return int(obj) if obj % 1 == 0 else float(obj)
         elif isinstance(obj, float):
             return str(obj)
         return obj
@@ -256,14 +260,19 @@ class ChatController:
             
     
     def update_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id, update, call_id=False):
-        print(f'CHC:update_turn {entity_type}/{thread_id}/{turn_id}:{update}::{call_id}')
+        # Sanitize update early to prevent serialization errors in logging
+        update = self._convert_floats_to_strings(update)
+        print(f'CHC:update_turn {entity_type}/{thread_id}/{turn_id}::{call_id}')
         try:
             data = self.get_turn(portfolio,org,entity_type, entity_id, thread_id, turn_id)
             
             if not data['success']:
                 return data
             
+            # Get item from database - it will contain Decimals
             item = data['item']
+            # Sanitize immediately to convert Decimals
+            item = self._convert_floats_to_strings(item)
             #print(f'Document retrieved:{item}')
             
             if 'messages' not in item or not isinstance(item['messages'], list):
@@ -311,9 +320,7 @@ class ChatController:
                             parsed_content = self._convert_floats_to_strings(update['content'])
                             item['messages'][index]['_out']['content'] = parsed_content
             else:
-                    
-                # Convert any float values in the update to strings
-                update = self._convert_floats_to_strings(update)
+                # Update is already sanitized at the beginning of the method
                 item['messages'].append(update)
             
             #current_app.logger.debug(f'Prepared data for chat update: {item}')
@@ -450,7 +457,9 @@ class ChatController:
         
         
     def update_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id,payload):
-        print(f'CHC:update_workspace {entity_type}/{thread_id}/{workspace_id}:{payload}')
+        # Sanitize payload early to prevent serialization errors in logging
+        payload = self._convert_floats_to_strings(payload)
+        print(f'CHC:update_workspace {entity_type}/{thread_id}/{workspace_id}')
         
         try:
         
@@ -461,11 +470,12 @@ class ChatController:
             if not response_0['success']:
                 return response_0
             
+            # Get item from database - it will contain Decimals
             item = response_0['item']
+            # Sanitize immediately to convert Decimals
+            item = self._convert_floats_to_strings(item)
+            print('flag 1')
             changed = False
-            
-            # Convert any float values in the payload to strings
-            payload = self._convert_floats_to_strings(payload)
             
             if 'state' in payload:
                 item['state'] = payload['state']
@@ -477,9 +487,20 @@ class ChatController:
                 item['cache'] = payload['cache']
                 changed = True
                 
+            if 'plan' in payload:
+                item['plan'] = payload['plan']
+                changed = True
+                
+            if 'state' in payload:
+                item['state'] = payload['state']
+                changed = True
+                
             if changed:
-                current_app.logger.debug(f'Prepared data for workspace update: {item}')
+                print('flag 2')
+                #current_app.logger.debug(f'Prepared data for workspace update: {item}')
+                print(item)
                 response = self.CHM.update_chat(item)
+                print('flag 3')
                 print(response)
                 return response
             else:
