@@ -51,7 +51,6 @@ class AgentUtilities:
         self.entity_type = entity_type
         self.entity_id = entity_id
         self.thread = thread
-        self.message_history = []
         self.chat_id = None
         self.connection_id = connection_id
         
@@ -191,41 +190,46 @@ class AgentUtilities:
         
         return {'success': True, 'action': action, 'input': update, 'output': response}
 
-    def update_chat_message_context(self, doc, reset=False):
-        """
-        Update the chat message context.
-        
-        Args:
-            doc (dict): The document to add
-            reset (bool): Whether to reset the context
-        """
-        if reset:
-            # Instead of trying to update the volatile context, just get the messages 
-            # from the Database
-            message_history = self.get_message_history()
-            self.message_history = message_history['output']
-        else:
-            # Adding to the context without having to call the DB
-            current_history = self.message_history
-            current_history.append(doc['_out'])
-            self.message_history = current_history
 
-    def save_chat(self, output, interface=False, connection_id=None, c_id=None):
+
+    def save_chat(self, output, interface=None, connection_id=None, c_id=None, msg_type=None):
         """
         Save chat message to storage and context.
         
         Args:
             output (dict): The output to save
             interface (bool): Whether to use interface
+            
+        Input:
+            {
+                'role':'',
+                'tool_calls':'',
+                'content':''     
+            }
         """
-        if output.get('tool_calls') and output.get('role') == 'assistant':
+        if msg_type == 'consent':
+            print('Sending consent form')
+            # This is a consent request from the agent to the user
+            message_type = 'consent'
+            if not interface:
+                interface = 'binary_consent'
+            doc = {'_out': self.sanitize(output), '_type': 'consent','_interface':interface,'_next': c_id}
+            self.update_chat_message_document(doc)
+            self.print_chat(doc,message_type,connection_id=connection_id)
+            
+            
+        elif output.get('tool_calls') and output.get('role') == 'assistant':
+            print('Saving the tool call')
             # This is a tool call
             message_type = 'tool_rq'
             doc = {'_out': self.sanitize(output), '_type': 'tool_rq'}
             # Memorize to permanent storage
-            self.update_chat_message_document(doc)
-            self.update_chat_message_context(doc)
+            self.update_chat_message_document(doc)      
             
+            # Creating empty placeholders corresponding to each one of the un-executed tool calls.
+            # This was a work-around as OpenAI doesn't like to see a tools_calls without its corresponding response.
+            # It happens because sometimes, the chat messages are passed to the LLM before the tool is executed 
+            # (e.g: Asking the user for approval to use a tool, the agent needs to understand the response using an LLM)
             for tool_call in output['tool_calls']:
                 rs_template = {
                     "role": "tool",
@@ -234,15 +238,15 @@ class AgentUtilities:
                 }
                 doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs'}
                 self.update_chat_message_document(doc_rs_placeholder)
-                self.update_chat_message_context(doc_rs_placeholder)
-            
+                            
         elif output.get('content') and output.get('role') == 'assistant':
+            print('Saving the assistant message to the user')
             # This is a human readable message from the agent to the user
             message_type = 'text'
-            doc = {'_out': self.sanitize(output), '_type': message_type, '_c_id': c_id}
+            doc = {'_out': self.sanitize(output), '_type': message_type, '_next': c_id}
             # Memorize to permanent storage
-            self.update_chat_message_document(doc)
-            self.update_chat_message_context(doc)
+            response_1 = self.update_chat_message_document(doc)
+            print(f'Chat update response:',response_1)
             # Print to live chat
             self.print_chat(output, message_type, as_is=True, connection_id=connection_id)
             # Print to API
@@ -253,13 +257,13 @@ class AgentUtilities:
             print(f'Including Tool Response in the chat: {output}')
             # This is the tool response
             message_type = 'tool_rs'            
-            doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_c_id': c_id}
+            doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': c_id}
             # Memorize to permanent storage
             self.update_chat_message_document(doc, output['tool_call_id'])
-            self.update_chat_message_context(doc, reset=True)
               
             if interface:  
                 self.print_chat(doc, message_type, as_is=True, connection_id=connection_id)
+
 
     def print_api(self, message, type='text', public_user=None):
         """
@@ -274,9 +278,13 @@ class AgentUtilities:
             dict: Success status and response
         """
         action = 'print_api'
+        
+
+        callback_msg_handler = self.config.get('CALLBACK_MSG_HANDLER', False)
+        
          
         try:
-            if AGENT_API_OUTPUT and AGENT_API_HANDLER:
+            if callback_msg_handler:
                 if public_user:
                     target = public_user
                 else:
@@ -284,19 +292,19 @@ class AgentUtilities:
                
                 params = {'message': message, 'type': type, 'target': target}  
                 
-                parts = AGENT_API_HANDLER.split('/')
+                parts = callback_msg_handler.split('/')
                 if len(parts) != 2:
-                    error_msg = f"{AGENT_API_HANDLER} is not a valid tool."
+                    error_msg = f"{callback_msg_handler} is not a valid tool."
                     print(error_msg)
                     self.print_chat(error_msg, 'text')
                     raise ValueError(error_msg)
                 
-                print(f'Calling {AGENT_API_HANDLER}') 
+                print(f'Calling {callback_msg_handler}') 
                 response = self.SHC.handler_call(self.portfolio, self.org, parts[0], parts[1], params)
                 
                 return response
             else:
-                return {'success': False, 'action': action, 'input': message, 'output': 'AGENT_API_OUTPUT or AGENT_API_HANDLER not configured'}
+                return {'success': False, 'action': action, 'input': message, 'output': ''}
                 
         except ValueError as ve:
             print(f"ValueError in {action}: {ve}")
@@ -328,13 +336,13 @@ class AgentUtilities:
             doc = output  
         elif isinstance(output, dict) and 'role' in output and 'content' in output and output['role'] and output['content']: 
             # Content responses from LLM  
-            doc = {'_out': {'role': output['role'], 'content': self.sanitize(output['content'])}, '_type': type, '_c_id:':c_id}      
+            doc = {'_out': {'role': output['role'], 'content': self.sanitize(output['content'])}, '_type': type, '_next:':c_id}      
         elif isinstance(output, str):
             # Any text response
-            doc = {'_out': {'role': 'assistant', 'content': str(output)}, '_type': type, '_c_id:':c_id}     
+            doc = {'_out': {'role': 'assistant', 'content': str(output)}, '_type': type, '_next:':c_id}     
         else:
             # Everything else
-            doc = {'_out': {'role': 'assistant', 'content': self.sanitize(output)}, '_type': type, '_c_id:':c_id} 
+            doc = {'_out': {'role': 'assistant', 'content': self.sanitize(output)}, '_type': type, '_next:':c_id} 
             
         if not connection_id or not self.apigw_client:
             #print(f'WebSocket not configured or this is a RESTful post to the chat.')
@@ -371,44 +379,23 @@ class AgentUtilities:
         Returns:
             bool: Success status
         """
-        if not self.thread:
-            return False
+        try:
         
-        if public_user:
-            payload = {'context': {'public_user': public_user}}
-        else:
-            payload = {}
-
-        # Sanitize changes early to prevent serialization errors in logging
-        changes = self.sanitize(changes)
-        print("MUTATE_WORKSPACE>>", changes)
-       
-        # 1. Get the workspace in this thread
-        print(f'Looking for workspaces @:{self.portfolio}:{self.org}:{self.entity_type}:{self.entity_id}:{self.thread} ')
-        workspaces_list = self.CHC.list_workspaces(
-            self.portfolio,
-            self.org,
-            self.entity_type,
-            self.entity_id,
-            self.thread
-        ) 
-        #print('WORKSPACES_LIST >>', workspaces_list) 
-        
-        if not workspaces_list['success']:
-            return False
-        
-        if len(workspaces_list['items']) == 0:
-            # Create a workspace as none exist
-            response = self.CHC.create_workspace(
-                self.portfolio,
-                self.org,
-                self.entity_type,
-                self.entity_id,
-                self.thread, payload
-            ) 
-            if not response['success']:
+            if not self.thread:
                 return False
-            # Regenerate workspaces_list
+            
+            if public_user:
+                payload = {'context': {'public_user': public_user}}
+            else:
+                payload = {}
+
+            # Sanitize changes early to prevent serialization errors in logging
+            changes = self.sanitize(changes)
+            first_key = next(iter(changes), None)
+            print("MUTATE_WORKSPACE>>", first_key)
+        
+            # 1. Get the workspace in this thread
+            print(f'Looking for workspaces @:{self.portfolio}:{self.org}:{self.entity_type}:{self.entity_id}:{self.thread} ')
             workspaces_list = self.CHC.list_workspaces(
                 self.portfolio,
                 self.org,
@@ -416,106 +403,154 @@ class AgentUtilities:
                 self.entity_id,
                 self.thread
             ) 
-            #print('UPDATED WORKSPACES_LIST >>>>', workspaces_list) 
+            #print('WORKSPACES_LIST >>', workspaces_list) 
             
-        if not workspace_id:
-            workspace = workspaces_list['items'][-1]
-        else:
-            for w in workspaces_list['items']:
-                if w['_id'] == workspace_id:
-                    workspace = w
-                    
-        # CRITICAL: Sanitize workspace immediately after retrieval from database
-        # This converts all Decimals before any merging or manipulation
-        workspace = self.sanitize(workspace)
-        print('Selected workspace >>>>', workspace) 
-        if 'state' not in workspace:
-            workspace['state'] = {
-                "beliefs": {},
-                "desire": '',           
-                "intent": [],       
-                "history": [],          
-                "in_progress": None    
-            }
+            if not workspaces_list['success']:
+                return False
             
-        # 2. Store the output in the workspace
-        for key, output in changes.items():
-            if key == 'belief':
-                # output = {"date":"345"}
-                if isinstance(output, dict):
-                    # Sanitize output before merging, then sanitize the merged result
-                    sanitized_output = self.sanitize(output)
-                    merged_beliefs = {**workspace['state']['beliefs'], **sanitized_output}
-                    workspace['state']['beliefs'] = self.sanitize(merged_beliefs)
-                    
-            if key == 'desire':
-                if isinstance(output, str):
-                    workspace['state']['desire'] = output
-                    
-            if key == 'intent':
-                if isinstance(output, dict):
-                    # Sanitize nested intent data to ensure no Decimals slip through
-                    workspace['state']['intent'] = self.sanitize(output) 
-                    
-            if key == 'belief_history':
-                if isinstance(output, dict):
-                    # Now update the belief history
-                    for k, v in output.items():
-                        history_event = {
-                            'type': 'belief',
-                            'key': k,
-                            'val': self.sanitize(v),
-                            'time': datetime.now().isoformat()
-                        }
-                        workspace['state']['history'].append(history_event)
-                            
-            if key == 'cache':
-                print(f'Updating workspace cache: {output}')
-                if 'cache' not in workspace: 
-                    workspace['cache'] = {}
-                if isinstance(output, dict):
-                    for k, v in output.items():
-                        # Sanitize nested values to ensure no Decimals slip through
-                        workspace['cache'][k] = self.sanitize(v)
-            
-            if key == 'is_active':
-                if isinstance(output, bool):
-                    workspace['data'] = output  # Output overrides existing data
-                    
-            if key == 'action':
-                if isinstance(output, str):
-                    workspace['state']['action'] = output  # Output overrides existing data
-                    
-            if key == 'follow_up':
-                if isinstance(output, dict):
-                    # Sanitize nested follow_up data to ensure no Decimals slip through
-                    workspace['state']['follow_up'] = self.sanitize(output)
-                    
-            if key == 'slots':
-                if isinstance(output, dict):
-                    # Sanitize nested slots data to ensure no Decimals slip through
-                    workspace['state']['slots'] = self.sanitize(output)
-                    
-            if key == 'plan':
-                if isinstance(output, dict):
-                    plan_id = output['id']
-                    if 'plan' not in workspace:
-                        workspace['plan'] = {}
-                    # Sanitize nested plan data to ensure no Decimals slip through
-                    workspace['plan'][plan_id] = self.sanitize(output)
-                    
-            if key == 'continuity':
-                if isinstance(output, dict):
-                    plan_id = output['plan_id']
-                    if 'continuity' not in workspace:
-                        workspace['continuity'] = {}
-                    # Sanitize nested continuity data to ensure no Decimals slip through
-                    workspace['continuity'][plan_id] = self.sanitize(output)
+            if len(workspaces_list['items']) == 0:
+                # Create a workspace as none exist
+                response = self.CHC.create_workspace(
+                    self.portfolio,
+                    self.org,
+                    self.entity_type,
+                    self.entity_id,
+                    self.thread, payload
+                ) 
+                if not response['success']:
+                    return False
+                # Regenerate workspaces_list
+                workspaces_list = self.CHC.list_workspaces(
+                    self.portfolio,
+                    self.org,
+                    self.entity_type,
+                    self.entity_id,
+                    self.thread
+                ) 
+                #print('UPDATED WORKSPACES_LIST >>>>', workspaces_list) 
+                
+            if not workspace_id:
+                workspace = workspaces_list['items'][-1]
+            else:
+                for w in workspaces_list['items']:
+                    if w['_id'] == workspace_id:
+                        workspace = w
                         
-        # 3. Update document in DB
-        try:
+            # CRITICAL: Sanitize workspace immediately after retrieval from database
+            # This converts all Decimals before any merging or manipulation
+            workspace = self.sanitize(workspace)
+            #print('Selected workspace >>>>', workspace) 
+            if 'state' not in workspace:
+                workspace['state'] = {
+                    "beliefs": {},
+                    "desire": '',           
+                    "intent": [],       
+                    "history": [],          
+                    "in_progress": None    
+                }
+                
+            # 2. Store the output in the workspace
+            for key, output in changes.items():
+                if key == 'belief':
+                    # output = {"date":"345"}
+                    if isinstance(output, dict):
+                        # Sanitize output before merging, then sanitize the merged result
+                        sanitized_output = self.sanitize(output)
+                        merged_beliefs = {**workspace['state']['beliefs'], **sanitized_output}
+                        workspace['state']['beliefs'] = self.sanitize(merged_beliefs)
+                        
+                if key == 'desire':
+                    if isinstance(output, str):
+                        workspace['state']['desire'] = output
+                        
+                if key == 'intent':
+                    if isinstance(output, dict):
+                        # Sanitize nested intent data to ensure no Decimals slip through
+                        workspace['state']['intent'] = self.sanitize(output) 
+                        
+                if key == 'belief_history':
+                    if isinstance(output, dict):
+                        # Now update the belief history
+                        for k, v in output.items():
+                            history_event = {
+                                'type': 'belief',
+                                'key': k,
+                                'val': self.sanitize(v),
+                                'time': datetime.now().isoformat()
+                            }
+                            workspace['state']['history'].append(history_event)
+                                
+                if key == 'cache':
+                    print(f'Updating workspace cache: {output}')
+                    if 'cache' not in workspace: 
+                        workspace['cache'] = {}
+                    if isinstance(output, dict):
+                        for k, v in output.items():
+                            # Sanitize nested values to ensure no Decimals slip through
+                            workspace['cache'][k] = self.sanitize(v)
+                
+                if key == 'is_active':
+                    if isinstance(output, bool):
+                        workspace['data'] = output  # Output overrides existing data
+                        
+                if key == 'action':
+                    if isinstance(output, str):
+                        workspace['state']['action'] = output  # Output overrides existing data
+                        
+                if key == 'follow_up':
+                    if isinstance(output, dict):
+                        # Sanitize nested follow_up data to ensure no Decimals slip through
+                        workspace['state']['follow_up'] = self.sanitize(output)
+                        
+                if key == 'slots':
+                    if isinstance(output, dict):
+                        # Sanitize nested slots data to ensure no Decimals slip through
+                        workspace['state']['slots'] = self.sanitize(output)
+                        
+                if key == 'plan':
+                    if isinstance(output, dict):
+                        plan_id = output['id']
+                        if 'plan' not in workspace:
+                            workspace['plan'] = {}
+                        # Sanitize nested plan data to ensure no Decimals slip through
+                        workspace['plan'][plan_id] = self.sanitize(output)
+                        
+                if key == 'execution':
+                    if isinstance(output, dict):
+                        plan_id = output['plan_id']
+                        if 'state_machine' not in workspace:
+                            workspace['state_machine'] = {}
+                        # Sanitize nested continuity data to ensure no Decimals slip through
+                        workspace['state_machine'][plan_id] = self.sanitize(output)
+                        print(f'Updating state machine:{workspace}')
+                        
+                if key == 'action_log':
+                    if isinstance(output, dict):
+                        '''
+                        {
+                            "plan_id":plan_id,
+                            "plan_step":plan_step,
+                            "tool":selected_tool,
+                            "status":tool_step,
+                            "details":"Calling tool"
+                        }
+                        '''
+                        print(f'Storing action_log:{output}')
+                        plan_id = output['plan_id']
+                        plan_step = output['plan_step']
+                        log = {"tool":output['tool'],"status":output['status'],"details":output["details"]}
+                        if not 'action_log' in workspace['state_machine'][plan_id]['steps'][plan_step]:
+                            workspace['state_machine'][plan_id]['steps'][plan_step]['action_log'] = []
+                        
+                        workspace['state_machine'][plan_id]['steps'][plan_step]['action_log'].append(log)
+                        
+                        
+                            
+             # 3. Update document in DB
+       
             # Sanitize the entire workspace object to convert Decimals before updating
             sanitized_workspace = self.sanitize(workspace)
+            print(f'WORSKPACE > Inserting updated workspace')
             self.update_workspace_document(
                 sanitized_workspace,
                 workspace['_id']
@@ -644,11 +679,6 @@ class AgentUtilities:
                 "_type": "text",
                 "_id": str(uuid.uuid4())  # This is the Message ID
             }
-            
-            # Append new message to volatile context
-            current_history = self.message_history
-            current_history.append(new_message)
-            self.message_history = current_history
             
             # Append new message to permanent storage
             message_object = {}

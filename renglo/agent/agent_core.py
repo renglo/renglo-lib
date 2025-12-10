@@ -885,9 +885,6 @@ class AgentCore:
                     # Step 3: Check if answer needs to go out without LLM interpretation
                     #if 'direct_out' in response_2:
                         
-                    
-                    
-                    
                     if not response_2['success']:
                         # Something went wrong during tool execution
                         return {'success':False,'action':action,'output':results}

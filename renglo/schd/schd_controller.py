@@ -212,13 +212,27 @@ class SchdController:
         # And before every run, we could fetch the blueprint. It if doesn't exist we abort the call. 
         # It makes sense that there is a blueprint for every RPC as it shows the inputs of the call. 
         # We could store every call to the RPC as a document. The ring itself is the name of the blueprint. 
-        tool, handler_name = payload['handler'].split('/')
-        if tool != '_action':
+        parts = handler.split('/')
+        if len(parts)==2:
+            extension = parts[0]
+            handler_name = parts[1]
+        else:
+            result.append({'success':False,'action':action,'input':payload,'output':response})
+            return result, 400
+            
+        '''
+        # This check exists because there should be a blueprint that defines the input shape of the handler. 
+        # This only applies to handlers that are exposed publicly. 
+        # We are commenting it as this is no longer a hard requirement. 
+        if extension != '_action':
             blueprint = self.BPC.get_blueprint('irma',handler_name,'last')
+            print('Blueprint:',blueprint)
         
             if 'fields' not in blueprint:
-                result.append({'success':False,'action':action,'handler':'','message':'No valid handler'}) 
+                print(blueprint)
+                result.append({'success':False,'action':action,'input':payload,'error':f'Error with the blueprint:{handler_name}'}) 
                 return result, 400
+        '''
             
         response = self.SHL.load_and_run(handler, payload = payload)
         
