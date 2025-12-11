@@ -80,9 +80,12 @@ class AgentUtilities:
             print(f"Error initializing WebSocket client: {e}")
             self.apigw_client = None
 
-    def get_message_history(self):
+    def get_message_history(self,filter={}):
         """
         Get the message history for the current thread.
+        filter:{'param':<name>,'begins_with':<value>}
+            param: The name of the parameter you are applying the filter: ['_interface','_next','_type']
+            value: The begins at string for the value of the parameter to be filtered
         
         Returns:
             dict: Success status and message list
@@ -93,6 +96,17 @@ class AgentUtilities:
             print(f'type: {self.entity_type}')
             print(f'entity_id: {self.entity_id}')
             print(f'thread: {self.thread}')
+            
+            
+            apply_filter = False
+            filter_param = None
+            filter_value = None
+            
+            if filter and 'param' in filter and 'begins_with' in filter:
+                filter_param = filter['param']
+                filter_value = filter['begins_with']
+                apply_filter = True
+                    
         
             # Thread was not included, create a new one?
             if not self.thread:
@@ -115,6 +129,17 @@ class AgentUtilities:
             message_list = []
             for turn in response['items']: 
                 for m in turn['messages']:
+                    
+                    if apply_filter:
+                        # Check if filter_param exists in message
+                        if filter_param not in m or m[filter_param] is None:
+                            continue
+                        # Convert to string for comparison and check if value begins with filter_value
+                        param_value = str(m[filter_param])
+                        if not param_value.startswith(filter_value):
+                            continue
+
+                    
                     out_message = m['_out']
                     if m['_type'] in ['user', 'system', 'text', 'tool_rq', 'tool_rs']:  # OK to show to LLM
                         message_list.append(out_message)      
