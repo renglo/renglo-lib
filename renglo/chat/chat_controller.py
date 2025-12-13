@@ -311,6 +311,10 @@ class ChatController:
                             if '_interface' in update:
                                 item['messages'][index]['_interface'] = update['_interface']
                                 
+                            if '_next' in update:
+                                item['messages'][index]['_next'] = update['_next']
+                                
+                                
                             print(item['messages'][index])
                             
                             
@@ -361,7 +365,7 @@ class ChatController:
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*" 
         query = f"{entity_id}/{thread_id}"
         
-        print(f'get_workspace > INDEX:{index} , QUERY:{query}, TURN_ID:{workspace_id}') 
+        #print(f'get_workspace > INDEX:{index} , QUERY:{query}, TURN_ID:{workspace_id}') 
         
         list_of_workspaces = self.list_workspaces(portfolio,org,entity_type,entity_id,thread_id)
         
@@ -459,13 +463,13 @@ class ChatController:
     def update_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id,payload):
         # Sanitize payload early to prevent serialization errors in logging
         payload = self._convert_floats_to_strings(payload)
-        print(f'CHC:update_workspace {entity_type}/{thread_id}/{workspace_id}')
+        #print(f'CHC:update_workspace {entity_type}/{thread_id}/{workspace_id}')
         
         try:
         
             response_0 = self.get_workspace(portfolio,org,entity_type, entity_id, thread_id, workspace_id)
             
-            print('Updating the obtained workspace document...')
+            #print('Updating the obtained workspace document...')
             
             if not response_0['success']:
                 return response_0
@@ -474,7 +478,7 @@ class ChatController:
             item = response_0['item']
             # Sanitize immediately to convert Decimals
             item = self._convert_floats_to_strings(item)
-            print('flag 1')
+            
             changed = False
             
             if 'state' in payload:
@@ -500,7 +504,7 @@ class ChatController:
                 changed = True
                 
             if changed:
-                print('Something has changed. Updating the workspace')
+                #print('Something has changed. Updating the workspace')
                 #current_app.logger.debug(f'Prepared data for workspace update: {item}')
                 #print(item)
                 response = self.CHM.update_chat(item)

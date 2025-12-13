@@ -96,6 +96,7 @@ class AgentUtilities:
             print(f'type: {self.entity_type}')
             print(f'entity_id: {self.entity_id}')
             print(f'thread: {self.thread}')
+            print(f'filter: {filter}')
             
             
             apply_filter = False
@@ -110,7 +111,7 @@ class AgentUtilities:
         
             # Thread was not included, create a new one?
             if not self.thread:
-                return {'success': False, 'action': action, 'output': 'Error: No thread provided'}
+                return {'success': False, 'action': action, 'input': filter, 'output': 'Error: No thread provided'}
                 
             response = self.CHC.list_turns(
                 self.portfolio,
@@ -122,7 +123,7 @@ class AgentUtilities:
              
             if 'success' not in response:
                 print(f'Something failed during message list: {response}')
-                return {'success': False, 'action': action, 'input': self.thread, 'output': response}
+                return {'success': False, 'action': action, 'input': filter, 'output': response}
             
             # Prepare messages to look like an OpenAI message array
             # Also remove messages that don't belong to an approved type
@@ -131,24 +132,29 @@ class AgentUtilities:
                 for m in turn['messages']:
                     
                     if apply_filter:
+                        #print(f'Applying filter in message:{m}')
                         # Check if filter_param exists in message
                         if filter_param not in m or m[filter_param] is None:
+                            #print('Param did not exist, filter out')
                             continue
                         # Convert to string for comparison and check if value begins with filter_value
                         param_value = str(m[filter_param])
                         if not param_value.startswith(filter_value):
+                            #print(f'{param_value} does not begin with:{filter_value}, filter out')
                             continue
+                        
+                        print(f'Include in filtered results')
 
                     
                     out_message = m['_out']
-                    if m['_type'] in ['user', 'system', 'text', 'tool_rq', 'tool_rs']:  # OK to show to LLM
+                    if m['_type'] in ['user', 'consent', 'system', 'text', 'tool_rq', 'tool_rs']:  # OK to show to LLM
                         message_list.append(out_message)      
             
-            return {'success': True, 'action': action, 'input': self.thread, 'output': message_list}
+            return {'success': True, 'action': action, 'input': filter, 'output': message_list}
         
         except Exception as e:
             print(f'Get message history failed: {str(e)}')
-            return {'success': False, 'action': action, 'output': f'Error: {str(e)}'}
+            return {'success': False, 'action': action, 'input': filter, 'output': f'Error: {str(e)}'}
 
     def update_chat_message_document(self, update, call_id=False):
         """
@@ -198,7 +204,7 @@ class AgentUtilities:
             dict: Success status and response
         """
         action = 'update_workspace_document'
-        print(f'Running: {action}')
+        #print(f'Running: {action}')
         
         response = self.CHC.update_workspace(
             self.portfolio,
@@ -217,7 +223,7 @@ class AgentUtilities:
 
 
 
-    def save_chat(self, output, interface=None, connection_id=None, c_id=None, msg_type=None):
+    def save_chat(self, output, interface=None, connection_id=None, next=None, msg_type=None):
         """
         Save chat message to storage and context.
         
@@ -238,7 +244,7 @@ class AgentUtilities:
             message_type = 'consent'
             if not interface:
                 interface = 'binary_consent'
-            doc = {'_out': self.sanitize(output), '_type': 'consent','_interface':interface,'_next': c_id}
+            doc = {'_out': self.sanitize(output), '_type': 'consent','_interface':interface,'_next': next}
             self.update_chat_message_document(doc)
             self.print_chat(doc,message_type,connection_id=connection_id)
             
@@ -247,7 +253,7 @@ class AgentUtilities:
             print('Saving the tool call')
             # This is a tool call
             message_type = 'tool_rq'
-            doc = {'_out': self.sanitize(output), '_type': 'tool_rq'}
+            doc = {'_out': self.sanitize(output), '_type': 'tool_rq','_next': next}
             # Memorize to permanent storage
             self.update_chat_message_document(doc)      
             
@@ -261,14 +267,14 @@ class AgentUtilities:
                     "tool_call_id": tool_call['id'],
                     "content": []
                 }
-                doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs'}
+                doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': None}
                 self.update_chat_message_document(doc_rs_placeholder)
                             
         elif output.get('content') and output.get('role') == 'assistant':
             print('Saving the assistant message to the user')
             # This is a human readable message from the agent to the user
             message_type = 'text'
-            doc = {'_out': self.sanitize(output), '_type': message_type, '_next': c_id}
+            doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
             # Memorize to permanent storage
             response_1 = self.update_chat_message_document(doc)
             print(f'Chat update response:',response_1)
@@ -282,7 +288,7 @@ class AgentUtilities:
             print(f'Including Tool Response in the chat: {output}')
             # This is the tool response
             message_type = 'tool_rs'            
-            doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': c_id}
+            doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': next}
             # Memorize to permanent storage
             self.update_chat_message_document(doc, output['tool_call_id'])
               
@@ -338,7 +344,7 @@ class AgentUtilities:
             print(f"Error in {action}: {e}")
             return {'success': False, 'action': action, 'input': message, 'output': str(e)}
 
-    def print_chat(self, output, type='text', as_is=False, connection_id=None, c_id = None):
+    def print_chat(self, output, type='text', as_is=False, connection_id=None, next= None):
         """
         Print message to chat via WebSocket.
         
@@ -361,13 +367,13 @@ class AgentUtilities:
             doc = output  
         elif isinstance(output, dict) and 'role' in output and 'content' in output and output['role'] and output['content']: 
             # Content responses from LLM  
-            doc = {'_out': {'role': output['role'], 'content': self.sanitize(output['content'])}, '_type': type, '_next:':c_id}      
+            doc = {'_out': {'role': output['role'], 'content': self.sanitize(output['content'])}, '_type': type, '_next:':next}      
         elif isinstance(output, str):
             # Any text response
-            doc = {'_out': {'role': 'assistant', 'content': str(output)}, '_type': type, '_next:':c_id}     
+            doc = {'_out': {'role': 'assistant', 'content': str(output)}, '_type': type, '_next:':next}     
         else:
             # Everything else
-            doc = {'_out': {'role': 'assistant', 'content': self.sanitize(output)}, '_type': type, '_next:':c_id} 
+            doc = {'_out': {'role': 'assistant', 'content': self.sanitize(output)}, '_type': type, '_next:':next} 
             
         if not connection_id or not self.apigw_client:
             #print(f'WebSocket not configured or this is a RESTful post to the chat.')
@@ -420,7 +426,7 @@ class AgentUtilities:
             print("MUTATE_WORKSPACE>>", first_key)
         
             # 1. Get the workspace in this thread
-            print(f'Looking for workspaces @:{self.portfolio}:{self.org}:{self.entity_type}:{self.entity_id}:{self.thread} ')
+            #print(f'Looking for workspaces @:{self.portfolio}:{self.org}:{self.entity_type}:{self.entity_id}:{self.thread} ')
             workspaces_list = self.CHC.list_workspaces(
                 self.portfolio,
                 self.org,
@@ -540,14 +546,47 @@ class AgentUtilities:
                         # Sanitize nested plan data to ensure no Decimals slip through
                         workspace['plan'][plan_id] = self.sanitize(output)
                         
-                if key == 'execution':
+                if key == 'new_state_machine':
+                    print('Initializing state machine')
                     if isinstance(output, dict):
                         plan_id = output['plan_id']
                         if 'state_machine' not in workspace:
                             workspace['state_machine'] = {}
-                        # Sanitize nested continuity data to ensure no Decimals slip through
-                        workspace['state_machine'][plan_id] = self.sanitize(output)
-                        print(f'Updating state machine:{workspace}')
+                        # Sanitize nested plan data to ensure no Decimals slip through
+                        if plan_id not in workspace['state_machine']:
+                            # It won't override entire state machine if it already exists.
+                            workspace['state_machine'][plan_id] = self.sanitize(output)
+                    print(workspace)
+                    
+                if key == 'step_state':
+                    if isinstance(output, dict):
+                        
+                        if 'plan_id' in output and 'step_id' in output:
+                            plan_id = output['plan_id']
+                            plan_step = output['plan_step']
+                             
+                            if 'status' in output:
+                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['status'] = output['status']
+                            if 'error' in output: 
+                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['error'] = output['error']
+                            if 'started_at' in output:
+                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['started_at'] = output['started_at']
+                            if 'finished_at' in output:
+                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['finished_at'] = output['finished_at']
+                
+                if key == 'plan_state':
+                    if isinstance(output, dict):
+                        
+                        print(f'@mutate:plan_state: workspace: {workspace}')
+                        
+                        if 'plan_id' in output :
+                            plan_id = output['plan_id']
+   
+                            if 'status' in output:
+                                workspace['state_machine'][plan_id] = output['status']
+                            if 'updated_at' in output:
+                                workspace['state_machine'][plan_id] = output['updated_at']
+                            
                         
                 if key == 'action_log':
                     if isinstance(output, dict):
@@ -557,17 +596,23 @@ class AgentUtilities:
                             "plan_step":plan_step,
                             "tool":selected_tool,
                             "status":tool_step,
-                            "details":"Calling tool"
+                            "nonce":nonce,
+                            "message":message
                         }
                         '''
+                        # Storing action_log:{'plan_id': 'd6e47334', 'plan_step': '0', 'tool': 'search_flights', 'status': 3, 'details': {'commands': [{'id': 'call_tMtY0uDa3WAnl9kyz9MqXnhA', 'function': {'arguments': '{"from_airport_code":"DFW","to_airport_code":"JFK","outbound_date":"2026-01-25","return_date":"2026-02-01"}', 'name': 'search_flights'}, 'type': 'function'}], 'interface': 'binary_consent', 'nonce': 116360, 'message': {'role': 'assistant', 'content': 'I would like to call search_flights tool with the following parameters:from_airport_code: DFW, to_airport_code: JFK, outbound_date: 2026-01-25, return_date: 2026-02-01. Please confirm it is ok'}}}
+
                         print(f'Storing action_log:{output}')
                         plan_id = output['plan_id']
                         plan_step = output['plan_step']
-                        log = {"tool":output['tool'],"status":output['status'],"details":output["details"]}
-                        if not 'action_log' in workspace['state_machine'][plan_id]['steps'][plan_step]:
-                            workspace['state_machine'][plan_id]['steps'][plan_step]['action_log'] = []
+                        log = {'tool':output['tool'],'status':output['status'],'nonce':output['nonce'],'message':output['message']}
+                        if not 'action_log' in workspace['state_machine'][plan_id]['steps'][int(plan_step)]:
+                            workspace['state_machine'][plan_id]['steps'][int(plan_step)]['action_log'] = []
                         
-                        workspace['state_machine'][plan_id]['steps'][plan_step]['action_log'].append(log)
+                        workspace['state_machine'][plan_id]['steps'][int(plan_step)]['action_log'].append(log)
+                        
+                        print(f'Log to add to action_log:{log}')
+                        print(f'Updated workspace after adding item to action_log:{workspace}')
                         
                         
                             
@@ -575,7 +620,7 @@ class AgentUtilities:
        
             # Sanitize the entire workspace object to convert Decimals before updating
             sanitized_workspace = self.sanitize(workspace)
-            print(f'WORSKPACE > Inserting updated workspace')
+            #print(f'WORSKPACE > Inserting updated workspace')
             self.update_workspace_document(
                 sanitized_workspace,
                 workspace['_id']
@@ -674,7 +719,7 @@ class AgentUtilities:
                  
 
 
-    def new_chat_message_document(self, message, public_user=None):
+    def new_chat_message_document(self, message, public_user=None, next=None):
         """
         Create a new chat message document.
         
@@ -702,7 +747,7 @@ class AgentUtilities:
             msg_wrap = {
                 "_out": new_message,
                 "_type": "text",
-                "_id": str(uuid.uuid4())  # This is the Message ID
+                "_next": next   
             }
             
             # Append new message to permanent storage
