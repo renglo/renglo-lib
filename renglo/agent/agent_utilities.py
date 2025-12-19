@@ -267,6 +267,7 @@ class AgentUtilities:
                     "tool_call_id": tool_call['id'],
                     "content": []
                 }
+                print(f'Saving placeholder message for:{tool_call['id']}')
                 doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': None}
                 self.update_chat_message_document(doc_rs_placeholder)
                             
@@ -559,9 +560,11 @@ class AgentUtilities:
                     print(workspace)
                     
                 if key == 'step_state':
+                    
+                    print(f'mutate step_state input:{output}')
                     if isinstance(output, dict):
                         
-                        if 'plan_id' in output and 'step_id' in output:
+                        if 'plan_id' in output and 'plan_step' in output:
                             plan_id = output['plan_id']
                             plan_step = output['plan_step']
                              
@@ -573,6 +576,8 @@ class AgentUtilities:
                                 workspace['state_machine'][plan_id]['steps'][int(plan_step)]['started_at'] = output['started_at']
                             if 'finished_at' in output:
                                 workspace['state_machine'][plan_id]['steps'][int(plan_step)]['finished_at'] = output['finished_at']
+                                
+                    print(f'State Machine after mutate step_state:{workspace["state_machine"]}')
                 
                 if key == 'plan_state':
                     if isinstance(output, dict):
@@ -605,7 +610,15 @@ class AgentUtilities:
                         print(f'Storing action_log:{output}')
                         plan_id = output['plan_id']
                         plan_step = output['plan_step']
-                        log = {'tool':output['tool'],'status':output['status'],'nonce':output['nonce'],'message':output['message']}
+                        log = {}
+                        if 'tool' in output:
+                            log['tool'] = output['tool']
+                        if 'status' in output:
+                            log['status'] = output['status']
+                        if 'nonce' in output:
+                            log['nonce'] = output['nonce']
+                        if 'message' in output:
+                            log['message'] = output['message']
                         if not 'action_log' in workspace['state_machine'][plan_id]['steps'][int(plan_step)]:
                             workspace['state_machine'][plan_id]['steps'][int(plan_step)]['action_log'] = []
                         

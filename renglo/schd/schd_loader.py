@@ -204,6 +204,7 @@ class SchdLoader:
                 module_parts = module_name.split('.')
             
             payload = kwargs.get('payload')  # Extract payload from kwargs
+            check = kwargs.get('check',False)
             
             # Ensure we have at least 2 parts for module_path and module_name
             if len(module_parts) < 2:
@@ -219,12 +220,21 @@ class SchdLoader:
             
             print(f'Class Loaded:{class_name}')
             
-            if hasattr(instance, "run"):       
-                result = instance.run(payload)  # Pass payload to run
+            if check:
+                if hasattr(instance, "check"):       
+                    result = instance.check(payload)  # Pass payload to run
+                else:
+                    error = f"Class '{class_name}' in '{module_name}' has no 'check' method."
+                    print(error)
+                    return {'success':False,'action':action,'error':error,'status':500}
+    
             else:
-                error = f"Class '{class_name}' in '{module_name}' has no 'run' method."
-                print(error)
-                return {'success':False,'action':action,'error':error,'status':500}
+                if hasattr(instance, "run"):       
+                    result = instance.run(payload)  # Pass payload to run
+                else:
+                    error = f"Class '{class_name}' in '{module_name}' has no 'run' method."
+                    print(error)
+                    return {'success':False,'action':action,'error':error,'status':500}
 
 
             if runtime_loaded_class:

@@ -280,6 +280,36 @@ class SchdController:
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {str(e)}'}
 
 
+    def handler_check(self,portfolio,org,tool,handler,payload):
+        action = 'handler_check'
+        
+        print(f'Calling handler check:{handler}, payload:{payload}')
+        
+        try:        
+            # We override portfolio, org and tool that might come in the payload.
+            payload['portfolio'] = portfolio
+            payload['org'] = org
+            payload['tool'] = tool
+                
+            response = {'success':False,'output':[]}
+            
+            response = self.SHL.load_and_run(f'{tool}/{handler}', payload = payload, check=True)
+            
+            if not response['success']:
+                canonical = response['output']['output'] # This is a list. The list of steps in the handler
+                return {'success':False,'action':action,'handler':handler,'input':payload,'output':canonical,'stack':response}
+                      
+            canonical = response['output']['output'] # Output of last step of handler. 
+            if 'interface' in response['output']:
+                interface = response['output']['interface']
+            else:
+                interface = None
+            return {'success':True,'action':action,'handler':handler,'input':payload, 'interface':interface,'output':canonical,'stack':response}
+        
+        except Exception as e:
+            print(f'Error @handler_call: {str(e)}')
+            return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {str(e)}'}
+
     
 
     def delete_rule(self, rule_name):
