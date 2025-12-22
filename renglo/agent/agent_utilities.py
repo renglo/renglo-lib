@@ -646,7 +646,8 @@ class AgentUtilities:
                             "tool":selected_tool,
                             "status":tool_step,
                             "nonce":nonce,
-                            "message":message
+                            "message":message,
+                            "type":type
                         }
                         '''
                         # Storing action_log:{'plan_id': 'd6e47334', 'plan_step': '0', 'tool': 'search_flights', 'status': 3, 'details': {'commands': [{'id': 'call_tMtY0uDa3WAnl9kyz9MqXnhA', 'function': {'arguments': '{"from_airport_code":"DFW","to_airport_code":"JFK","outbound_date":"2026-01-25","return_date":"2026-02-01"}', 'name': 'search_flights'}, 'type': 'function'}], 'interface': 'binary_consent', 'nonce': 116360, 'message': {'role': 'assistant', 'content': 'I would like to call search_flights tool with the following parameters:from_airport_code: DFW, to_airport_code: JFK, outbound_date: 2026-01-25, return_date: 2026-02-01. Please confirm it is ok'}}}
@@ -663,6 +664,8 @@ class AgentUtilities:
                             log['nonce'] = output['nonce']
                         if 'message' in output:
                             log['message'] = output['message']
+                        if 'type' in output:
+                            log['type'] = output['type']
                         
                         # Use helper function to safely get or create the step
                         step = self.get_or_create_step(workspace, plan_id, plan_step)
