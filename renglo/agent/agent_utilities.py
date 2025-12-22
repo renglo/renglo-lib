@@ -265,10 +265,10 @@ class AgentUtilities:
                 rs_template = {
                     "role": "tool",
                     "tool_call_id": tool_call['id'],
-                    "content": []
+                    "content": []    
                 }
                 print(f'Saving placeholder message for:{tool_call['id']}')
-                doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': None}
+                doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': next}
                 self.update_chat_message_document(doc_rs_placeholder)
                             
         elif output.get('content') and output.get('role') == 'assistant':
@@ -278,7 +278,7 @@ class AgentUtilities:
             doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
             # Memorize to permanent storage
             response_1 = self.update_chat_message_document(doc)
-            print(f'Chat update response:',response_1)
+            #print(f'Chat update response:',response_1)
             # Print to live chat
             self.print_chat(output, message_type, as_is=True, connection_id=connection_id)
             # Print to API
@@ -398,6 +398,46 @@ class AgentUtilities:
         except Exception as e:
             print(f'Error sending message: {str(e)}')
             return False
+        
+    # Helper function to safely get a step in the state machine by step_id
+    def get_or_create_step(self, workspace, plan_id, plan_step):
+        """
+        Safely get a step in the state machine by matching step_id.
+        The plan_step parameter is the step_id (not a list index).
+        We search through the steps list to find the step with matching step_id.
+        
+        Args:
+            workspace: The workspace dictionary
+            plan_id: The plan ID
+            plan_step: The step_id to find (as string or int)
+            
+        Returns:
+            dict: The step dictionary with matching step_id
+            
+        Raises:
+            IndexError: If the step with the given step_id is not found
+        """
+        if 'state_machine' not in workspace:
+            workspace['state_machine'] = {}
+        
+        if plan_id not in workspace['state_machine']:
+            workspace['state_machine'][plan_id] = {'steps': []}
+        
+        if 'steps' not in workspace['state_machine'][plan_id]:
+            workspace['state_machine'][plan_id]['steps'] = []
+        
+        steps = workspace['state_machine'][plan_id]['steps']
+        target_step_id = str(plan_step)  # Normalize to string for comparison
+        
+        # Search for the step by step_id (not by index)
+        for step in steps:
+            # Handle both string and int step_id values
+            step_id = str(step.get('step_id', ''))
+            if step_id == target_step_id:
+                return step
+        
+        # If step not found, raise an error - we should not create steps that don't exist in the plan
+        raise IndexError(f"Step with step_id '{plan_step}' not found in state machine for plan_id '{plan_id}'. The state machine has {len(steps)} step(s).")
 
     def mutate_workspace(self, changes, public_user=None, workspace_id=None):
         """
@@ -480,6 +520,7 @@ class AgentUtilities:
                     "history": [],          
                     "in_progress": None    
                 }
+            
                 
             # 2. Store the output in the workspace
             for key, output in changes.items():
@@ -561,23 +602,26 @@ class AgentUtilities:
                     
                 if key == 'step_state':
                     
-                    print(f'mutate step_state input:{output}')
+                    #print(f'mutate step_state input:{output}')
                     if isinstance(output, dict):
                         
                         if 'plan_id' in output and 'plan_step' in output:
                             plan_id = output['plan_id']
                             plan_step = output['plan_step']
+                            
+                            # Use helper function to safely get or create the step
+                            step = self.get_or_create_step(workspace, plan_id, plan_step)
                              
                             if 'status' in output:
-                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['status'] = output['status']
+                                step['status'] = output['status']
                             if 'error' in output: 
-                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['error'] = output['error']
+                                step['error'] = output['error']
                             if 'started_at' in output:
-                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['started_at'] = output['started_at']
+                                step['started_at'] = output['started_at']
                             if 'finished_at' in output:
-                                workspace['state_machine'][plan_id]['steps'][int(plan_step)]['finished_at'] = output['finished_at']
+                                step['finished_at'] = output['finished_at']
                                 
-                    print(f'State Machine after mutate step_state:{workspace["state_machine"]}')
+                    #print(f'State Machine after mutate step_state:{workspace["state_machine"]}')
                 
                 if key == 'plan_state':
                     if isinstance(output, dict):
@@ -619,13 +663,17 @@ class AgentUtilities:
                             log['nonce'] = output['nonce']
                         if 'message' in output:
                             log['message'] = output['message']
-                        if not 'action_log' in workspace['state_machine'][plan_id]['steps'][int(plan_step)]:
-                            workspace['state_machine'][plan_id]['steps'][int(plan_step)]['action_log'] = []
                         
-                        workspace['state_machine'][plan_id]['steps'][int(plan_step)]['action_log'].append(log)
+                        # Use helper function to safely get or create the step
+                        step = self.get_or_create_step(workspace, plan_id, plan_step)
+                        
+                        if 'action_log' not in step:
+                            step['action_log'] = []
+                        
+                        step['action_log'].append(log)
                         
                         print(f'Log to add to action_log:{log}')
-                        print(f'Updated workspace after adding item to action_log:{workspace}')
+                        #print(f'Updated workspace after adding item to action_log:{workspace}')
                         
                         
                             

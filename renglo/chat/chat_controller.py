@@ -328,7 +328,7 @@ class ChatController:
                 item['messages'].append(update)
             
             #current_app.logger.debug(f'Prepared data for chat update: {item}')
-            print(f'Store modified item:{item}')
+            #print(f'Store modified item:{item}')
             response = self.CHM.update_chat(item)
             print(response) 
             return response
