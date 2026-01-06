@@ -148,7 +148,7 @@ class SchdLoader:
                 # Pass config to handlers that need it
                 config = current_app.renglo_config if hasattr(current_app, 'renglo_config') else {}
                 print(f'Creating instance with config')
-                instance = class_(config=config)
+                instance = class_()
             else:
                 # Most handlers don't need config in __init__
                 print(f'Creating instance')
