@@ -1279,3 +1279,581 @@ class AgentUtilities:
         print(f'Cleared tool message content: {message_list}')
         
         return message_list
+    
+    
+    def pre_process_message(self, message, list_actions=[]):
+        """
+        Combined function that processes a message through multiple stages in a single LLM call:
+        1. Perception and interpretation
+        2. Information processing
+        3. Fact extraction
+        4. Desire detection
+        5. Action matching
+        """
+        action = 'pre_process_message'
+        self.print_chat('Pre-processing message...', 'text')
+        
+        try:        
+            # Get current time and date
+            current_time = datetime.now().strftime("%Y-%m-%d")
+             
+            dict_actions = {}
+            for a in list_actions:
+                dict_actions[a['key']] = {
+                    'goal': a.get('goal', ''),
+                    'key': a.get('key', ''),
+                    'utterances': a.get('utterances', ''),
+                    'slots': a.get('slots', '')
+                }
+            
+            # Get current workspace
+            workspace = self.get_active_workspace()
+            current_action = workspace.get('state', {}).get('action', '') if workspace else ''
+            last_belief = workspace.get('state', {}).get('belief', {}) if workspace else {}
+            belief_history = workspace.get('state', {}).get('history', []) if workspace else []
+                    
+            # Clean and prepare belief history if provided
+            cleaned_belief_history = self.sanitize(belief_history) if belief_history else []
+            pruned_belief_history = self.prune_history(cleaned_belief_history) if cleaned_belief_history else []
+            prompt_text = f"""
+            You are a comprehensive message processing module for a BDI agent. Your task is to process a user message through multiple stages in a single pass.
+
+            STAGE 1 - PERCEPTION AND INTERPRETATION:
+            Extract structured information from the raw message:
+            - Identify the user's intent
+            - Extract key entities mentioned
+            - Note any tools that might be needed
+            - For each entity detected, create a belief history entry with:
+            * type: "belief"
+            * key: entity name
+            * val: entity value
+            * time: current timestamp
+
+            STAGE 2 - INFORMATION PROCESSING:
+            Enrich and normalize the extracted information:
+            - Normalize values (e.g., convert "tomorrow" to full date)
+            - Add derived information
+            - Validate and standardize formats
+            - Compare available beliefs with the slots required by the matched action
+            - Identify missing beliefs by:
+            * Checking each required slot from the matched action
+            * Verifying if we have corresponding values in current beliefs
+            * Considering both exact matches and semantic equivalents
+            * Including slots that are required but not yet provided
+            - Track missing beliefs that are essential for completing the current task
+
+            STAGE 3 - FACT EXTRACTION:
+            From the belief history, extract the most up-to-date facts:
+            - Use the most recent value for each key
+            - Combine with newly extracted information
+            - Maintain chronological order
+
+            STAGE 4 - DESIRE DETECTION:
+            Analyze the combined information to determine the user's goal:
+            - Consider the current action: {current_action}
+            - Review the entire belief history to understand the ongoing conversation context
+            - Consider the chronological progression of user's statements and preferences
+            - Only change the previously detected desire if:
+            * The new message explicitly states a different intention
+            * The new message provides critical information that fundamentally changes the goal
+            * The user explicitly requests to change their previous intention
+            - If the new message only adds facts without changing intent, maintain the previous desire
+            - Summarize the user's desire in a natural language sentence
+            - Focus on the primary objective that has been consistent throughout the conversation
+
+            STAGE 5 - ACTION MATCHING:
+            Match the processed information with available actions:
+            - Consider the current action: {current_action}
+            - Only change the current action if:
+            * The new message explicitly requests a different action
+            * The new message's intent clearly conflicts with the current action
+            * The user explicitly states they want to do something else
+            - If the new message only adds information without changing intent:
+            * Keep the current action
+            * Use the message to fill missing slots
+            * Update any relevant beliefs
+            - Compare intent and beliefs with action descriptions
+            - Consider the full belief history when matching
+            - Select the most appropriate action
+            - Provide confidence score
+
+            Today's date is {current_time}
+
+            ### Available Actions:
+            {json.dumps(dict_actions, indent=2)}
+
+            ### Current Belief:
+            {json.dumps(last_belief, indent=2) if last_belief else "{}"}
+
+            ### Belief History:
+            {json.dumps(pruned_belief_history, indent=2) if pruned_belief_history else "[]"}
+
+            ### User Message:
+            {message}
+
+            Return a JSON object with the following structure:
+            {{
+                "perception": {{
+                    "intent": "string",
+                    "entities": {{}},
+                    "raw_text": "string",
+                    "needs_tools": []
+                }},
+                "processed_info": {{
+                    "enriched_entities": {{}},
+                    "missing_beliefs": [],
+                    "normalized_values": {{}}
+                }},
+                "facts": {{
+                    // Key-value pairs of extracted facts
+                }},
+                "desire": "string",
+                "action_match": {{
+                    "confidence": 0-100,
+                    "action": "string" // Use the key of the action,
+                    "reasoning": "string",
+                    "action_changed": boolean,
+                    "change_reason": "string"
+                }},
+                "belief_history_updates": [
+                    {{
+                        "type": "belief",
+                        "key": "string",
+                        "val": "any",
+                        "time": "ISO timestamp"
+                    }}
+                ]
+            }}
+
+            IMPORTANT RULES:
+            1. Always use the most recent value for each fact
+            2. Maintain all original information while enriching it
+            3. Provide clear reasoning for action matching
+            3b. Use the action key to indicate what action has been selected.
+            4. Return valid JSON with all strings properly quoted
+            5. For each new entity detected, create a belief history entry
+            6. Use the belief history to inform action matching
+            7. Include timestamps in ISO format for belief history entries
+            8. Consider historical context when matching actions
+            9. Only change the current action when explicitly requested or necessary
+            10. Use new information to fill missing slots in the current action
+            """
+            prompt = {
+                "model": self.AI_1_MODEL,
+                "messages": [{ "role": "user", "content": prompt_text}],
+                "temperature":0
+            }
+            response = self.llm(prompt)
+            
+            if not response.content:
+                raise Exception('LLM response is empty')
+                
+            
+            #print(f'PROCESS MESSAGE PROMPT >> {prompt}')
+            result = self.clean_json_response(response.content)
+            sanitized_result = self.sanitize(result)
+            
+            # Update workspace with the results
+            if 'facts' in sanitized_result:
+                self.mutate_workspace({'belief': sanitized_result['facts']})
+            
+            if 'desire' in sanitized_result:
+                self.mutate_workspace({'desire': sanitized_result['desire']})
+            
+            if 'action_match' in sanitized_result and 'action' in sanitized_result['action_match']:
+                # Check if action.key is used instead of action.name  
+                self.mutate_workspace({'action': sanitized_result['action_match']['action']})
+            
+            # Update belief history with new entities
+            if 'belief_history_updates' in sanitized_result:
+                for update in sanitized_result['belief_history_updates']:
+                    self.mutate_workspace({'belief_history': {update['key']: update['val']}})
+            
+            #self.print_chat(sanitized_result, 'json')
+             
+            return {
+                'success': True,
+                'action': action, 
+                'input': message,
+                'output': sanitized_result
+            }
+            
+        except Exception as e:
+            print(f"Error Pre-Processing message: {e}")
+            # Only print raw response if it exists
+            
+            return {
+                'success': False,
+                'action': action,
+                'input': message,
+                'output': str(e)
+            }
+    
+    
+    
+    def interpret(self, no_tools=False, list_actions=[], list_tools=[]):
+        
+        action = 'interpret'
+        self.print_chat('Interpreting message...', 'text')
+        print('interpret')
+        
+        try:
+            # We get the message history directly from the source of truth to avoid missing tool id calls. 
+            message_list = self.get_message_history()
+            
+            #print(f'Raw Message History: {message_list}')
+            
+            # Go through the message_list and replace the value of the 'content' attribute with an empty object when the role is 'tool'
+            # Unless the last message it a tool response which the interpret function needs to process. 
+            # The reason is that we don't want to overwhelm the LLM with the contents of the history of tool outputs. 
+            
+            # Clear content from all tool messages except the last one
+            message_list = self.clear_tool_message_content(message_list['output'])
+            
+            #print(f'Cleared Message History: {message_list}')
+            
+            
+            # Get current time and date
+            current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            
+            # Workspace
+            workspace = self.get_active_workspace()
+            
+            # Action  
+            current_action = workspace.get('state', {}).get('action', '') if workspace else ''
+            print(f'Current Action:{current_action}')
+            
+            action_instructions = '' 
+            action_tools = ''
+            
+            for a in list_actions:
+                if a['key'] == current_action:
+                    action_instructions = a['prompt_3_reasoning_and_planning']
+                    if 'tools_reference' in a and a['tools_reference'] and a['tools_reference'] not in ['_','-','.']: 
+                        action_tools = a['tools_reference']
+                    break
+
+            # Belief  
+            current_beliefs = workspace.get('state', {}).get('beliefs', {}) if workspace else {}
+            belief_str = 'Current beliefs: ' + self.string_from_object(current_beliefs)
+            print(f'Current Belief:{belief_str}')
+                
+            #belief_history = workspace.get('state', {}).get('history', []) if workspace else []             
+            #cleaned_belief_history = self.sanitize(belief_history) if belief_history else []
+            #pruned_belief_history = self.prune_history(cleaned_belief_history) if cleaned_belief_history else []
+
+            # Desire
+            current_desire = workspace.get('state', {}).get('desire', '') if workspace else ''
+            print(f'Current Desire:{current_desire}')
+            
+            # Meta Instructions
+            meta_instructions = {}
+            # Initial instructions
+            meta_instructions['opening_message'] = "You are an AI assistant. You can reason over conversation history, beliefs, and goals."
+            # Provide the current time
+            meta_instructions['current_time'] = f'The current time is: {current_time}'
+            # Message to answer questions from the belief system
+            meta_instructions['answer_from_belief'] = "You can reason over the message history and known facts (beliefs) to answer user questions. If the user asks a question, check the history or beliefs before asking again."
+                  
+            # Message array
+            messages = [
+                { "role": "system", "content": meta_instructions['opening_message']}, # META INSTRUCTIONS
+                { "role": "system", "content": meta_instructions['current_time']}, # CURRENT TIME         
+                { "role": "system", "content": action_instructions}, # CURRENT ACTIONS
+                { "role": "system", "content": belief_str }, # BELIEF SYSTEM
+                { "role": "system", "content": meta_instructions['answer_from_belief']}
+            ]
+            
+            # Add the incoming messages
+            for msg in message_list:      
+                messages.append(msg)       
+                
+            # Initialize approved_tools with default empty list
+            approved_tools = []
+                
+            # Request asking the recommended tools for this action
+            if action_tools and not no_tools:
+                messages.append({ "role": "system", "content":f'In case you need them, the following tools are recommended to execute this action: {json.dumps(action_tools)}'})  
+                
+                approved_tools = [tool.strip() for tool in action_tools.split(',')]
+                    
+            # Tools           
+            '''   
+            tool.input should look like this in the database:
+                
+                {
+                    "origin": { 
+                        "type": "string",
+                        "description": "The departure city code or name",
+                        "required":true
+                    },
+                    "destination": { 
+                        "type": "string", 
+                        "description": "The arrival city code or name",
+                        "required":true
+                    }
+                }
+            '''
+            
+            
+            if no_tools:                
+                available_tools = None      
+                   
+            else:         
+                available_tools_raw = list_tools
+                
+                print(f'List Tools:{available_tools_raw}')
+                
+                available_tools = [] 
+                for t in available_tools_raw:
+                    
+                    if t.get('key') in approved_tools:
+                        # Parse the escaped JSON string into a Python object
+                        try:
+                            tool_input = json.loads(t.get('input', '[]'))
+                        except json.JSONDecodeError:
+                            print(f"Invalid JSON in tool input for tool {t.get('key', 'unknown')}. Using empty array.")
+                            tool_input = []
+                        
+                        dict_params = {}
+                        required_params = []
+                        
+                        # Handle new format: array of objects with name, hint, required
+                        if isinstance(tool_input, list):
+                            for param in tool_input:
+                                if isinstance(param, dict) and 'name' in param and 'hint' in param:
+                                    param_name = param['name']
+                                    param_hint = param['hint']
+                                    param_required = param.get('required', False)
+                                    
+                                    dict_params[param_name] = {
+                                        'type': 'string',
+                                        'description': param_hint
+                                    }
+                                    
+                                    if param_required:
+                                        required_params.append(param_name)
+                        # Handle old format for backward compatibility
+                        elif isinstance(tool_input, dict):
+                            for key, val in tool_input.items():
+                                dict_params[key] = {'type': 'string', 'description': val}
+                                required_params.append(key)
+                                
+                        print(f'Required parameters:{required_params}')
+                            
+                        tool = {
+                            'type': 'function',
+                            'function': {
+                                'name': t.get('key', ''),
+                                'description': t.get('goal', ''),
+                                'parameters': {
+                                    'type': 'object',
+                                    'properties': dict_params,
+                                    'required': required_params
+                                }
+                            }    
+                        }
+    
+                        available_tools.append(tool)            
+                    
+            # Prompt
+            prompt = {
+                    "model": self.AI_1_MODEL,
+                    "messages": messages,
+                    "tools": available_tools,
+                    "temperature":0,
+                    "tool_choice": "auto"
+                }
+              
+            prompt = self.sanitize(prompt)
+            #print(f'RAW PROMPT >> {prompt}')
+            response = self.llm(prompt)
+            #print(f'RAW RESPONSE >> {response}')
+          
+            
+            if not response:
+                return {
+                    'success': False,
+                    'action': action,
+                    'input': '',
+                    'output': response
+                }
+                
+            
+            validation = self.validate_interpret_openai_llm_response(response)
+            if not validation['success']:
+                return {
+                    'success': False,
+                    'action': action,
+                    'input': response,
+                    'output': validation
+                }
+            
+            validated_result = validation['output']
+           
+            # Saving : A) The tool call, or B) The message to the user
+            self.save_chat(validated_result)  
+ 
+                      
+            return {
+                'success': True,
+                'action': action,
+                'input': prompt,
+                'output': validated_result
+            }
+            
+        except Exception as e:
+            print(f"Error in interpret() message: {e}")
+            return {
+                'success': False,
+                'action': action,
+                'input': '',
+                'output': str(e)
+            }
+    
+        
+        
+    ## Execution of Intentions
+    def act(self,plan,list_tools=[]):
+        action = 'act'
+        
+        list_handlers = {}
+        for t in list_tools_raw:
+            list_handlers[t.get('key', '')] = t.get('handler', '')
+            
+        self._update_context(list_handlers=list_handlers)
+    
+        """Execute the current intention and return standardized response"""
+        try:
+            
+            tool_name = plan['tool_calls'][0]['function']['name']
+            params = plan['tool_calls'][0]['function']['arguments']
+            if isinstance(params, str):
+                params = json.loads(params)
+            tid = plan['tool_calls'][0]['id']
+            
+            print(f'tid:{tid}')
+
+            if not tool_name:
+                raise ValueError("❌ No tool name provided in tool selection")
+                
+            print(f"Selected tool: {tool_name}")
+            self.print_chat(f'Calling tool {tool_name} with parameters {params} ', 'text')
+            print(f"Parameters: {params}")
+
+            # Check if handler exists
+            if tool_name not in list_handlers:
+                error_msg = f"❌ No handler found for tool '{tool_name}'"
+                print(error_msg)
+                self.print_chat(error_msg, 'text')
+                raise ValueError(error_msg)
+            
+            # Check if handler is an empty string
+            if list_handlers[tool_name] == '':
+                error_msg = f"❌ Handler is empty"
+                print(error_msg)
+                self.print_chat(error_msg, 'text')
+                raise ValueError(error_msg)
+                
+            # Check if handler has the right format
+            handler_route = list_handlers[tool_name]
+            parts = handler_route.split('/')
+            if len(parts) != 2:
+                error_msg = f"❌ {tool_name} is not a valid tool."
+                print(error_msg)
+                self.print_chat(error_msg, 'text')
+                raise ValueError(error_msg)
+            
+
+            portfolio = self.portfolio
+            org = self.org
+            
+            params['_portfolio'] = self.portfolio
+            params['_org'] = self.org
+            params['_entity_type'] = self.entity_type
+            params['_entity_id'] = self.entity_id
+            params['_thread'] = self.thread
+            
+            print(f'Calling {handler_route} ') 
+            
+            response = self.SHC.handler_call(portfolio,org,parts[0],parts[1],params)
+            
+            print(f'Handler response:{response}')
+
+            if not response['success']:
+                return {'success':False,'action':action,'input':params,'output':response}
+
+            # The response of every handler always comes nested 
+            clean_output = response['output']
+            clean_output_str = json.dumps(clean_output, cls=DecimalEncoder)
+            
+            interface = None
+            
+            # The handler determines the interface
+            if isinstance(response['output'], dict) and 'interface' in response['output']:
+                interface = response['output']['interface']
+            elif isinstance(response['output'], list) and len(response['output']) > 0 and 'interface' in response['output'][0]:
+                interface = response['output'][0]['interface']
+
+               
+            
+            tool_out = {
+                    "role": "tool",
+                    "tool_call_id": f'{tid}',
+                    "content": clean_output_str,
+                    "tool_calls":False
+                }
+            
+
+            # Save the message after it's created
+            if interface:
+                self.save_chat(tool_out,interface=interface)
+                
+            else:
+                self.save_chat(tool_out)
+                
+                
+            
+            print(f'flag3')
+            
+            # Results coming from the handler
+            self._update_context(execute_intention_results=tool_out)
+            
+            print(f'flag4')
+            
+            # Save handler result to workspace
+            
+            # Turn an object like this one: {"people":"4","time":"16:00","date":"2025-06-04"}
+            # Into a string like this one: "4/16:00/2026-06-04"
+            # If the value of each key is not a string just output an empty space in its place
+            #params_str = self.format_object_to_slash_string(params)
+            index = f'irn:tool_rs:{handler_route}' 
+            tool_input = plan['tool_calls'][0]['function']['arguments'] 
+            #input is a serialize json, you need to turn it into a python object before inserting it into the value dictionary
+            tool_input_obj = json.loads(tool_input) if isinstance(tool_input, str) else tool_input
+            value = {'input': tool_input_obj, 'output': clean_output}
+            self.mutate_workspace({'cache': {index:value}})
+            
+            print(f'flag5')
+            
+            #print(f'message output: {tool_out}')
+            print("✅ Tool execution complete.")
+            
+            return {"success": True, "action": action, "input": plan, "output": tool_out}
+                    
+        except Exception as e:
+
+            error_msg = f"❌ Execute Intention failed. @act trying to run tool:'{tool_name}': {str(e)}"
+            self.print_chat(error_msg,'text') 
+            print(error_msg)
+            self._update_context(execute_intention_error=error_msg)
+            
+            error_result = {
+                "success": False, "action": action,"input": plan,"output": str(e)    
+            }
+            
+            self._update_context(execute_intention_results=error_result)
+            return error_result
+        
+        
+     
