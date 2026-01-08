@@ -358,7 +358,7 @@ class AgentUtilities:
         Returns:
             bool: Success status
         """
-        print(f'Running: Print Chat: {output}')
+        print(f'print_chat: {output}')
         
         if not connection_id:
             #Try the context
