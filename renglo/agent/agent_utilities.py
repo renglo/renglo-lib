@@ -246,7 +246,7 @@ class AgentUtilities:
                 interface = 'binary_consent'
             doc = {'_out': self.sanitize(output), '_type': 'consent','_interface':interface,'_next': next}
             self.update_chat_message_document(doc)
-            self.print_chat(doc,message_type)
+            self.print_chat(doc,message_type, as_is=True)
             
             
         elif output.get('tool_calls') and output.get('role') == 'assistant':
@@ -265,7 +265,7 @@ class AgentUtilities:
                 rs_template = {
                     "role": "tool",
                     "tool_call_id": tool_call['id'],
-                    "content": []    
+                    "content": []
                 }
                 print(f'Saving placeholder message for:{tool_call['id']}')
                 doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': next}
@@ -274,7 +274,7 @@ class AgentUtilities:
         elif output.get('content') and output.get('role') == 'assistant':
             print('Saving the assistant message to the user')
             # This is a human readable message from the agent to the user
-            message_type = 'transient'
+            message_type = 'text'
             doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
             # Memorize to permanent storage
             response_1 = self.update_chat_message_document(doc)
