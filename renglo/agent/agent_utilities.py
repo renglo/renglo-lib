@@ -246,7 +246,7 @@ class AgentUtilities:
                 interface = 'binary_consent'
             doc = {'_out': self.sanitize(output), '_type': 'consent','_interface':interface,'_next': next}
             self.update_chat_message_document(doc)
-            self.print_chat(doc,message_type,connection_id=connection_id)
+            self.print_chat(doc,message_type)
             
             
         elif output.get('tool_calls') and output.get('role') == 'assistant':
@@ -274,13 +274,13 @@ class AgentUtilities:
         elif output.get('content') and output.get('role') == 'assistant':
             print('Saving the assistant message to the user')
             # This is a human readable message from the agent to the user
-            message_type = 'text'
+            message_type = 'transient'
             doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
             # Memorize to permanent storage
             response_1 = self.update_chat_message_document(doc)
             #print(f'Chat update response:',response_1)
             # Print to live chat
-            self.print_chat(output, message_type, as_is=True, connection_id=connection_id)
+            self.print_chat(doc, message_type, as_is=True)
             # Print to API
             self.print_api(output['content'], message_type)
             
@@ -294,7 +294,7 @@ class AgentUtilities:
             self.update_chat_message_document(doc, output['tool_call_id'])
               
             if interface:  
-                self.print_chat(doc, message_type, as_is=True, connection_id=connection_id)
+                self.print_chat(doc, message_type, as_is=True)
 
 
     def print_api(self, message, type='text', public_user=None):
@@ -328,7 +328,7 @@ class AgentUtilities:
                 if len(parts) != 2:
                     error_msg = f"{callback_msg_handler} is not a valid tool."
                     print(error_msg)
-                    self.print_chat(error_msg, 'text')
+                    self.print_chat(error_msg, 'error')
                     raise ValueError(error_msg)
                 
                 print(f'Calling {callback_msg_handler}') 
@@ -1291,7 +1291,7 @@ class AgentUtilities:
         5. Action matching
         """
         action = 'pre_process_message'
-        self.print_chat('Pre-processing message...', 'text')
+        self.print_chat('Pre-processing message...', 'transient')
         
         try:        
             # Get current time and date
@@ -1494,7 +1494,7 @@ class AgentUtilities:
     def interpret(self, no_tools=False, list_actions=[], list_tools=[]):
         
         action = 'interpret'
-        self.print_chat('Interpreting message...', 'text')
+        self.print_chat('Interpreting message...', 'transient')
         print('interpret')
         
         try:
@@ -1738,21 +1738,21 @@ class AgentUtilities:
                 raise ValueError("❌ No tool name provided in tool selection")
                 
             print(f"Selected tool: {tool_name}")
-            self.print_chat(f'Calling tool {tool_name} with parameters {params} ', 'text')
+            self.print_chat(f'Calling tool {tool_name} with parameters {params} ', 'transient')
             print(f"Parameters: {params}")
 
             # Check if handler exists
             if tool_name not in list_handlers:
                 error_msg = f"❌ No handler found for tool '{tool_name}'"
                 print(error_msg)
-                self.print_chat(error_msg, 'text')
+                self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
             
             # Check if handler is an empty string
             if list_handlers[tool_name] == '':
                 error_msg = f"❌ Handler is empty"
                 print(error_msg)
-                self.print_chat(error_msg, 'text')
+                self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
                 
             # Check if handler has the right format
@@ -1761,7 +1761,7 @@ class AgentUtilities:
             if len(parts) != 2:
                 error_msg = f"❌ {tool_name} is not a valid tool."
                 print(error_msg)
-                self.print_chat(error_msg, 'text')
+                self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
             
 
@@ -1844,7 +1844,7 @@ class AgentUtilities:
         except Exception as e:
 
             error_msg = f"❌ Execute Intention failed. @act trying to run tool:'{tool_name}': {str(e)}"
-            self.print_chat(error_msg,'text') 
+            self.print_chat(error_msg,'error') 
             print(error_msg)
             self._update_context(execute_intention_error=error_msg)
             
