@@ -2,12 +2,12 @@ from renglo.data.data_controller import DataController
 from renglo.docs.docs_controller import DocsController
 from renglo.chat.chat_controller import ChatController
 from renglo.schd.schd_controller import SchdController
+from renglo.agent.websocket_client import WebSocketClient
 
 from openai import OpenAI
 
 import random
 import json
-import boto3
 from datetime import datetime
 from typing import List, Dict, Any, Callable
 import re
@@ -73,12 +73,8 @@ class AgentUtilities:
         self.SHC = SchdController(config=self.config)
         
         # Initialize WebSocket client
-        try:
-            websocket_url = self.config.get('WEBSOCKET_CONNECTIONS', '')
-            self.apigw_client = boto3.client("apigatewaymanagementapi", endpoint_url=websocket_url)
-        except Exception as e:
-            print(f"Error initializing WebSocket client: {e}")
-            self.apigw_client = None
+        websocket_url = self.config.get('WEBSOCKET_CONNECTIONS', '')
+        self.ws_client = WebSocketClient(websocket_url)
 
     def get_message_history(self,filter={}):
         """
@@ -294,7 +290,21 @@ class AgentUtilities:
             self.update_chat_message_document(doc, output['tool_call_id'])
               
             if interface:  
-                self.print_chat(doc, message_type, as_is=True)
+                # Parse content if it's a JSON string for websocket (frontend expects object, not string)
+                # Database stores as string, but websocket should send as parsed object
+                doc_for_websocket = doc.copy()
+                if '_out' in doc_for_websocket and 'content' in doc_for_websocket['_out']:
+                    content = doc_for_websocket['_out']['content']
+                    if isinstance(content, str):
+                        try:
+                            # Try to parse the JSON string
+                            parsed_content = json.loads(content)
+                            doc_for_websocket['_out'] = doc_for_websocket['_out'].copy()
+                            doc_for_websocket['_out']['content'] = parsed_content
+                        except (json.JSONDecodeError, TypeError):
+                            # If parsing fails, keep original string
+                            pass
+                self.print_chat(doc_for_websocket, message_type, as_is=True)
 
 
     def print_api(self, message, type='text', public_user=None):
@@ -376,28 +386,20 @@ class AgentUtilities:
             # Everything else
             doc = {'_out': {'role': 'assistant', 'content': self.sanitize(output)}, '_type': type, '_next:':next} 
             
-        if not connection_id or not self.apigw_client:
+        if not connection_id:
             #print(f'WebSocket not configured or this is a RESTful post to the chat.')
             return False
-             
-        try:
-            print(f'Sending Real Time Message to: {connection_id}')
-            
-            # WebSocket
-            self.apigw_client.post_to_connection(
-                ConnectionId=connection_id,
-                Data=json.dumps(doc, cls=DecimalEncoder)
-            )
-               
-            print(f'Message has been updated')
-            return True
         
-        except self.apigw_client.exceptions.GoneException:
-            print(f'Connection is no longer available')
+        if not self.ws_client.is_configured():
             return False
-        except Exception as e:
-            print(f'Error sending message: {str(e)}')
-            return False
+        
+        print(f'Sending Websocket Message to client. ConnectionId:{connection_id}')
+        success = self.ws_client.send_message(connection_id, doc)
+        
+        if success:
+            print(f'Message has been updated')
+        
+        return success
         
     # Helper function to safely get a step in the state machine by step_id
     def get_or_create_step(self, workspace, plan_id, plan_step):
