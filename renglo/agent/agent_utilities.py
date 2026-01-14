@@ -393,7 +393,7 @@ class AgentUtilities:
         if not self.ws_client.is_configured():
             return False
         
-        print(f'Sending Websocket Message to client. ConnectionId:{connection_id}')
+        #print(f'Sending Websocket Message to client. ConnectionId:{connection_id}')
         success = self.ws_client.send_message(connection_id, doc)
         
         if success:

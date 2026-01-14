@@ -83,7 +83,7 @@ class WebSocketClient:
         try:
             if self.is_local:
                 # Local dev WebSocket service - use HTTP POST
-                print(f"Posting locally to: {self.local_ws_url}")
+                #print(f"Posting locally to: {self.local_ws_url}")
                 response = requests.post(
                     f"{self.local_ws_url}",
                     json={
