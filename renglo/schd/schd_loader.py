@@ -185,15 +185,25 @@ class SchdLoader:
         
 
     def load_and_run(self, module_name, *args, **kwargs):
-        """Loads a module, runs its class method, then unloads it."""
-        action = "load_and_run"
-        print(f'running: {action}')
+        """
+        Loads a module, runs its class method, then unloads it.
+        
+        Supports two formats:
+        - Two parts: module_path.module_name (e.g., "arbitium.helper_rds")
+        - Three parts: module_path.module_name.subhandler (e.g., "arbitium.helper_rds.deletion-protection")
+        
+        When a third part (subhandler) is provided, it is automatically injected into the payload
+        as the 'subhandler' parameter. This enables multi-function handlers where the agent can
+        route to specific functionality using paths like:
+        - arbitium/helper_rds/deletion-protection
+        - arbitium/helper_rds/create-snapshot
+        - arbitium/helper_rds/ls-snapshots
+        - arbitium/helper_rds/restore-snapshot
+        """
+        func_name = "load_and_run"
+        print(f'running: {func_name}')
         
         try:
-     
-            class_name = self.convert_module_name_to_class(module_name)
-            print(f'Attempting to load class:{class_name}')
-            
             # Handle both file paths and dot-notation module names
             if os.sep in module_name or '/' in module_name:
                 # It's a file path - normalize and split using os.sep
@@ -203,20 +213,43 @@ class SchdLoader:
                 # It's already in dot notation - split by dots
                 module_parts = module_name.split('.')
             
-            payload = kwargs.get('payload')  # Extract payload from kwargs
-            check = kwargs.get('check',False)
-            
             # Ensure we have at least 2 parts for module_path and module_name
             if len(module_parts) < 2:
                 error = f"Module name '{module_name}' must have at least 2 parts (module_path.module_name)"
-                return {'success':False,'action':action,'error':error,'output':error,'status':500}
+                return {'success':False,'action':func_name,'error':error,'output':error,'status':500}
+            
+            # Extract subhandler from third position if present (backwards compatible)
+            subhandler = None
+            if len(module_parts) >= 3:
+                subhandler = module_parts[2]
+                print(f'Subhandler detected: {subhandler}')
+                # Use only the first two parts for module loading
+                actual_module_name = '.'.join(module_parts[:2])
+            else:
+                actual_module_name = module_name
+            
+            # Derive class name from the module name (second part), not the subhandler
+            class_name = self.convert_module_name_to_class(module_parts[1])
+            print(f'Attempting to load class:{class_name}')
+            
+            payload = kwargs.get('payload')  # Extract payload from kwargs
+            check = kwargs.get('check',False)
+            
+            # Inject subhandler into payload if a third part was provided
+            if subhandler is not None:
+                if payload is None:
+                    payload = {}
+                # Only set subhandler if not already present in payload (allow override)
+                if 'subhandler' not in payload:
+                    payload['subhandler'] = subhandler
+                    print(f'Injected subhandler into payload: {subhandler}')
             
             instance = self.load_code_class(module_parts[0], module_parts[1], class_name, *args, **kwargs)
             runtime_loaded_class = True
     
             if not instance:
-                error = f"Class '{class_name}' in '{module_name}' could not be loaded."
-                return {'success':False,'action':action,'error':error,'output':error,'status':500}
+                error = f"Class '{class_name}' in '{actual_module_name}' could not be loaded."
+                return {'success':False,'action':func_name,'error':error,'output':error,'status':500}
             
             print(f'Class Loaded:{class_name}')
             
@@ -224,37 +257,37 @@ class SchdLoader:
                 if hasattr(instance, "check"):       
                     result = instance.check(payload)  # Pass payload to run
                 else:
-                    error = f"Class '{class_name}' in '{module_name}' has no 'check' method."
+                    error = f"Class '{class_name}' in '{actual_module_name}' has no 'check' method."
                     print(error)
-                    return {'success':False,'action':action,'error':error,'status':500}
+                    return {'success':False,'action':func_name,'error':error,'status':500}
     
             else:
                 if hasattr(instance, "run"):       
                     result = instance.run(payload)  # Pass payload to run
                 else:
-                    error = f"Class '{class_name}' in '{module_name}' has no 'run' method."
+                    error = f"Class '{class_name}' in '{actual_module_name}' has no 'run' method."
                     print(error)
-                    return {'success':False,'action':action,'error':error,'status':500}
+                    return {'success':False,'action':func_name,'error':error,'status':500}
 
 
             if runtime_loaded_class:
                 # Unload module to free memory
                 del instance
-                if module_name in sys.modules:
-                    del sys.modules[module_name]
+                if actual_module_name in sys.modules:
+                    del sys.modules[actual_module_name]
                 gc.collect()
                 
                 
             
             if 'success' in result and not result['success']:
                 
-                return {'success':False,'action':action,'output':result,'status':400} 
+                return {'success':False,'action':func_name,'output':result,'status':400} 
             
-            return {'success':True,'action':action,'output':result,'status':200}
+            return {'success':True,'action':func_name,'output':result,'status':200}
         
         except Exception as e:
             print(f'Error @load_and_run: {str(e)}')
-            return {'success':False,'action':action,'input':class_name,'output':f'Error @load_and_run: {str(e)}'}
+            return {'success':False,'action':func_name,'input':module_name,'output':f'Error @load_and_run: {str(e)}'}
 
 
 
