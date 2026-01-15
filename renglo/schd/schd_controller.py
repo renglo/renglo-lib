@@ -278,7 +278,8 @@ class SchdController:
         except Exception as e:
             print(f'Error @handler_call: {str(e)}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {str(e)}'}
-
+        
+        
 
     def handler_check(self,portfolio,org,tool,handler,payload):
         action = 'handler_check'

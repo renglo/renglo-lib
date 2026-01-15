@@ -563,6 +563,9 @@ class AgentUtilities:
                         for k, v in output.items():
                             # Sanitize nested values to ensure no Decimals slip through
                             workspace['cache'][k] = self.sanitize(v)
+                    elif isinstance(output, list):
+                        # For lists, sanitize each element and store as 'results'
+                        workspace['cache']['results'] = self.sanitize(output)
                 
                 if key == 'is_active':
                     if isinstance(output, bool):
