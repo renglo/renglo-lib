@@ -561,7 +561,7 @@ class DataController:
 
         for field in fields:
             current_app.logger.debug('>>:'+field['name']) 
-            if payload.get(field['name']): 
+            if field['name'] in payload:
                 current_app.logger.debug('Found:'+field['name']) 
                 # Attribute exists in the blueprint
                 new_raw = payload.get(field['name'])
