@@ -58,10 +58,12 @@ class AgentUtilities:
         try:    
             openai_key = self.config.get('OPENAI_API_KEY', '')
             self.AI_1 = OpenAI(api_key=openai_key)
+            self.AI_2 = OpenAI(api_key=openai_key)
             print(f"OpenAI client initialized")
         except Exception as e:
             print(f"Error initializing OpenAI client: {e}")
             self.AI_1 = None
+            self.AI_2 = None
 
         self.AI_1_MODEL = "gpt-3.5-turbo"  # Baseline model. Good for multi-step chats
         self.AI_2_MODEL = "gpt-4o-mini"    # This model is not very smart
@@ -665,7 +667,9 @@ class AgentUtilities:
             if 'response_format' in prompt:
                 params['response_format'] = prompt['response_format']
                 
-            response = self.AI_1.chat.completions.create(**params) 
+            # AI_1 is gpt-3.5-turbo which doesn't support structured outputs. AI_2 uses gpt-4o-mini which does.
+            # response = self.AI_1.chat.completions.create(**params)     
+            response = self.AI_2.chat.completions.create(**params) 
             
             return response.choices[0].message
  
