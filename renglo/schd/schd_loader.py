@@ -1,4 +1,4 @@
-from flask import current_app
+from renglo.logger import get_logger
 import importlib
 import os
 import sys
@@ -49,7 +49,8 @@ class SchdLoader:
             # This will import: from enerclave.handlers.geocoding_handler import GeocodingHandler
             instance = load_code_class('enerclave', 'geocoding_handler', 'GeocodingHandler')
         """
-        current_app.logger.debug(f"Attempting to load: {module_path}.handlers.{module_name}.{class_name}")
+        logger = get_logger()
+        logger.debug(f"Attempting to load: {module_path}.handlers.{module_name}.{class_name}")
         
         try:
             # Construct the full module path
@@ -73,7 +74,14 @@ class SchdLoader:
             # Check if it needs config (convention: handlers ending in 'onboardings' need config)
             if 'onboarding' in module_name.lower():
                 # Pass config to handlers that need it
-                config = current_app.renglo_config if hasattr(current_app, 'renglo_config') else {}
+                # Try to get config from Flask if available, otherwise use empty dict
+                config = {}
+                try:
+                    from flask import has_request_context, current_app
+                    if has_request_context() and hasattr(current_app, 'renglo_config'):
+                        config = current_app.renglo_config
+                except (ImportError, RuntimeError):
+                    pass
                 print(f'Creating instance with config')
                 instance = class_()
             else:
@@ -82,31 +90,31 @@ class SchdLoader:
                 instance = class_()
             
             print(f'Instance created: {instance.__class__.__name__}')
-            current_app.logger.debug(f"Successfully loaded {class_name} from {full_module_path}")
+            logger.debug(f"Successfully loaded {class_name} from {full_module_path}")
             
             return instance
             
         except ModuleNotFoundError as e:
             # Module not found - package probably not installed
-            current_app.logger.error(f"Module '{full_module_path}' not found: {e}")
-            current_app.logger.error(f"Make sure the package is installed via pip (e.g., pip install -e {module_path}-module/)")
+            logger.error(f"Module '{full_module_path}' not found: {e}")
+            logger.error(f"Make sure the package is installed via pip (e.g., pip install -e {module_path}-module/)")
             return None
             
         except AttributeError as e:
             # Class not found in module
-            current_app.logger.error(f"Class '{class_name}' not found in module '{full_module_path}': {e}")
+            logger.error(f"Class '{class_name}' not found in module '{full_module_path}': {e}")
             return None
             
         except TypeError as e:
             # Error instantiating the class
-            current_app.logger.error(f"TypeError when instantiating '{class_name}': {e}")
+            logger.error(f"TypeError when instantiating '{class_name}': {e}")
             return None
             
         except Exception as e:
             # Any other error
-            current_app.logger.error(f"Unexpected error loading '{class_name}' from '{full_module_path}': {e}")
+            logger.error(f"Unexpected error loading '{class_name}' from '{full_module_path}': {e}")
             import traceback
-            current_app.logger.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None
         
         

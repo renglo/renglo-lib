@@ -14,15 +14,19 @@ setup(
     install_requires=[
         "boto3==1.35.38",
         "botocore==1.35.38",
-        "Flask==3.1.0",
-        "Flask-Cognito==1.21",
-        "Flask-Caching==2.1.0",
         "PyJWT==2.10.1",
         "Requests==2.32.3",
         "validate_email==1.3",
         "cryptography==38.0.4",
         "openai==1.65.2",
     ],
+    extras_require={
+        "flask": [
+            "Flask==3.1.0",
+            "Flask-Cognito==1.21",
+            "Flask-Caching==2.1.0",
+        ],
+    },
     include_package_data=True,
     package_data={
         'renglo': [

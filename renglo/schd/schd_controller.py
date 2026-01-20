@@ -1,4 +1,4 @@
-from flask import current_app
+from renglo.logger import get_logger
 
 from renglo.data.data_controller import DataController
 from renglo.docs.docs_controller import DocsController
@@ -18,6 +18,7 @@ class SchdController:
 
     def __init__(self, config=None):
         self.config = config or {}
+        self.logger = get_logger()
         self.DAC = DataController(config=self.config)
         self.DCC = DocsController(config=self.config)
         self.BPC = BlueprintController(config=self.config)
@@ -80,7 +81,7 @@ class SchdController:
         Function that is called by the cronjob 
         '''
         
-        current_app.logger.debug('Action: create_job_run:')
+        self.logger.debug('Action: create_job_run:')
         
         result = []
         action = 'create_job_run'
@@ -96,7 +97,7 @@ class SchdController:
                 return {'success': False,'action':'get_job_document' ,'message': 'Error getting job','input':payload,'output':response_1}, 400 
         
         result.append({'success':True,'action':action,'input':payload,'output':response_1})      
-        current_app.logger.debug('Job document check:',response_1)
+        self.logger.debug('Job document check:',response_1)
         
         #2. Create the schd_runs document 
         action = 'create_run'  
@@ -117,8 +118,8 @@ class SchdController:
         
         #{'success': True, 'message': 'Item saved', 'path': '160c4e266ea3/5e7f29c29084/schd_runs/f15c58e4-aa2d-4780-8616-bd1834ca777c'}
         
-        current_app.logger.debug('Create the schd_runs document:')
-        current_app.logger.debug(response_2)
+        self.logger.debug('Create the schd_runs document:')
+        self.logger.debug(response_2)
         result.append({'success':True,'action':action,'input':payload,'output':response_2})
         
         
@@ -191,7 +192,7 @@ class SchdController:
             
         response_4, status = self.DAC.put_a_b_c(portfolio,org,'schd_runs',run_id,changes)
         
-        current_app.logger.debug(f'Record handler output in run document:{response_4}')
+        self.logger.debug(f'Record handler output in run document:{response_4}')
         result.append({'action':action,'input':changes,'output':response_4})
         
         #self.DAC.refresh_s3_cache(portfolio, org, 'schd_runs', None)
