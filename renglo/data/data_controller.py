@@ -1123,7 +1123,7 @@ class DataController:
             result['message'] = 'Item could not be saved'
             result['error'] = item['error']
             status = 400
-            return result
+            return result, status
     
         current_app.logger.debug('Updating Item:'+str(item))
         response = self.DAM.put_a_b_c(portfolio,org,ring,idx,item)
