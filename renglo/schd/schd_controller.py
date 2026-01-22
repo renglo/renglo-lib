@@ -1,4 +1,4 @@
-from flask import current_app
+from renglo.logger import get_logger
 
 from renglo.data.data_controller import DataController
 from renglo.docs.docs_controller import DocsController
@@ -6,15 +6,19 @@ from renglo.blueprint.blueprint_controller import BlueprintController
 
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
+from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active
+from renglo.schd.external_handler_runner import run_external_handler
 
 from datetime import datetime
 
 import json
+import os
 
 class SchdController:
 
     def __init__(self, config=None):
         self.config = config or {}
+        self.logger = get_logger()
         self.DAC = DataController(config=self.config)
         self.DCC = DocsController(config=self.config)
         self.BPC = BlueprintController(config=self.config)
@@ -77,7 +81,7 @@ class SchdController:
         Function that is called by the cronjob 
         '''
         
-        current_app.logger.debug('Action: create_job_run:')
+        self.logger.debug('Action: create_job_run:')
         
         result = []
         action = 'create_job_run'
@@ -93,7 +97,7 @@ class SchdController:
                 return {'success': False,'action':'get_job_document' ,'message': 'Error getting job','input':payload,'output':response_1}, 400 
         
         result.append({'success':True,'action':action,'input':payload,'output':response_1})      
-        current_app.logger.debug('Job document check:',response_1)
+        self.logger.debug('Job document check:',response_1)
         
         #2. Create the schd_runs document 
         action = 'create_run'  
@@ -114,8 +118,8 @@ class SchdController:
         
         #{'success': True, 'message': 'Item saved', 'path': '160c4e266ea3/5e7f29c29084/schd_runs/f15c58e4-aa2d-4780-8616-bd1834ca777c'}
         
-        current_app.logger.debug('Create the schd_runs document:')
-        current_app.logger.debug(response_2)
+        self.logger.debug('Create the schd_runs document:')
+        self.logger.debug(response_2)
         result.append({'success':True,'action':action,'input':payload,'output':response_2})
         
         
@@ -188,7 +192,7 @@ class SchdController:
             
         response_4, status = self.DAC.put_a_b_c(portfolio,org,'schd_runs',run_id,changes)
         
-        current_app.logger.debug(f'Record handler output in run document:{response_4}')
+        self.logger.debug(f'Record handler output in run document:{response_4}')
         result.append({'action':action,'input':changes,'output':response_4})
         
         #self.DAC.refresh_s3_cache(portfolio, org, 'schd_runs', None)
@@ -249,20 +253,123 @@ class SchdController:
     
     
     
-    def handler_call(self,portfolio,org,tool,handler,payload):
+    def handler_call(self,portfolio,org,extension,handler,payload):
         action = 'handler_call'
         
         print(f'Calling handler:{handler}, payload:{payload}')
         
         try:        
-            # We override portfolio, org and tool that might come in the payload.
+            # We override portfolio, org and extension that might come in the payload.
             payload['portfolio'] = portfolio
             payload['org'] = org
-            payload['tool'] = tool
+            payload['tool'] = extension 
                 
             response = {'success':False,'output':[]}
             
-            response = self.SHL.load_and_run(f'{tool}/{handler}', payload = payload)
+            # Switch logic: Check if extension has external handlers
+            if has_external_handlers(extension):
+                # Extension has external handlers configured
+                if is_external_handler_active(extension):
+                    # External handlers are active - use external handler runner
+                    # This automatically chooses local Docker or Lambda based on environment
+                    response = run_external_handler(
+                        extension_name=extension,
+                        handler_name=handler,
+                        payload=payload
+                    )
+                    
+                    # Convert external handler response format to match SchdLoader format
+                    # SchdLoader returns: {'success': bool, 'output': {'output': [...], 'interface': ...}}
+                    # External handlers return: {'success': bool, 'output': {...}}
+                    if not response.get('success'):
+                        # External handler failed - format to match SchdLoader error format
+                        error_output = response.get('output', {})
+                        error_msg = response.get('error', 'External handler execution failed')
+                        
+                        # Create error output in SchdLoader format
+                        formatted_output = {
+                            'output': error_output if isinstance(error_output, list) else [error_output],
+                            'error': error_msg
+                        }
+                        
+                        return {
+                            'success': False,
+                            'action': action,
+                            'handler': handler,
+                            'input': payload,
+                            'output': formatted_output.get('output', [error_msg]),
+                            'stack': response
+                        }
+                    else:
+                        # External handler succeeded - convert to SchdLoader format
+                        external_output = response.get('output', {})
+                        
+                        # Wrap in SchdLoader format: {'output': {...}, 'interface': ...}
+                        formatted_output = {
+                            'output': external_output
+                        }
+                        
+                        # Extract interface if present
+                        if isinstance(external_output, dict) and 'interface' in external_output:
+                            formatted_output['interface'] = external_output.get('interface')
+                        
+                        # Extract canonical output (the actual result)
+                        if isinstance(external_output, dict):
+                            canonical = external_output.get('output', external_output)
+                            interface = formatted_output.get('interface')
+                        else:
+                            canonical = external_output
+                            interface = None
+                        
+                        return {
+                            'success': True,
+                            'action': action,
+                            'handler': handler,
+                            'input': payload,
+                            'interface': interface,
+                            'output': canonical,
+                            'stack': {'success': True, 'output': formatted_output}
+                        }
+                else:
+                    # External handlers are deactivated - fall back to internal
+                    print(f'External handlers for {extension} are deactivated, using internal handler')
+                    response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
+            else:
+                # Extension does not have external handlers - use internal handler loader
+                response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
+            
+            # Handle internal handler response (SchdLoader format)
+            if not response['success']:
+                canonical = response['output']['output'] # This is a list. The list of steps in the handler
+                return {'success':False,'action':action,'handler':handler,'input':payload,'output':canonical,'stack':response}
+                      
+            canonical = response['output']['output'] # Output of last step of handler. 
+            if 'interface' in response['output']:
+                interface = response['output']['interface']
+            else:
+                interface = None
+            return {'success':True,'action':action,'handler':handler,'input':payload, 'interface':interface,'output':canonical,'stack':response}
+        
+        except Exception as e:
+            print(f'Error @handler_call: {str(e)}')
+            return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {str(e)}'}
+        
+        
+
+    def handler_check(self,portfolio,org,extension,handler,payload):
+        action = 'handler_check'
+        
+        print(f'Calling handler check:{handler}, payload:{payload}')
+        
+        try:        
+            # We override portfolio, org and extension that might come in the payload.
+            payload['portfolio'] = portfolio
+            payload['org'] = org
+            payload['tool'] = extension
+                
+            response = {'success':False,'output':[]}
+            
+            response = self.SHL.load_and_run(f'{extension}/{handler}', payload = payload, check=True)
             
             if not response['success']:
                 canonical = response['output']['output'] # This is a list. The list of steps in the handler
@@ -278,7 +385,6 @@ class SchdController:
         except Exception as e:
             print(f'Error @handler_call: {str(e)}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {str(e)}'}
-
 
     
 

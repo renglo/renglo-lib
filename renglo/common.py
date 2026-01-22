@@ -36,7 +36,7 @@ def load_config():
     Load configuration for handlers from env_config.py or environment variables.
     
     Handlers are independent of Flask and need their own way to access config.
-    This function is used by handlers in all extensions (noma, enerclave, scheduler)
+    This function is used by handlers in all extensions
     to load the system configuration before initializing controllers.
     
     Loading Strategy:
@@ -120,7 +120,7 @@ def load_config():
         'COGNITO_CHECK_TOKEN_EXPIRATION',
         'PREVIEW_LAYER', 'S3_BUCKET_NAME',
         'OPENAI_API_KEY', 'WEBSOCKET_CONNECTIONS',
-        'ALLOW_DEV_ORIGINS'
+        'ALLOW_DEV_ORIGINS', 'EXTERNAL_HANDLERS'
     ]
     
     env_loaded_count = 0

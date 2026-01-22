@@ -1,9 +1,10 @@
 #auth_controller.py
-from flask import Flask, request, redirect, session, url_for,Blueprint, jsonify, current_app
+from flask import Flask, request, redirect, session, url_for,Blueprint, jsonify
 
 import boto3
 import copy
 import json
+import logging
 from datetime import datetime
 from ..common import *
 import uuid
@@ -20,26 +21,37 @@ class AuthController:
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
         self.AUM = AuthModel(config=self.config)
+        # Set up logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+        # Configure logger if not already configured (prevents duplicate handlers)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.setLevel(logging.DEBUG)
         
         
     def refresh_tree(self):
     
         # Generate tree
-        current_app.logger.error(f"Refreshing tree")
+        self.logger.error(f"Refreshing tree")
         data = {}
         data['user_id'] = self.get_current_user()
         response = self.get_tree_full(**data)
 
         # Initialize S3 client and define bucket name and file path
         s3_client = boto3.client('s3')  # Ensure boto3 is imported
-        bucket_name = current_app.config['S3_BUCKET_NAME']  
+        bucket_name = self.config.get('S3_BUCKET_NAME')  
         file_path = f'auth/tree/{data["user_id"]}'
 
         # Store the new version in S3
         try:
             s3_client.put_object(Bucket=bucket_name, Key=file_path, Body=json.dumps(response['document']))
         except Exception as e:
-            current_app.logger.error(f"Failed to upload to S3: {str(e)}")
+            self.logger.error(f"Failed to upload to S3: {str(e)}")
             return jsonify({"success": False, "message": "Failed to upload to S3", "status": 500}), 500
         
         return response
@@ -84,7 +96,7 @@ class AuthController:
 
         #2. Check if the recipient email already exists in the user pool
         response_1 = self.get_user_id(email)
-        current_app.logger.debug('User exists in pool?:'+str(response_1))
+        self.logger.debug('User exists in pool?:'+str(response_1))
         
         if response_1['success']:
 
@@ -96,18 +108,18 @@ class AuthController:
                 )
             
             if check:       
-                current_app.logger.debug('User already belongs to the portfolio:'+str(check))
+                self.logger.debug('User already belongs to the portfolio:'+str(check))
                 # If yes, the user will be automatically added to the team without sending an invite
                 response = self.add_user_to_team_funnel(user_id=user_id,team_id=team_id)
                 if response['success']:
-                    current_app.logger.debug('User added to the team:'+str(response))
+                    self.logger.debug('User added to the team:'+str(response))
                     return{
                         "success":True, 
                         "message": "User has been added to the team.", 
                         "status" : 200
                         }
                 else:
-                    current_app.logger.debug('User could not be added to the team:'+str(response))
+                    self.logger.debug('User could not be added to the team:'+str(response))
                     return{
                         "success":False, 
                         "message": "User could not be added to the team.", 
@@ -117,7 +129,7 @@ class AuthController:
                 
             else:
                 # If not, the user will still get added to the team
-                current_app.logger.debug('Email found in the user pool but it does not belong to the portfolio. Adding new user to Team')
+                self.logger.debug('Email found in the user pool but it does not belong to the portfolio. Adding new user to Team')
                 response = self.add_user_to_team_funnel(user_id=user_id,team_id=team_id)
                 if response['success']:
                     return{
@@ -134,7 +146,7 @@ class AuthController:
         
         else:
             # Email not found in the user pool
-            current_app.logger.debug('Email not found in the user pool')
+            self.logger.debug('Email not found in the user pool')
             pass
 
 
@@ -146,7 +158,7 @@ class AuthController:
             sender_id=sender_id
             )
         
-        current_app.logger.debug('Invite User Funnel > response: '+ str(response))
+        self.logger.debug('Invite User Funnel > response: '+ str(response))
 
         # Warning: Never send out the funnel response as it contains the solution to the challenge.
         # (The challenge is to demonstrate that the invitee has access to the inbox.)
@@ -169,7 +181,7 @@ class AuthController:
     def get_user_id(self,email):
         # DO NOT EXPOSE THIS FUNCTION TO API
         response = self.AUM.check_user_by_email(email)
-        current_app.logger.debug('Calling Identity Pool:'+str(response)) 
+        self.logger.debug('Calling Identity Pool:'+str(response)) 
         
         if response['success']:
             user_id = create_md5_hash(response['document']['cognito_user_id'],9)
@@ -262,12 +274,12 @@ class AuthController:
         
 
 
-        current_app.logger.debug('GENERATING TREE')
+        self.logger.debug('GENERATING TREE')
 
         # 1. Get all the user:team rels. 
         index = 'irn:rel:user:team:' + kwargs['user_id'] + ':*'
         rels_user_teams = self.AUM.list_rel(index)
-        #current_app.logger.debug('User Teams:'+str(rels_user_teams))
+        #self.logger.debug('User Teams:'+str(rels_user_teams))
 
         # 2. For each rel, get its team:portfolio rel. Each rel will show a Portfolio_id
         # Check if rels_user_teams has the expected structure and is not empty
@@ -279,11 +291,11 @@ class AuthController:
             for team in rels_user_teams['document']['items']:
                 
                 team_id =  team['rel'] 
-                current_app.logger.debug('FLAG0>>TEAM:'+team_id)     
+                self.logger.debug('FLAG0>>TEAM:'+team_id)     
                 
                 index = 'irn:rel:team:portfolio:' + team['rel'] + ':*'
                 rels_team_portfolio = self.AUM.list_rel(index)
-                #current_app.logger.debug('User Portfolios:'+str(rels_team_portfolio))
+                #self.logger.debug('User Portfolios:'+str(rels_team_portfolio))
 
                 # Check if rels_team_portfolio has the expected structure and is not empty
                 if (rels_team_portfolio and 
@@ -294,7 +306,7 @@ class AuthController:
                     for portfolio in rels_team_portfolio['document']['items']:
 
                         portfolio_id = portfolio['rel']
-                        current_app.logger.debug('FLAG1>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id)
+                        self.logger.debug('FLAG1>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id)
 
                         if portfolio_id not in tree['portfolios']:
 
@@ -310,12 +322,12 @@ class AuthController:
                             portfolio_doc['teams'] = {}
                             portfolio_doc['orgs'] = {}
 
-                            #current_app.logger.debug('Tree: '+str(tree))
+                            #self.logger.debug('Tree: '+str(tree))
 
-                            #current_app.logger.debug('Inserting Portfolio '+portfolio_id+' in tree'+str(portfolio_doc))
+                            #self.logger.debug('Inserting Portfolio '+portfolio_id+' in tree'+str(portfolio_doc))
                             tree['portfolios'][portfolio_id] = portfolio_doc
 
-                            #current_app.logger.debug('Tree: '+str(tree))
+                            #self.logger.debug('Tree: '+str(tree))
                             
 
                         #Teams
@@ -339,7 +351,7 @@ class AuthController:
                         #team_doc['orgs_access'] = []
                         team_doc['tools'] = {}
 
-                        #current_app.logger.debug('Inserting Team '+team_id+'in portfolio '+portfolio_id+':'+str(team_doc))
+                        #self.logger.debug('Inserting Team '+team_id+'in portfolio '+portfolio_id+':'+str(team_doc))
                         tree['portfolios'][portfolio_id]['teams'][team_id] = team_doc
 
 
@@ -347,7 +359,7 @@ class AuthController:
                         #Team to Tools rel
                         index = 'irn:rel:team:tool:' + team_id + ':*'
                         rels_team_tool = self.AUM.list_rel(index)
-                        #current_app.logger.debug('Team Tool rels:'+str(rels_team_org))
+                        #self.logger.debug('Team Tool rels:'+str(rels_team_org))
 
                         tools = []
                         # Check if rels_team_tool has the expected structure and is not empty
@@ -358,7 +370,7 @@ class AuthController:
                             for tool in rels_team_tool['document']['items']:
                                 tools.append(tool['rel'])
 
-                        #current_app.logger.debug('Inserting tool into team '+team_id+' from portfolio '+portfolio_id+':'+str(tools))
+                        #self.logger.debug('Inserting tool into team '+team_id+' from portfolio '+portfolio_id+':'+str(tools))
                         tree['portfolios'][portfolio_id]['teams'][team_id]['tools_access'] = tools
 
 
@@ -373,7 +385,7 @@ class AuthController:
                         
                         
 
-                        #current_app.logger.debug('ENTITIES:'+str(entities_tools))
+                        #self.logger.debug('ENTITIES:'+str(entities_tools))
                         org_tools = {}
                         
                         # Check if entities_tools has the expected structure and is not empty
@@ -385,7 +397,7 @@ class AuthController:
                             for tool in entities_tools['document']['items']:
 
                                 tool_id = tool['_id'] 
-                                current_app.logger.debug('FLAG2>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id+'TOOL:'+tool_id) 
+                                self.logger.debug('FLAG2>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id+'TOOL:'+tool_id) 
                                
                                 # Tool list at portfolio level
                                 if 'tools' not in tree['portfolios'][portfolio_id]:
@@ -437,10 +449,10 @@ class AuthController:
                                     
                                     for toolorg in rels_team_tool_org['document']['items']:
                                         
-                                        current_app.logger.debug('FLAG3>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id+'TOOL:'+tool_id+'TORG:'+toolorg['rel']) 
+                                        self.logger.debug('FLAG3>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id+'TOOL:'+tool_id+'TORG:'+toolorg['rel']) 
                                         
                                         
-                                        #current_app.logger.debug('TOOORG:'+toolorg['rel']) 
+                                        #self.logger.debug('TOOORG:'+toolorg['rel']) 
                                         
                                         
                                         toolorgs.append(toolorg['rel'])
@@ -467,8 +479,8 @@ class AuthController:
                                 tree['portfolios'][portfolio_id]['teams'][team_id]['tools'][tool_id]['orgs'] = toolorgs
                                 
                             
-                        current_app.logger.debug('ORG_TOOLS:') 
-                        current_app.logger.debug(org_tools) 
+                        self.logger.debug('ORG_TOOLS:') 
+                        self.logger.debug(org_tools) 
                         
                           
                         #Orgs
@@ -535,16 +547,16 @@ class AuthController:
             # 1. Get all the user:team rels. 
             index = 'irn:rel:user:team:' + kwargs['user_id'] + ':*'
             rel_user_teams = self.AUM.list_rel(index)
-            current_app.logger.debug('User Teams:'+str(rel_user_teams))
+            self.logger.debug('User Teams:'+str(rel_user_teams))
 
             # 2. For each rel, get its team:portfolio rel. Each rel will show a Portfolio_id
             for team in rel_user_teams['document']['items']:
                 
-                #current_app.logger.debug('User Teams:'+str(team))
+                #self.logger.debug('User Teams:'+str(team))
                 
                 index = 'irn:rel:team:portfolio:' + team['rel'] + ':*'
                 rel_team_portfolio = self.AUM.list_rel(index)
-                #current_app.logger.debug('User Portfolios:'+str(rel_team_portfolio))
+                #self.logger.debug('User Portfolios:'+str(rel_team_portfolio))
                 portfolios.append(rel_team_portfolio)
 
             
@@ -638,15 +650,15 @@ class AuthController:
         result['message'] = response['message']
         result['document'] = response['document']  
         result['status'] = response['status']   
-        #current_app.logger.debug('Returned object:'+str(result))
+        #self.logger.debug('Returned object:'+str(result))
         return result
 
        
 
     def create_entity(self,type,**kwargs):
 
-        current_app.logger.debug('Data:')
-        current_app.logger.debug(kwargs)
+        self.logger.debug('Data:')
+        self.logger.debug(kwargs)
 
         #Creating new ID for entity
         raw_id = str(uuid.uuid4())
@@ -709,7 +721,7 @@ class AuthController:
         }
 
     
-        current_app.logger.debug('Entity to Create:'+str(data))
+        self.logger.debug('Entity to Create:'+str(data))
         response = self.AUM.create_entity(data)
 
         return response
@@ -724,8 +736,8 @@ class AuthController:
         determine if it is time to delete it permanently
         '''
 
-        current_app.logger.debug('Document to be unlinked:')
-        current_app.logger.debug(doc)
+        self.logger.debug('Document to be unlinked:')
+        self.logger.debug(doc)
  
         # Check if the second position exists and replace "entity" with "unentity"
         parts = doc['index'].split(":")
@@ -738,7 +750,7 @@ class AuthController:
         undoc['modified'] = datetime.now().isoformat()
         
         # Create unlinked entity document
-        current_app.logger.debug('Entity to Create:'+str(undoc))
+        self.logger.debug('Entity to Create:'+str(undoc))
         response_1 = self.AUM.create_entity(undoc)
 
         
@@ -752,7 +764,7 @@ class AuthController:
         # Delete the original entity documents
         # We are not just changing the index in the document as Dynamo doesn't allow
         # mutation of Primary Keys.
-        current_app.logger.debug('Entity to Delete:'+str(doc))
+        self.logger.debug('Entity to Delete:'+str(doc))
         response_2 = self.AUM.delete_entity(**doc)
 
 
@@ -776,8 +788,8 @@ class AuthController:
         
         #1. Check if the document exists
         response_1 = self.get_entity(type,**kwargs)
-        current_app.logger.debug('Check if doc exists:'+str(type)+':'+str(kwargs))
-        current_app.logger.debug(response_1)
+        self.logger.debug('Check if doc exists:'+str(type)+':'+str(kwargs))
+        self.logger.debug(response_1)
 
         if response_1['status'] != 200:          
 
@@ -796,12 +808,12 @@ class AuthController:
                 
             else:
                 #Something else is wrong, surface the problem. 
-                current_app.logger.debug("Entity does not exist")   
+                self.logger.debug("Entity does not exist")   
                 return response_1
             
         
             
-        current_app.logger.debug("Document found:"+str(response_1['document']))
+        self.logger.debug("Document found:"+str(response_1['document']))
 
         #Get the existing document from DB
         entity_doc = response_1['document']
@@ -824,7 +836,7 @@ class AuthController:
         result['message'] = response['message']
         result['document'] = response['document']  
         result['status'] = response['status']   
-        #current_app.logger.debug('Returned object:'+str(result))
+        #self.logger.debug('Returned object:'+str(result))
         return result
 
 
@@ -834,7 +846,7 @@ class AuthController:
         result['message'] = 'OK'
         result['document'] = {'message':'Ok'}
         result['status'] = 200
-        current_app.logger.debug('Returned object:'+str(result))
+        self.logger.debug('Returned object:'+str(result))
 
         return result
 
@@ -889,7 +901,7 @@ class AuthController:
             'rel' : rel
         }
             
-        current_app.logger.debug('Rel to Create:'+str(rel_document))
+        self.logger.debug('Rel to Create:'+str(rel_document))
         response = self.AUM.create_rel(**rel_document)
 
         return response
@@ -946,7 +958,7 @@ class AuthController:
             'rel' : rel
         }
             
-        current_app.logger.debug('Rel to Create:'+str(rel_document))
+        self.logger.debug('Rel to Create:'+str(rel_document))
         response = self.AUM.delete_rel(**rel_document)
 
         return response
@@ -999,7 +1011,7 @@ class AuthController:
             rel = data['team_id']
 
             
-        current_app.logger.debug('Rel to Get > '+index+rel)
+        self.logger.debug('Rel to Get > '+index+rel)
         response = self.AUM.get_rel(index,rel)
 
         return response
@@ -1044,7 +1056,7 @@ class AuthController:
             index = 'irn:rel:hash:team:' + data['hash'] + ':*'
             
  
-        current_app.logger.debug('List Rels > '+index)
+        self.logger.debug('List Rels > '+index)
         response = self.AUM.list_rel(index)
 
         return response
@@ -1065,6 +1077,7 @@ class AuthController:
             #3. Call the entity document of each user to retrieve the email 
             # and name from team members. If there are more than 10 users, 
             # just output the first ten.
+            self.logger.debug(f'List of team users:{response_1["document"]["items"]}',)
 
             for item in response_1['document']['items']:
 
@@ -1072,10 +1085,11 @@ class AuthController:
                 response_2 = self.get_entity(type,user_id=item['rel'])
                 
                 if not response_2['success']:
+                    self.logger.debug(f'Could not find entity of user:{item["rel"]}')
                     continue
 
                 team_user_doc = response_2['document']
-                current_app.logger.debug('Team User Document:'+str(team_user_doc))
+                self.logger.debug('Team User Document:'+str(team_user_doc))
 
                 userdict[team_user_doc['_id']] = {}
                 userdict[team_user_doc['_id']]['user_id'] = team_user_doc['_id']
@@ -1208,11 +1222,11 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating CREATE USER FUNNEL')
+        self.logger.debug('Initiating CREATE USER FUNNEL')
 
         #1. Create User Document
         response_1 = self.create_entity('user',**kwargs)
-        current_app.logger.debug('Step 1: Create User Document')
+        self.logger.debug('Step 1: Create User Document')
         if not response_1['success']: 
                                
             return response_1
@@ -1227,7 +1241,7 @@ class AuthController:
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)
+        self.logger.debug(result)
         return result
     
 
@@ -1238,15 +1252,15 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating CREATE PORTFOLIO FUNNEL')
+        self.logger.debug('Initiating CREATE PORTFOLIO FUNNEL')
 
 
         #1. Create Porfolio Document
         #Input: kwargs['name'] and kwargs['about'] 
         response_1 = self.create_entity('portfolio',**kwargs)
         
-        current_app.logger.debug('Step 1: Creating Porfolio Document')
-        current_app.logger.debug(response_1)
+        self.logger.debug('Step 1: Creating Porfolio Document')
+        self.logger.debug(response_1)
         
   
         if not response_1['success']:
@@ -1257,7 +1271,7 @@ class AuthController:
         
 
         
-        current_app.logger.debug('Step 2: SKIPPED')
+        self.logger.debug('Step 2: SKIPPED')
 
         
 
@@ -1267,8 +1281,8 @@ class AuthController:
         kwargs['portfolio_id'] = response_1['document']['_id'] #This is the portfolio_id
         response_3 = self.create_entity('team',**kwargs)
 
-        current_app.logger.debug('Step 3: Creating a default Team')
-        current_app.logger.debug(response_3)
+        self.logger.debug('Step 3: Creating a default Team')
+        self.logger.debug(response_3)
         # Team documents explicitly relate to Portfolios. That's why you don't need a Portfolio:Teams rel.
 
         if not response_3['success']:
@@ -1284,8 +1298,8 @@ class AuthController:
         rel_data['team_id'] = response_3['document']['_id'] #This is the team_id
         response_3b = self.create_rel('team:portfolio',**rel_data)
 
-        current_app.logger.debug('Step 3b:Creating Team-Portfolio relationship')
-        current_app.logger.debug(response_3b)
+        self.logger.debug('Step 3b:Creating Team-Portfolio relationship')
+        self.logger.debug(response_3b)
 
         if not response_3b['success']:
             response_3b['message'] = 'Could not create Team-Portfolio relationship'                
@@ -1302,8 +1316,8 @@ class AuthController:
         rel_data['team_id'] = response_3['document']['_id'] #This is the team_id
         response_4 = self.create_rel('team:user',**rel_data)
 
-        current_app.logger.debug('Step 4:Creating Team-User relationship')
-        current_app.logger.debug(response_4)
+        self.logger.debug('Step 4:Creating Team-User relationship')
+        self.logger.debug(response_4)
 
         if not response_4['success']:
             response_4['message'] = 'Could not create Team-User relationship'                
@@ -1319,8 +1333,8 @@ class AuthController:
         rel_data['team_id'] = response_3['document']['_id'] #This is the team_id
         response_5 = self.create_rel('user:team',**rel_data)
 
-        current_app.logger.debug('Step 5: Creating User to Team relationship ')
-        current_app.logger.debug(response_5)
+        self.logger.debug('Step 5: Creating User to Team relationship ')
+        self.logger.debug(response_5)
 
         if not response_5['success']:
             response_5['message'] = 'Could not create User-Team relationship'                
@@ -1339,8 +1353,8 @@ class AuthController:
         kwargs['portfolio_id'] = response_1['document']['_id'] #This is the portfolio_id
         response_5b = self.create_entity('tool',**kwargs)
 
-        current_app.logger.debug('Step 5b: Installing default tool in portfolio')
-        current_app.logger.debug(response_5b)
+        self.logger.debug('Step 5b: Installing default tool in portfolio')
+        self.logger.debug(response_5b)
         # Team documents explicitly relate to Portfolios. That's why you don't need a Portfolio:Teams rel.
 
         if not response_5b['success']:
@@ -1375,8 +1389,8 @@ class AuthController:
         rel_data['role_id'] = 'DataEntry'
         response_6 = self.create_rel('team/tool:role',**rel_data)
 
-        current_app.logger.debug('Step 6:Create Team/Tool to Role : DataEntry')
-        current_app.logger.debug(response_6)
+        self.logger.debug('Step 6:Create Team/Tool to Role : DataEntry')
+        self.logger.debug(response_6)
 
         if not response_6['success']:
             response_6['message'] = 'Could not create Team/Tool-action relationship'                
@@ -1392,8 +1406,8 @@ class AuthController:
         rel_data['role_id'] = 'Moderator'
         response_6b = self.create_rel('team/tool:role',**rel_data)
 
-        current_app.logger.debug('Step 6b:Create Team/Tool to Role : Moderator')
-        current_app.logger.debug(response_6b)
+        self.logger.debug('Step 6b:Create Team/Tool to Role : Moderator')
+        self.logger.debug(response_6b)
 
         if not response_6b['success']:
             response_6b['message'] = 'Could not create Team/Tool-role relationship'                
@@ -1415,8 +1429,8 @@ class AuthController:
         kwargs['portfolio_id'] = response_1['document']['_id'] #This is the portfolio_id
         response_7 = self.create_entity('org',**kwargs)
 
-        current_app.logger.debug('Step 7: Creating new org')
-        current_app.logger.debug(response_7)
+        self.logger.debug('Step 7: Creating new org')
+        self.logger.debug(response_7)
         # Org documents explicitly relate to Portfolios. That's why you don't need a Portfolio:Orgs rel.
 
         if not response_7['success']:
@@ -1433,8 +1447,8 @@ class AuthController:
         rel_data['action_id'] = 'useApp'
         response_8 = self.create_rel('team:org',**rel_data)
 
-        current_app.logger.debug('Step 8:Create team to org rel')
-        current_app.logger.debug(response_8)
+        self.logger.debug('Step 8:Create team to org rel')
+        self.logger.debug(response_8)
 
         if not response_8['success']:
             response_8['message'] = 'Could not create Team-Org relationship'                
@@ -1451,8 +1465,8 @@ class AuthController:
         rel_data['org_id'] = response_7['document']['_id'] #This is the default org_id
         response_9 = self.create_rel('team/tool:org',**rel_data)
 
-        current_app.logger.debug('Step 9:Create Team/Tool to Role : DataEntry')
-        current_app.logger.debug(response_9)
+        self.logger.debug('Step 9:Create Team/Tool to Role : DataEntry')
+        self.logger.debug(response_9)
 
         if not response_9['success']:
             response_9['message'] = 'Could not create Team/Tool-action relationship'                
@@ -1465,14 +1479,14 @@ class AuthController:
         '''
         
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Create Portfolio Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
     
 
@@ -1485,7 +1499,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating CREATE ORG FUNNEL')
+        self.logger.debug('Initiating CREATE ORG FUNNEL')
 
 
         #1. Create a new Org
@@ -1502,8 +1516,8 @@ class AuthController:
         kwargs['handle'] = self.generate_handle(kwargs['name'])
         response_1 = self.create_entity('org',**kwargs)
 
-        current_app.logger.debug('Step 1: Creating new org')
-        current_app.logger.debug(response_1)
+        self.logger.debug('Step 1: Creating new org')
+        self.logger.debug(response_1)
         # Org documents explicitly relate to Portfolios. That's why we don't need a Portfolio:Orgs rel.
 
         if not response_1['success']:
@@ -1516,14 +1530,14 @@ class AuthController:
 
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Create Org  Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
 
 
@@ -1533,7 +1547,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating CREATE TEAM FUNNEL')
+        self.logger.debug('Initiating CREATE TEAM FUNNEL')
 
         #1. Create a new Team
         required_keys = ['name','portfolio_id'] 
@@ -1546,8 +1560,8 @@ class AuthController:
             return response_0
         
         response_1 = self.create_entity('team',**kwargs)
-        current_app.logger.debug('Step 1: Creating a new Team')
-        current_app.logger.debug(response_1)
+        self.logger.debug('Step 1: Creating a new Team')
+        self.logger.debug(response_1)
         # Team documents explicitly relate to Portfolios. That's why you don't need a Portfolio:Teams rel.
 
         if not response_1['success']:
@@ -1564,8 +1578,8 @@ class AuthController:
         rel_data['team_id'] = response_1['document']['_id'] #This is the team_id
         response_2 = self.create_rel('team:portfolio',**rel_data)
 
-        current_app.logger.debug('Step 2:Creating Team-Portfolio relationship')
-        current_app.logger.debug(response_2)
+        self.logger.debug('Step 2:Creating Team-Portfolio relationship')
+        self.logger.debug(response_2)
 
         if not response_2['success']:
             response_2['message'] = 'Could not create Team-Portfolio relationship'                
@@ -1582,8 +1596,8 @@ class AuthController:
         rel_data['team_id'] = response_1['document']['_id'] #This is the team_id
         response_3 = self.create_rel('team:user',**rel_data)
 
-        current_app.logger.debug('Step 3:Creating Team-User relationship')
-        current_app.logger.debug(response_3)
+        self.logger.debug('Step 3:Creating Team-User relationship')
+        self.logger.debug(response_3)
 
         if not response_3['success']:
             response_3['message'] = 'Could not create Team-User relationship'                
@@ -1599,8 +1613,8 @@ class AuthController:
         rel_data['team_id'] = response_1['document']['_id'] #This is the team_id
         response_4 = self.create_rel('user:team',**rel_data)
 
-        current_app.logger.debug('Step 4: Creating User to Team relationship ')
-        current_app.logger.debug(response_4)
+        self.logger.debug('Step 4: Creating User to Team relationship ')
+        self.logger.debug(response_4)
 
         if not response_4['success']:
             response_4['message'] = 'Could not create User-Team relationship'                
@@ -1613,14 +1627,14 @@ class AuthController:
 
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Create Team Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
     
 
@@ -1629,7 +1643,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating ADD USER TO TEAM FUNNEL')
+        self.logger.debug('Initiating ADD USER TO TEAM FUNNEL')
 
         #0. Check for requirements
         required_keys = ['user_id','team_id'] 
@@ -1648,8 +1662,8 @@ class AuthController:
         rel_data['team_id'] = kwargs['team_id'] #This is the team_id
         response_1 = self.create_rel('team:user',**rel_data)
 
-        current_app.logger.debug('Step 1:Creating Team-User relationship')
-        current_app.logger.debug(response_1)
+        self.logger.debug('Step 1:Creating Team-User relationship')
+        self.logger.debug(response_1)
 
         if not response_1['success']:
             response_1['message'] = 'Could not create Team-User relationship'                
@@ -1665,8 +1679,8 @@ class AuthController:
         rel_data['team_id'] = kwargs['team_id'] #This is the team_id
         response_2 = self.create_rel('user:team',**rel_data)
 
-        current_app.logger.debug('Step 2: Creating User to Team relationship ')
-        current_app.logger.debug(response_2)
+        self.logger.debug('Step 2: Creating User to Team relationship ')
+        self.logger.debug(response_2)
 
         if not response_2['success']:
             response_2['message'] = 'Could not create User-Team relationship'                
@@ -1677,14 +1691,14 @@ class AuthController:
 
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Add user to Team Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
     
 
@@ -1694,7 +1708,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating INVITE USER FUNNEL')
+        self.logger.debug('Initiating INVITE USER FUNNEL')
 
 
         #1. Check minimum requirements
@@ -1753,8 +1767,8 @@ class AuthController:
         bridge['hash'] = rel_data['hash'] = self.generate_invite_hash(kwargs['email'],rel_data['ttl'])
         response_2 = self.create_rel('email:hash:ttl',**rel_data)
 
-        current_app.logger.debug('Step 2: Creating Email to Hash to TTL relationship ')
-        current_app.logger.debug(response_2)
+        self.logger.debug('Step 2: Creating Email to Hash to TTL relationship ')
+        self.logger.debug(response_2)
 
         if not response_2['success']:
             response_2['message'] = 'Could not create Email to Hash to TTL relationship'                
@@ -1771,8 +1785,8 @@ class AuthController:
         rel_data['team_id'] = kwargs['team_id']
         response_3 = self.create_rel('hash:team',**rel_data)
 
-        current_app.logger.debug('Step 3: Creating Hash to Team relationship ')
-        current_app.logger.debug(response_3)
+        self.logger.debug('Step 3: Creating Hash to Team relationship ')
+        self.logger.debug(response_3)
 
         if not response_3['success']:
             response_3['message'] = 'Could not create Hash to Team relationship'                
@@ -1815,14 +1829,14 @@ class AuthController:
         
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Invite User Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
 
 
@@ -1832,7 +1846,7 @@ class AuthController:
         bridge = {}
         result = {}
         transaction = []
-        current_app.logger.debug('Initiating CREATE INVITE USER FUNNEL')
+        self.logger.debug('Initiating CREATE INVITE USER FUNNEL')
 
 
 
@@ -1863,8 +1877,8 @@ class AuthController:
         #We need to use a prefix search on the sort key as we don't have the TTL
         response_2 = self.AUM.list_rel_prefix(index,prefix) 
 
-        current_app.logger.debug('Step 2: Verifying that the invitation is valid ')
-        current_app.logger.debug(response_2)
+        self.logger.debug('Step 2: Verifying that the invitation is valid ')
+        self.logger.debug(response_2)
 
         # Invitation was found
         if response_2['success'] and len(response_2['document'])>0 :
@@ -1901,8 +1915,8 @@ class AuthController:
 
         #3a. Add user to cognito user pool
         response_3a = self.AUM.cognito_user_create(kwargs['email'], kwargs['first'], kwargs['last'])    
-        current_app.logger.debug('Step 3a: Creating Cognito user ')
-        current_app.logger.debug(response_3a)  
+        self.logger.debug('Step 3a: Creating Cognito user ')
+        self.logger.debug(response_3a)  
         if not response_3a['success']:
             response_3a['message'] = 'Could not create user in Identity Service'                
             return response_3a
@@ -1910,8 +1924,8 @@ class AuthController:
         
         #3b. Assigned user password
         response_3b = self.AUM.cognito_user_permanent_password_assign(kwargs['email'],kwargs['pass'])
-        current_app.logger.debug('Step 3a: Assign user password')
-        current_app.logger.debug(response_3b)
+        self.logger.debug('Step 3a: Assign user password')
+        self.logger.debug(response_3b)
         if not response_3b['success']:
             response_3a['message'] = 'Could not assigned provided password please reset your password'
             return response_3b
@@ -1929,7 +1943,7 @@ class AuthController:
         data['email'] = kwargs['email']
 
         response_4 = self.create_entity('user',**data)
-        current_app.logger.debug('Step 4: Create User Entity Document')
+        self.logger.debug('Step 4: Create User Entity Document')
         if not response_4['success']:                      
             return response_4
         
@@ -1962,7 +1976,7 @@ class AuthController:
                     #This response will only have one item
 
                     if not response_5b['success']:
-                        current_app.logger.debug('Team for invitation:('+hash+') was not found')
+                        self.logger.debug('Team for invitation:('+hash+') was not found')
                         continue
 
                     team_id = response_5b['document']['items'][0]['rel']
@@ -1984,8 +1998,8 @@ class AuthController:
             rel_data['team_id'] = team #This is the team_id
             response_5c = self.create_rel('team:user',**rel_data)
 
-            current_app.logger.debug('Step 5c:Creating Team-User relationship')
-            current_app.logger.debug(response_5c)
+            self.logger.debug('Step 5c:Creating Team-User relationship')
+            self.logger.debug(response_5c)
 
             if not response_5c['success']:
                 response_5c['message'] = 'Could not create Team-User relationship'                
@@ -2000,8 +2014,8 @@ class AuthController:
             rel_data['team_id'] = team #This is the team_id
             response_5d = self.create_rel('user:team',**rel_data)
 
-            current_app.logger.debug('Step 5d: Creating User to Team relationship ')
-            current_app.logger.debug(response_5d)
+            self.logger.debug('Step 5d: Creating User to Team relationship ')
+            self.logger.debug(response_5d)
 
             if not response_5d['success']:
                 response_5d['message'] = 'Could not create User-Team relationship'                
@@ -2021,14 +2035,14 @@ class AuthController:
 
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Create Invite User Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
 
     
@@ -2039,7 +2053,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating DELETE ORG FUNNEL')
+        self.logger.debug('Initiating DELETE ORG FUNNEL')
 
 
         # 1. Create a copy of org entity and put it in irn:deleted_entity:org
@@ -2050,14 +2064,14 @@ class AuthController:
 
   
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Delete Org Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
     
 
@@ -2067,7 +2081,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating DELETE TEAM FUNNEL')
+        self.logger.debug('Initiating DELETE TEAM FUNNEL')
 
 
         #0. Check minimum requirements
@@ -2181,14 +2195,14 @@ class AuthController:
 
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Delete Team Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
     
     
@@ -2198,7 +2212,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating REMOVE TEAM USER FUNNEL')
+        self.logger.debug('Initiating REMOVE TEAM USER FUNNEL')
 
 
         #0. Check minimum requirements
@@ -2238,14 +2252,14 @@ class AuthController:
 
   
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel')
+        self.logger.debug('End of Funnel')
 
         result['success'] = True
         result['message'] = 'Remove Team User funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
 
 
@@ -2253,13 +2267,13 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating CREATE TOOL FUNNEL')
+        self.logger.debug('Initiating CREATE TOOL FUNNEL')
 
         #1. Create a Tool instance entity
         response_1 = self.create_entity('tool',**kwargs)
 
-        current_app.logger.debug('Step 1: Installing tool in team')
-        current_app.logger.debug(response_1)
+        self.logger.debug('Step 1: Installing tool in team')
+        self.logger.debug(response_1)
         
         if not response_1['success']:
             response_1['message'] = 'Could not install Tool'                
@@ -2269,14 +2283,14 @@ class AuthController:
 
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Create Tool Funnel completed, Ok'
         result['status'] = 200
         result['document'] = transaction
 
-        current_app.logger.debug(result)
+        self.logger.debug(result)
         return result
     
     
@@ -2285,7 +2299,7 @@ class AuthController:
         result = {}
         transaction = []
 
-        current_app.logger.debug('Initiating DELETE TOOL FUNNEL')
+        self.logger.debug('Initiating DELETE TOOL FUNNEL')
 
 
         #0. Check minimum requirements
@@ -2396,14 +2410,14 @@ class AuthController:
 
 
         #All went good, Summarize Transaction Success 
-        current_app.logger.debug('End of Funnel ')
+        self.logger.debug('End of Funnel ')
 
         result['success'] = True
         result['message'] = 'Delete Tool Funnel completed, Ok'
         result['status'] = 200 
         result['document'] = transaction  
 
-        current_app.logger.debug(result)            
+        self.logger.debug(result)            
         return result
     
     
