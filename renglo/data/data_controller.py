@@ -561,7 +561,7 @@ class DataController:
 
         for field in fields:
             current_app.logger.debug('>>:'+field['name']) 
-            if payload.get(field['name']): 
+            if field['name'] in payload: 
                 current_app.logger.debug('Found:'+field['name']) 
                 # Attribute exists in the blueprint
                 new_raw = payload.get(field['name'])
@@ -1123,7 +1123,7 @@ class DataController:
             result['message'] = 'Item could not be saved'
             result['error'] = item['error']
             status = 400
-            return result
+            return result, status
     
         current_app.logger.debug('Updating Item:'+str(item))
         response = self.DAM.put_a_b_c(portfolio,org,ring,idx,item)

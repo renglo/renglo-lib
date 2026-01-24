@@ -120,7 +120,7 @@ def load_config():
         'COGNITO_CHECK_TOKEN_EXPIRATION',
         'PREVIEW_LAYER', 'S3_BUCKET_NAME',
         'OPENAI_API_KEY', 'WEBSOCKET_CONNECTIONS',
-        'ALLOW_DEV_ORIGINS'
+        'ALLOW_DEV_ORIGINS', 'EXTERNAL_HANDLERS'
     ]
     
     env_loaded_count = 0
