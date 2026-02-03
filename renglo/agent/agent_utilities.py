@@ -222,12 +222,14 @@ class AgentUtilities:
 
 
     def save_chat(self, output, interface=None, connection_id=None, next=None, msg_type=None):
+        
+        function = 'save_chat'
         """
         Save chat message to storage and context.
         
         Args:
             output (dict): The output to save
-            interface (bool): Whether to use interface
+            interface (string): name of the interface
             
         Input:
             {
@@ -236,77 +238,92 @@ class AgentUtilities:
                 'content':''     
             }
         """
-        if msg_type == 'consent':
-            print('Sending consent form')
-            # This is a consent request from the agent to the user
-            message_type = 'consent'
-            if not interface:
-                interface = 'binary_consent'
-            doc = {'_out': self.sanitize(output), '_type': 'consent','_interface':interface,'_next': next}
-            self.update_chat_message_document(doc)
-            self.print_chat(doc,message_type, as_is=True)
+        try:
+            if msg_type == 'consent':
+                print('Sending consent form')
+                # This is a consent request from the agent to the user
+                message_type = 'consent'
+                if not interface:
+                    interface = 'binary_consent'
+                doc = {'_out': self.sanitize(output), '_type': 'consent','_interface':interface,'_next': next}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc,message_type, as_is=True)
+                
+            elif msg_type == 'widget':
+                print('Custom widget')
+                # This is a consent request from the agent to the user
+                message_type = 'widget'
+                if not interface:
+                    interface = ''
+                doc = {'_out': self.sanitize(output), '_type': 'widget','_interface':interface}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc,message_type, as_is=True)
+                 
+                
+            elif output.get('tool_calls') and output.get('role') == 'assistant':
+                print('Saving the tool call')
+                # This is a tool call
+                message_type = 'tool_rq'
+                doc = {'_out': self.sanitize(output), '_type': 'tool_rq','_next': next}
+                # Memorize to permanent storage
+                self.update_chat_message_document(doc)      
+                
+                # Creating empty placeholders corresponding to each one of the un-executed tool calls.
+                # This was a work-around as OpenAI doesn't like to see a tools_calls without its corresponding response.
+                # It happens because sometimes, the chat messages are passed to the LLM before the tool is executed 
+                # (e.g: Asking the user for approval to use a tool, the agent needs to understand the response using an LLM)
+                for tool_call in output['tool_calls']:
+                    rs_template = {
+                        "role": "tool",
+                        "tool_call_id": tool_call['id'],
+                        "content": []
+                    }
+                    print(f'Saving placeholder message for:{tool_call['id']}')
+                    doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': next}
+                    self.update_chat_message_document(doc_rs_placeholder)
+                                
+            elif output.get('content') and output.get('role') == 'assistant':
+                print('Saving the assistant message to the user')
+                # This is a human readable message from the agent to the user
+                message_type = 'text'
+                doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
+                # Memorize to permanent storage
+                response_1 = self.update_chat_message_document(doc)
+                #print(f'Chat update response:',response_1)
+                # Print to live chat
+                self.print_chat(doc, message_type, as_is=True)
+                # Print to API
+                self.print_api(output['content'], message_type)
+                
+            elif 'tool_call_id' in output and 'role' in output and output['role'] == 'tool':
+                # This is a response from the tool
+                print(f'Including Tool Response in the chat: {output}')
+                # This is the tool response
+                message_type = 'tool_rs'            
+                doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': next}
+                # Memorize to permanent storage
+                self.update_chat_message_document(doc, output['tool_call_id'])
+                
+                if interface:  
+                    # Parse content if it's a JSON string for websocket (frontend expects object, not string)
+                    # Database stores as string, but websocket should send as parsed object
+                    doc_for_websocket = doc.copy()
+                    if '_out' in doc_for_websocket and 'content' in doc_for_websocket['_out']:
+                        content = doc_for_websocket['_out']['content']
+                        if isinstance(content, str):
+                            try:
+                                # Try to parse the JSON string
+                                parsed_content = json.loads(content)
+                                doc_for_websocket['_out'] = doc_for_websocket['_out'].copy()
+                                doc_for_websocket['_out']['content'] = parsed_content
+                            except (json.JSONDecodeError, TypeError):
+                                # If parsing fails, keep original string
+                                pass
+                    self.print_chat(doc_for_websocket, message_type, as_is=True)
+                    
+        except Exception as e:
+            print(f"Error in {function}: {e}")
             
-            
-        elif output.get('tool_calls') and output.get('role') == 'assistant':
-            print('Saving the tool call')
-            # This is a tool call
-            message_type = 'tool_rq'
-            doc = {'_out': self.sanitize(output), '_type': 'tool_rq','_next': next}
-            # Memorize to permanent storage
-            self.update_chat_message_document(doc)      
-            
-            # Creating empty placeholders corresponding to each one of the un-executed tool calls.
-            # This was a work-around as OpenAI doesn't like to see a tools_calls without its corresponding response.
-            # It happens because sometimes, the chat messages are passed to the LLM before the tool is executed 
-            # (e.g: Asking the user for approval to use a tool, the agent needs to understand the response using an LLM)
-            for tool_call in output['tool_calls']:
-                rs_template = {
-                    "role": "tool",
-                    "tool_call_id": tool_call['id'],
-                    "content": []
-                }
-                print(f'Saving placeholder message for:{tool_call['id']}')
-                doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': next}
-                self.update_chat_message_document(doc_rs_placeholder)
-                            
-        elif output.get('content') and output.get('role') == 'assistant':
-            print('Saving the assistant message to the user')
-            # This is a human readable message from the agent to the user
-            message_type = 'text'
-            doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
-            # Memorize to permanent storage
-            response_1 = self.update_chat_message_document(doc)
-            #print(f'Chat update response:',response_1)
-            # Print to live chat
-            self.print_chat(doc, message_type, as_is=True)
-            # Print to API
-            self.print_api(output['content'], message_type)
-            
-        elif 'tool_call_id' in output and 'role' in output and output['role'] == 'tool':
-            # This is a response from the tool
-            print(f'Including Tool Response in the chat: {output}')
-            # This is the tool response
-            message_type = 'tool_rs'            
-            doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': next}
-            # Memorize to permanent storage
-            self.update_chat_message_document(doc, output['tool_call_id'])
-              
-            if interface:  
-                # Parse content if it's a JSON string for websocket (frontend expects object, not string)
-                # Database stores as string, but websocket should send as parsed object
-                doc_for_websocket = doc.copy()
-                if '_out' in doc_for_websocket and 'content' in doc_for_websocket['_out']:
-                    content = doc_for_websocket['_out']['content']
-                    if isinstance(content, str):
-                        try:
-                            # Try to parse the JSON string
-                            parsed_content = json.loads(content)
-                            doc_for_websocket['_out'] = doc_for_websocket['_out'].copy()
-                            doc_for_websocket['_out']['content'] = parsed_content
-                        except (json.JSONDecodeError, TypeError):
-                            # If parsing fails, keep original string
-                            pass
-                self.print_chat(doc_for_websocket, message_type, as_is=True)
 
 
     def print_api(self, message, type='text', public_user=None):
