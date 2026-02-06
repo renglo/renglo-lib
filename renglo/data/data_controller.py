@@ -11,6 +11,7 @@ from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
 from renglo.logger import get_logger
+from renglo.logger import get_logger
 
 
 # Add this custom JSON encoder class at the top level of your file
@@ -213,7 +214,7 @@ class DataController:
             Body=json.dumps(result, cls=DecimalEncoder)
         )
         
-        return result  # Return the result dict (for Lambda, status code is handled by API Gateway)
+        return result, 201
     
     
     
@@ -433,7 +434,6 @@ class DataController:
                     else:
                         item_values[field['name']] = json.loads(new_raw.strip())
                 except Exception as e:
-                    print('CPI > Blueprint : Type : array > Load json > Except > Load String ')
                     print(f'CPI > Blueprint : Type : array > Error details: {str(e)}')
                     print(f'CPI > Blueprint : Type : array > Error type: {type(e).__name__}')
                     if new_raw == '':
@@ -540,10 +540,11 @@ class DataController:
           - Update document in DB
 
         '''
+        print(f'Running construct_put_item for {portfolio}/{org}/{ring}/{idx}. Payload {payload}')
 
         #1. Pull the document that we need to update
         updated_item = self.DAM.get_a_b_c(portfolio,org,ring,idx) 
-        #current_app.logger.debug('Item from DB:'+str(updated_item))
+        #self.logger.debug('Item from DB:'+str(updated_item))
 
         #2. Pull the Blueprint listed in that document
   
@@ -554,9 +555,9 @@ class DataController:
 
         #3. Convert incoming request payload to JSON
    
-        #current_app.logger.debug('CPI Payload:'+str(payload))
+        #self.logger.debug('CPI Payload:'+str(payload))
         #print(f"CPI TYPE:{type(payload).__name__}")
-        #current_app.logger.debug(blueprint['fields']) 
+        #self.logger.debug(blueprint['fields']) 
 
         #4. Check that the payload follows the Blueprint
         putNeeded = False
@@ -570,81 +571,81 @@ class DataController:
 
                
                 if field['type'] == 'object':
-                    print('CPI > Blueprint : Type : object ')
+                   #print(f'Field declared as object: {field["name"]}')
                     
                     # Check if new_raw is already a dict
                     if isinstance(new_raw, dict):
-                        #print('CPI > Blueprint : Type : object > Already dict, using as is')
+                        print('Already a dict, using as is')
                         updated_item['attributes'][field['name']] = new_raw
                         putNeeded = True
                     else:
                         try:
-                            #print('CPI > Blueprint : Type : object > Load json ')
+                            print('Loading json ')
                             updated_item['attributes'][field['name']] = json.loads(new_raw.strip())
                             putNeeded = True
                         except:
-                            #print('CPI > Blueprint : Type : object > Load json > Except > Load String ')
+                            print('Could not convert to object. Loading as String ')
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
                 
                 elif field['type'] == 'array':
-                    print('CPI > Blueprint : Type : array ')
+                    print('Field declared as array(list) ')
                     
                     # Check if new_raw is already a list
                     if isinstance(new_raw, list):
-                        #print('CPI > Blueprint : Type : array > Already list, using as is')
+                        print('Already a list, using as is')
                         updated_item['attributes'][field['name']] = new_raw
                         putNeeded = True
                     else:
                         try:
-                            #print('CPI > Blueprint : Type : array > Load json ')
+                            print('Load json array ')
                             updated_item['attributes'][field['name']] = json.loads(new_raw.strip())  
                             putNeeded = True
                         except json.JSONDecodeError as e:
-                            print('CPI > Blueprint : Type : array > Load json > JSONDecodeError > Try converting JS syntax')
-                            print(f'CPI > Blueprint : Type : array > Error details: {str(e)}')
+                            print('Load json > JSONDecodeError > Try converting JS syntax')
+                            print(f'Error details: {str(e)}')
                             # Try converting JavaScript syntax to JSON
                             try:
                                 converted_json = convert_js_to_json(new_raw.strip())
                                 updated_item['attributes'][field['name']] = json.loads(converted_json)
                                 putNeeded = True
-                                print('CPI > Blueprint : Type : array > Successfully converted JS syntax to JSON')
+                                print('Successfully converted JS syntax to JSON')
                             except Exception as conversion_error:
-                                print('CPI > Blueprint : Type : array > JS conversion failed, trying advanced converter')
-                                print(f'CPI > Blueprint : Type : array > Conversion error: {str(conversion_error)}')
+                                print('JS conversion failed, trying advanced converter')
+                                print(f'Conversion error: {str(conversion_error)}')
                                 # Try the advanced converter
                                 try:
                                     converted_json = convert_js_to_json_advanced(new_raw.strip())
                                     updated_item['attributes'][field['name']] = json.loads(converted_json)
                                     putNeeded = True
-                                    print('CPI > Blueprint : Type : array > Successfully converted JS syntax to JSON (advanced)')
+                                    print('Successfully converted JS syntax to JSON (advanced)')
                                 except Exception as advanced_error:
-                                    print('CPI > Blueprint : Type : array > Advanced conversion failed, trying robust converter')
-                                    print(f'CPI > Blueprint : Type : array > Advanced error: {str(advanced_error)}')
+                                    print('Advanced conversion failed, trying robust converter')
+                                    print(f'dvanced error: {str(advanced_error)}')
                                     # Try the robust converter
                                     try:
                                         converted_json = convert_js_to_json_robust(new_raw.strip())
                                         updated_item['attributes'][field['name']] = json.loads(converted_json)
                                         putNeeded = True
-                                        print('CPI > Blueprint : Type : array > Successfully converted JS syntax to JSON (robust)')
+                                        print('Successfully converted JS syntax to JSON (robust)')
                                     except Exception as robust_error:
-                                        print('CPI > Blueprint : Type : array > Robust conversion failed, trying simple converter')
-                                        print(f'CPI > Blueprint : Type : array > Robust error: {str(robust_error)}')
+                                        print('Robust conversion failed, trying simple converter')
+                                        print(f'Robust error: {str(robust_error)}')
                                         # Try the simple converter
                                         try:
                                             converted_json = convert_js_to_json_simple(new_raw.strip())
                                             updated_item['attributes'][field['name']] = json.loads(converted_json)
                                             putNeeded = True
-                                            print('CPI > Blueprint : Type : array > Successfully converted JS syntax to JSON (simple)')
+                                            print('Successfully converted JS syntax to JSON (simple)')
                                         except Exception as simple_error:
-                                            print('CPI > Blueprint : Type : array > Simple conversion failed, falling back to string')
-                                            print(f'CPI > Blueprint : Type : array > Simple error: {str(simple_error)}')
+                                            print('Simple conversion failed, falling back to string')
+                                            print(f'Simple error: {str(simple_error)}')
                                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                                             putNeeded = True
                         except Exception as e:
-                            print('CPI > Blueprint : Type : array > Load json > Except > Load String ')
-                            print(f'CPI > Blueprint : Type : array > Error details: {str(e)}')
-                            print(f'CPI > Blueprint : Type : array > Error type: {type(e).__name__}')
+                            print('Load json > Except > Load String ')
+                            print(f'Error details: {str(e)}')
+                            print(f'Error type: {type(e).__name__}')
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
                 
@@ -953,7 +954,7 @@ class DataController:
 
         response = self.DAM.get_a_b(portfolio,org,ring,limit=limit,lastkey=lastkey)
         
-        #current_app.logger.debug(f'RRR2: {result}')
+        #self.logger.debug(f'RRR2: {result}')
 
         result = {}
         if 'error' in response:
@@ -1125,12 +1126,12 @@ class DataController:
             result['message'] = 'Item could not be saved'
             result['error'] = item['error']
             status = 400
-            return result
+            return result, status
     
         self.logger.debug('Updating Item:'+str(item))
         response = self.DAM.put_a_b_c(portfolio,org,ring,idx,item)
         
-        #current_app.logger.debug('Update response:'+str(response))
+        #self.logger.debug('Update response:'+str(response))
 
 
         if 'error' not in response:                    
