@@ -764,7 +764,7 @@ class AgentUtilities:
                     
                     if not response_2.get('success'):
                         print(f'Failed to create thread: {response_2}')
-                        return {'success': False,'action': action,'input': message_payload,'output': response_2}
+                        return {'success': False,'action': action,'input': '','output': response_2}
                 
                     thread = response_2['document']
                     
@@ -869,7 +869,7 @@ class AgentUtilities:
         except Exception as e:
             
             print(f"Error getting/creating turn: {e}")
-            return {'success': False,'action': action,'input': message_payload,'output': f"{e}"}
+            return {'success': False,'action': action,'input': '','output': f"{e}"}
           
         
         

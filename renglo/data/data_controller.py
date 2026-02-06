@@ -1,7 +1,5 @@
 #data_controller.py
-from flask import request,current_app, jsonify
 import urllib.parse
-from flask import flash,url_for,session
 from datetime import datetime
 import uuid
 import re
@@ -12,6 +10,7 @@ from decimal import Decimal
 from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
+from renglo.logger import get_logger
 
 
 # Add this custom JSON encoder class at the top level of your file
@@ -166,6 +165,7 @@ class DataController:
 
     def __init__(self, config=None, tid=None, ip=None):
         self.config = config or {}
+        self.logger = get_logger()
         self.DAM = DataModel(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
@@ -175,8 +175,10 @@ class DataController:
     def refresh_s3_cache(self,portfolio, org, ring, sort=None):
     
         s3_client = boto3.client('s3')
-        bucket_name = current_app.config['S3_BUCKET_NAME']  
-        current_app.logger.debug(f'Refreshing s3 cache')
+        bucket_name = self.config.get('S3_BUCKET_NAME')
+        if not bucket_name:
+            raise ValueError("S3_BUCKET_NAME not found in config")
+        self.logger.debug(f'Refreshing s3 cache')
         # Proceed to regenerate the document
         response = []  # Initialize response
         # Simulate regeneration logic
@@ -189,7 +191,7 @@ class DataController:
         
         while True:
             iterations += 1
-            current_app.logger.debug("Iteration:" + str(iterations))
+            self.logger.debug("Iteration:" + str(iterations))
             
             partial_response = self.get_a_b(portfolio, org, ring, limit, lastkey, sort)
             response.extend(partial_response['items'])
@@ -211,7 +213,7 @@ class DataController:
             Body=json.dumps(result, cls=DecimalEncoder)
         )
         
-        return jsonify(result), 201  # Return the created result with a 201 status code
+        return result  # Return the result dict (for Lambda, status code is handled by API Gateway)
     
     
     
@@ -391,22 +393,22 @@ class DataController:
         fields = blueprint['fields']
 
         
-        current_app.logger.debug("post_a_b raw arguments from the Form fields:"+str(payload))
+        self.logger.debug("post_a_b raw arguments from the Form fields:"+str(payload))
 
 
         for field in fields:
        
             #DATA
 
-            current_app.logger.debug(field['name'])
+            self.logger.debug(field['name'])
 
             #Verify submitted field exists in the blueprint
             new_raw = ''
             if payload.get(field['name']):  
                 new_raw = payload.get(field['name'])
-                current_app.logger.debug('Using: '+str(field['name'])+':'+str(new_raw))        
+                self.logger.debug('Using: '+str(field['name'])+':'+str(new_raw))        
             else:
-                current_app.logger.debug('Inserting default value for field '+str(field['name'])+': '+str(field['default']))
+                self.logger.debug('Inserting default value for field '+str(field['name'])+': '+str(field['default']))
                 # Instead of skipping we put the field's default value
                 new_raw = field['default']
                 
@@ -560,9 +562,9 @@ class DataController:
         putNeeded = False
 
         for field in fields:
-            current_app.logger.debug('>>:'+field['name']) 
+            self.logger.debug('>>:'+field['name']) 
             if payload.get(field['name']): 
-                current_app.logger.debug('Found:'+field['name']) 
+                self.logger.debug('Found:'+field['name']) 
                 # Attribute exists in the blueprint
                 new_raw = payload.get(field['name'])
 
@@ -663,7 +665,7 @@ class DataController:
 
                     if len(str(new_raw)) > 0 or (len(str(new_raw)) and field['required']):
 
-                        current_app.logger.debug('Field OK:'+field['name']) 
+                        self.logger.debug('Field OK:'+field['name']) 
                         #Attribute complies with "Required" prerequisite
 
                         #5.Update attributes based on what has been sent in the request
@@ -673,7 +675,7 @@ class DataController:
                         #break
 
                     else:
-                        current_app.logger.debug('Attribute is required:'+field['name']) 
+                        self.logger.debug('Attribute is required:'+field['name']) 
                         return {'error':'Attribute is required'}
                   
         if not putNeeded:
@@ -684,7 +686,7 @@ class DataController:
         # YOU CAN'T UPDATE THE LSI
         '''
         index_string = self.generate_index_string(blueprint, updated_item['attributes'] )
-        current_app.logger.debug('(GIS) > Index string:'+str(index_string))
+        self.logger.debug('(GIS) > Index string:'+str(index_string))
         if index_string:
             updated_item['path_index'] = index_string
         elif 'path_index' in updated_item:
@@ -706,10 +708,10 @@ class DataController:
         items = []
         
         result = self.DAM.get_a_index(portfolio,prefix_path)
-        current_app.logger.debug('get_a_index results:' + json.dumps(result))  # Convert result to string
+        self.logger.debug('get_a_index results:' + json.dumps(result))  # Convert result to string
         
         if 'error' in result:
-            current_app.logger.error(result['error'])
+            self.logger.error(result['error'])
             
             result['success'] = False
             result['message'] = 'Items could not be retrieved (@get_a_index)'
@@ -752,7 +754,7 @@ class DataController:
             self.sort = sort
             items = sorted(items, key=self.sort_item_list, reverse=sort_reverse)
         '''
-        current_app.logger.debug('NUMBER OF ITEMS:'+str(i))
+        self.logger.debug('NUMBER OF ITEMS:'+str(i))
 
         #return items,result['lastkey']
         return items
@@ -764,10 +766,10 @@ class DataController:
         items = []
         
         result = self.DAM.get_a_b_index(portfolio,prefix_path)
-        current_app.logger.debug('get_a_b_index results:' + json.dumps(result))  # Convert result to string
+        self.logger.debug('get_a_b_index results:' + json.dumps(result))  # Convert result to string
         
         if 'error' in result:
-            current_app.logger.error(result['error'])
+            self.logger.error(result['error'])
             
             result['success'] = False
             result['message'] = 'Items could not be retrieved (@get_a_b_index)'
@@ -810,7 +812,7 @@ class DataController:
             self.sort = sort
             items = sorted(items, key=self.sort_item_list, reverse=sort_reverse)
         '''
-        current_app.logger.debug('NUMBER OF ITEMS:'+str(i))
+        self.logger.debug('NUMBER OF ITEMS:'+str(i))
 
         #return items,result['lastkey']
         return items
@@ -877,7 +879,7 @@ class DataController:
         #response = self.DAM.get_a_b(portfolio,org,ring,limit=limit,lastkey=lastkey)
         result = {}
         if 'error' in response:
-            current_app.logger.error(response['error'])
+            self.logger.error(response['error'])
             
             result['success'] = False
             result['message'] = 'Items could not be retrieved(@get_a_b_query)'
@@ -920,7 +922,7 @@ class DataController:
         result['items'] = items
         result['last_id'] = last_id
         
-        current_app.logger.debug('NUMBER OF ITEMS (QUERY):'+str(i))
+        self.logger.debug('NUMBER OF ITEMS (QUERY):'+str(i))
         
         return result
         
@@ -955,7 +957,7 @@ class DataController:
 
         result = {}
         if 'error' in response:
-            current_app.logger.error(response['error'])
+            self.logger.error(response['error'])
             
             result['success'] = False
             result['message'] = 'Items could not be retrieved (@get_a_b)'
@@ -1005,7 +1007,7 @@ class DataController:
         result['items'] = items
         result['last_id'] = last_id
         
-        current_app.logger.debug('NUMBER OF ITEMS:'+str(i))
+        self.logger.debug('NUMBER OF ITEMS:'+str(i))
         
         return result
     
@@ -1019,7 +1021,7 @@ class DataController:
         try:
             item = self.construct_post_item(portfolio,org,ring,payload)
             
-            current_app.logger.debug('Prepared Item:'+str(item))
+            self.logger.debug('Prepared Item:'+str(item))
 
             response = self.DAM.post_a_b(portfolio,org,ring,item)
 
@@ -1039,12 +1041,12 @@ class DataController:
                 result['error'] = response['error']
                 status = 400
             
-            current_app.logger.debug('Returned object:'+str(result))
+            self.logger.debug('Returned object:'+str(result))
             
             return result, status
             
         except Exception as e:
-            current_app.logger.error(f'Error in post_a_b: {str(e)}')
+            self.logger.error(f'Error in post_a_b: {str(e)}')
             result = {
                 'success': False,
                 'message': 'Item could not be saved due to an exception',
@@ -1059,7 +1061,7 @@ class DataController:
         '''
         Gets an existing item
         '''   
-        current_app.logger.debug('IDX:'+str(idx))
+        self.logger.debug('IDX:'+str(idx))
         
         response = self.DAM.get_a_b_c(portfolio,org,ring,idx)
 
@@ -1099,7 +1101,7 @@ class DataController:
         
         
 
-        current_app.logger.debug('Returned object:'+str(result))
+        self.logger.debug('Returned object:'+str(result))
         
         return result
     
@@ -1114,18 +1116,18 @@ class DataController:
 
         result = {}
 
-        #current_app.logger.debug('Icoming put object:'+str(payload))
+        #self.logger.debug('Icoming put object:'+str(payload))
         item = self.construct_put_item(portfolio,org,ring,idx,payload)
 
         if 'error' in item:
-            current_app.logger.debug(str(item))
+            self.logger.debug(str(item))
             result['success'] = False
             result['message'] = 'Item could not be saved'
             result['error'] = item['error']
             status = 400
             return result
     
-        current_app.logger.debug('Updating Item:'+str(item))
+        self.logger.debug('Updating Item:'+str(item))
         response = self.DAM.put_a_b_c(portfolio,org,ring,idx,item)
         
         #current_app.logger.debug('Update response:'+str(response))
@@ -1136,7 +1138,7 @@ class DataController:
             result['message'] = 'Item saved (PUT)'
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
-            current_app.logger.debug('Returned object:'+str(result)) ## COMMENT OUT
+            self.logger.debug('Returned object:'+str(result)) ## COMMENT OUT
 
             return result,status
 
@@ -1145,7 +1147,7 @@ class DataController:
             result['message'] = 'Item could not be saved'
             result['error'] = response['error']
             status = 500
-            current_app.logger.debug('Returned object:'+str(result))
+            self.logger.debug('Returned object:'+str(result))
 
             return result,status
         
@@ -1156,7 +1158,7 @@ class DataController:
         Delete an existing document.
         '''
         
-        current_app.logger.debug('Item to delete:'+str(idx))
+        self.logger.debug('Item to delete:'+str(idx))
 
         response = self.DAM.delete_a_b_c(portfolio,org,ring,idx)
 
@@ -1167,7 +1169,7 @@ class DataController:
             result['message'] = 'Item deleted'
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
-            current_app.logger.debug('Returned object:'+str(result))
+            self.logger.debug('Returned object:'+str(result))
 
             return result,status
 
@@ -1176,7 +1178,7 @@ class DataController:
             result['message'] = 'Item could not be deleted'
             result['error'] = response['error']
             status = 500
-            current_app.logger.debug('Returned object:'+str(result))
+            self.logger.debug('Returned object:'+str(result))
 
             return result,status
         

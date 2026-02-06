@@ -341,6 +341,8 @@ class SchdController:
             # Handle internal handler response (SchdLoader format)
             if not response['success']:
                 canonical = response['output']['output'] # This is a list. The list of steps in the handler
+                print('Handler finished executing with error')
+                print(response)
                 return {'success':False,'action':action,'handler':handler,'input':payload,'output':canonical,'stack':response}
                       
             canonical = response['output']['output'] # Output of last step of handler. 
