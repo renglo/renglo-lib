@@ -44,6 +44,40 @@ def is_running_locally() -> bool:
     return True
 
 
+def use_dev_docker(extension_name: str) -> bool:
+    """
+    Check if the extension should use local Docker instead of Lambda.
+    
+    This is controlled by the EXTERNAL_HANDLERS_USE_DEV_DOCKER environment variable,
+    which contains a comma-separated list of extension names that should use
+    local Docker even when running in a local environment.
+    
+    Args:
+        extension_name: Name of the extension to check
+        
+    Returns:
+        True if the extension should use local Docker, False otherwise
+    """
+    # Check environment variable
+    use_dev_docker_list = os.getenv("EXTERNAL_HANDLERS_USE_DEV_DOCKER", "")
+    
+    if not use_dev_docker_list:
+        # Try to get from load_config() (reads from env_config.py or environment variables)
+        try:
+            config = load_config()
+            use_dev_docker_list = config.get('EXTERNAL_HANDLERS_USE_DEV_DOCKER', '') or use_dev_docker_list
+        except Exception:
+            # If config can't be loaded, just use empty string
+            pass
+    
+    if use_dev_docker_list:
+        # Parse comma-separated list (handle spaces)
+        extensions = [ext.strip().lower() for ext in use_dev_docker_list.split(",") if ext.strip()]
+        return extension_name.lower() in extensions
+    
+    return False
+
+
 def load_config_for_docker() -> Dict[str, Any]:
     """
     Load configuration using the stable load_config() function from renglo.common.
@@ -461,9 +495,25 @@ def call_lambda_handler(
         missing_critical = [k for k in critical_vars 
                            if k not in current_env and k in config and config[k]]
         
-        # Check for any other config vars that should be in Lambda but aren't
-        vars_to_update = {k: str(v) for k, v in config.items() 
-                         if k not in current_env and v is not None and v != ''}
+        # Check for any other config vars that should be in Lambda but aren't.
+        # IMPORTANT: Do NOT try to set reserved AWS_* keys (like AWS_REGION),
+        # as Lambda will reject updates that attempt to modify them.
+        reserved_env_keys = {
+            'AWS_REGION',
+            'AWS_DEFAULT_REGION',
+            'AWS_EXECUTION_ENV',
+            'AWS_LAMBDA_FUNCTION_NAME',
+            'AWS_LAMBDA_LOG_GROUP_NAME',
+            'AWS_LAMBDA_LOG_STREAM_NAME',
+        }
+        vars_to_update = {
+            k: str(v)
+            for k, v in config.items()
+            if k not in current_env
+            and v is not None
+            and v != ''
+            and k not in reserved_env_keys
+        }
         
         if missing_critical:
             # Update Lambda function environment variables with missing critical vars
@@ -554,7 +604,14 @@ def run_external_handler(
         }
     
     # Determine execution mode
-    if is_running_locally():
-        return call_local_docker_handler(extension_name, handler_name, payload)
+    if is_running_locally() and use_dev_docker(extension_name):
+        print(f'Calling external handler: {extension_name}/{handler_name} in local docker. Payload:{payload}') 
+        response = call_local_docker_handler(extension_name, handler_name, payload)
+        print(f'Response >> {response}')
+        return response
+    
     else:
-        return call_lambda_handler(extension_name, handler_name, payload)
+        print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload} ')
+        response = call_lambda_handler(extension_name, handler_name, payload)
+        print(f'Response >> {response}')
+        return response

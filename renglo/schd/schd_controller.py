@@ -337,22 +337,32 @@ class SchdController:
             else:
                 # Extension does not have external handlers - use internal handler loader
                 response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
-            
-            # Handle internal handler response (SchdLoader format)
-            if not response['success']:
-                canonical = response['output']['output'] # This is a list. The list of steps in the handler
-                return {'success':False,'action':action,'handler':handler,'input':payload,'output':canonical,'stack':response}
-                      
-            canonical = response['output']['output'] # Output of last step of handler. 
-            if 'interface' in response['output']:
-                interface = response['output']['interface']
-            else:
-                interface = None
-            return {'success':True,'action':action,'handler':handler,'input':payload, 'interface':interface,'output':canonical,'stack':response}
-        
+
+            # Handle internal handler response (SchdLoader format).
+            # When load_and_run fails (e.g. exception), response['output'] can be a string, not a dict.
+            out = response.get('output')
+            if not isinstance(out, dict):
+                canonical = [out] if out is not None else [response.get('error', 'Handler failed')]
+                return {
+                    'success': False,
+                    'action': action,
+                    'handler': handler,
+                    'input': payload,
+                    'output': canonical,
+                    'stack': response,
+                }
+            if not response.get('success'):
+                canonical = out.get('output', out)
+                if not isinstance(canonical, list):
+                    canonical = [canonical] if canonical is not None else []
+                return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
+            canonical = out.get('output', out)
+            interface = out.get('interface') if isinstance(out, dict) else None
+            return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+
         except Exception as e:
-            print(f'Error @handler_call: {str(e)}')
-            return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {str(e)}'}
+            print(f'Error @handler_call:: {e}')
+            return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call:: {e}'}
         
         
 
@@ -370,21 +380,21 @@ class SchdController:
             response = {'success':False,'output':[]}
             
             response = self.SHL.load_and_run(f'{extension}/{handler}', payload = payload, check=True)
-            
-            if not response['success']:
-                canonical = response['output']['output'] # This is a list. The list of steps in the handler
-                return {'success':False,'action':action,'handler':handler,'input':payload,'output':canonical,'stack':response}
-                      
-            canonical = response['output']['output'] # Output of last step of handler. 
-            if 'interface' in response['output']:
-                interface = response['output']['interface']
-            else:
-                interface = None
-            return {'success':True,'action':action,'handler':handler,'input':payload, 'interface':interface,'output':canonical,'stack':response}
-        
+
+            out = response.get('output')
+            if not isinstance(out, dict):
+                canonical = out if out is not None else response.get('error', 'Handler check failed')
+                return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
+            if not response.get('success'):
+                canonical = out.get('output', out)
+                return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
+            canonical = out.get('output', out)
+            interface = out.get('interface') if isinstance(out, dict) else None
+            return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+
         except Exception as e:
-            print(f'Error @handler_call: {str(e)}')
-            return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {str(e)}'}
+            print(f'Error @handler_check: {e}')
+            return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {e}'}
 
     
 
