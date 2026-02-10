@@ -298,24 +298,34 @@ class AgentUtilities:
             elif 'tool_call_id' in output and 'role' in output and output['role'] == 'tool':
                 # This is a response from the tool
                 print(f'Including Tool Response in the chat: {output}')
+                print(f'Tool is returning interface:{interface}')
                 # This is the tool response
-                message_type = 'tool_rs'            
+                message_type = 'tool_rs'
                 doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': next}
-                # Memorize to permanent storage
+                # Memorize to permanent storage (DB path keeps content as string)
                 self.update_chat_message_document(doc, output['tool_call_id'])
-                
-                if interface:  
-                    # Parse content if it's a JSON string for websocket (frontend expects object, not string)
-                    # Database stores as string, but websocket should send as parsed object
+
+                if interface:
+                    # For WebSocket, mirror ChatController.update_turn's normalization:
+                    # - If parsed content is an object (dict), wrap it in a single-element list.
+                    # - If it's a list of dicts, keep as-is.
+                    # - Otherwise (string/number/etc.), leave the original string.
                     doc_for_websocket = doc.copy()
                     if '_out' in doc_for_websocket and 'content' in doc_for_websocket['_out']:
                         content = doc_for_websocket['_out']['content']
                         if isinstance(content, str):
                             try:
-                                # Try to parse the JSON string
                                 parsed_content = json.loads(content)
-                                doc_for_websocket['_out'] = doc_for_websocket['_out'].copy()
-                                doc_for_websocket['_out']['content'] = parsed_content
+                                if isinstance(parsed_content, dict):
+                                    parsed_content = [parsed_content]
+                                elif isinstance(parsed_content, list):
+                                    if not all(isinstance(item, dict) for item in parsed_content):
+                                        parsed_content = content
+                                else:
+                                    parsed_content = content
+                                if parsed_content is not content:
+                                    doc_for_websocket['_out'] = doc_for_websocket['_out'].copy()
+                                    doc_for_websocket['_out']['content'] = parsed_content
                             except (json.JSONDecodeError, TypeError):
                                 # If parsing fails, keep original string
                                 pass
