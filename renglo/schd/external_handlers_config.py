@@ -98,15 +98,16 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
     
     # Try 1: Environment variables (production - system-level config)
     # Primary method: EXTERNAL_HANDLERS comma-separated list (convention-based)
-    # Check both os.environ and Flask config (env_config.py loads into Flask config)
+    # Check os.environ first, then load_config() (which reads env_config.py or env vars)
     external_handlers_list = os.getenv("EXTERNAL_HANDLERS", "")
     if not external_handlers_list:
-        # Try to get from Flask config if available (from env_config.py)
+        # Try to get from load_config() (reads from env_config.py or environment variables)
         try:
-            from flask import current_app
-            if hasattr(current_app, 'config'):
-                external_handlers_list = current_app.config.get('EXTERNAL_HANDLERS', '')
-        except (RuntimeError, ImportError):
+            from renglo.common import load_config
+            config = load_config()
+            external_handlers_list = config.get('EXTERNAL_HANDLERS', '') or external_handlers_list
+        except Exception:
+            # If config can't be loaded, just use empty string (will fall back to defaults)
             pass
     
     if external_handlers_list:

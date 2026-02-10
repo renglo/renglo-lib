@@ -772,7 +772,50 @@ class AgentUtilities:
         except Exception as e:
             print(f"Error running LLM call: {e}")
             return False
-        
+
+    def llm_responses(self, input_items, tools, model=None):
+        """
+        Call the OpenAI Responses API (not Completions) with the given input and tools.
+        Returns a dict compatible with inca openai_adapter: {"output_text": str, "output": list}.
+        """
+        if self.AI_2 is None:
+            return {"output_text": "", "output": []}
+        try:
+            params = {
+                "model": model or self.AI_2_MODEL,
+                "input": input_items,
+                "tools": tools,
+            }
+            if not hasattr(self.AI_2, "responses"):
+                return {"output_text": "", "output": []}
+            response = self.AI_2.responses.create(**params)
+            output_text_parts = []
+            output_items = []
+            output = getattr(response, "output", None) or []
+            for item in output:
+                content = getattr(item, "content", None) or []
+                for c in content:
+                    c_type = getattr(c, "type", None)
+                    if c_type in ("message", "text") or hasattr(c, "text"):
+                        text = getattr(c, "text", None)
+                        if isinstance(text, str):
+                            output_text_parts.append(text)
+                    elif c_type == "tool_use":
+                        output_items.append({
+                            "type": "tool_call",
+                            "id": getattr(c, "id", None),
+                            "tool_call_id": getattr(c, "id", None),
+                            "name": getattr(c, "name", None),
+                            "arguments": getattr(c, "input", None) or {},
+                        })
+            return {
+                "output_text": "\n".join(output_text_parts).strip() if output_text_parts else "",
+                "output": output_items,
+            }
+        except Exception as e:
+            print(f"Error running Responses API call: {e}")
+            return {"output_text": "", "output": []}
+
     
     def new_chat_thread_document(self,public_user=''):
         """

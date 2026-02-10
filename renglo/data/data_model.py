@@ -61,7 +61,7 @@ class DataModel:
                 'Limit': limit
             }
             
-            print('query_params:',query_params)
+            print('Data Model > query_params:',query_params)
 
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
             if lastkey:                  

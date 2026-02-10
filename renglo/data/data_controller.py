@@ -11,6 +11,7 @@ from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
 from renglo.logger import get_logger
+from renglo.logger import get_logger
 
 
 # Add this custom JSON encoder class at the top level of your file
@@ -176,6 +177,8 @@ class DataController:
     
         s3_client = boto3.client('s3')
         bucket_name = self.config.get('S3_BUCKET_NAME')
+        if not bucket_name:
+            raise ValueError("S3_BUCKET_NAME not found in config")
         self.logger.debug(f'Refreshing s3 cache')
         # Proceed to regenerate the document
         response = []  # Initialize response
@@ -561,7 +564,7 @@ class DataController:
 
         for field in fields:
             self.logger.debug('>>:'+field['name']) 
-            if field['name'] in payload: 
+            if payload.get(field['name']): 
                 self.logger.debug('Found:'+field['name']) 
                 # Attribute exists in the blueprint
                 new_raw = payload.get(field['name'])

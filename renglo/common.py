@@ -1,15 +1,8 @@
-import jwt
 import re
 import hashlib
 import os
 import sys
 import importlib.util
-
-
-def decode_jwt(token):
-    # Decode the JWT to get the user information
-    decoded = jwt.decode(token, options={"verify_signature": False})
-    return decoded
 
 
 def get_username_from_email(email):
