@@ -330,7 +330,7 @@ class ChatController:
             #current_app.logger.debug(f'Prepared data for chat update: {item}')
             #print(f'Store modified item:{item}')
             response = self.CHM.update_chat(item)
-            print(response) 
+            # print(response) verbose v2
             return response
         
         except Exception as e:

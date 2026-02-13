@@ -649,9 +649,9 @@ class AgentUtilities:
                 
                 if key == 'plan_state':
                     if isinstance(output, dict):
-                        
-                        print(f'@mutate:plan_state: workspace: {workspace}')
-                        
+
+                        #print(f'@mutate:plan_state: workspace: {workspace}') #Verboso
+
                         if 'plan_id' in output :
                             plan_id = output['plan_id']
    
@@ -1271,8 +1271,8 @@ class AgentUtilities:
         Returns:
             list: The processed message list
         """
-        print(f'Raw message_list: {message_list}')
-        
+        #print(f'Raw message_list: {message_list}') #Verboso
+
         # Find the indices of the last x tool messages
         tool_indices = []
         for i in range(len(message_list) - 1, -1, -1):
@@ -1805,8 +1805,9 @@ class AgentUtilities:
             response = self.SHC.handler_call(portfolio,org,parts[0],parts[1],params)
 
             #print(f'Handler response:{response}') #Verboso
-            response_no_output = {k: v for k, v in response.items() if k != 'output'}
-            print(f'Handler response (no output):{response_no_output}')
+            response_clean = {k: v for k, v in response.items() if k not in ['stack', 'output']}
+            response_clean['output_size'] = len(str(response.get('output', '')))
+            print(f'Handler response (no stack/output):{response_clean}')
 
             if not response['success']:
                 return {'success':False,'action':action,'input':params,'output':response}

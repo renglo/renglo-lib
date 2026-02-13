@@ -207,9 +207,9 @@ class SchdController:
         result = []
 
         action = 'direct_run'
-        
-        print(f'Calling handler:{handler}, payload:{payload}')
-             
+
+        #print(f'Calling handler:{handler}, payload:{payload}') #Verboso
+
         response = {'success':False,'output':[]}
         
         # A way to limit the calls to this endpoint is to make each one of these runs have the same name as a blueprint. 
@@ -256,7 +256,7 @@ class SchdController:
     def handler_call(self,portfolio,org,extension,handler,payload):
         action = 'handler_call'
         
-        print(f'Calling handler:{handler}, payload:{payload}')
+        #print(f'Calling handler:{handler}, payload:{payload}') #Verboso
         
         try:        
             # We override portfolio, org and extension that might come in the payload.
@@ -368,10 +368,10 @@ class SchdController:
 
     def handler_check(self,portfolio,org,extension,handler,payload):
         action = 'handler_check'
-        
-        print(f'Calling handler check:{handler}, payload:{payload}')
-        
-        try:        
+
+        #print(f'Calling handler check:{handler}, payload:{payload}') #Verboso
+
+        try:
             # We override portfolio, org and extension that might come in the payload.
             payload['portfolio'] = portfolio
             payload['org'] = org
