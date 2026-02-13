@@ -25,18 +25,12 @@ class SchdController:
         self.SHM = SchdModel(config=self.config)
         self.SHL = SchdLoader()
 
-
-
-
-
-
     def find_rule(self,portfolio,org,timer):
 
         rule_name = "cron_"+portfolio+"_"+org+"_"+timer
         result = self.SHM.find_rule(rule_name)
 
         return result
-
 
     def create_rule(self,portfolio,org,name,schedule_expression,payload):
         '''
@@ -51,9 +45,7 @@ class SchdController:
             payload=payload
         )
 
-
         return result
-
 
     def remove_rule(self,portfolio,org,name):
         '''
@@ -66,14 +58,12 @@ class SchdController:
 
         return result
 
-
     def verify_rule(self,portfolio,org,timer):
 
         rule_name = "cronjob_"+portfolio+"_"+org+"_"+timer
         result = self.SHM.find_rule(rule_name)
 
         return result
-
 
     # COMPLETE
     def create_job_run(self,portfolio,org,payload):
@@ -122,18 +112,14 @@ class SchdController:
         self.logger.debug(response_2)
         result.append({'success':True,'action':action,'input':payload,'output':response_2})
 
-
         #3. Run  the handler indicated in the schd_jobs document
             #NOTICE: This indicates a Synchronous process which is not ideal
             # Ideally, this route should only store the schd_runs document and an asychronous process
             # should pick up and execute one at a time (or in parallel if you use many workers).
 
-
-
         action = 'call_handler'
 
         response_3 = {'success':False,'output':[]}
-
 
         if not 'handler' in jobdoc:
 
@@ -150,7 +136,6 @@ class SchdController:
 
             #current_app.logger.debug(f'Handler output:{response_3}')
 
-
             if not response_3['success']:
                 status = 400
                 result.append({'success':False,'action':action,'handler':handler_name,'input':handler_input_data,'output':response_3})
@@ -166,7 +151,6 @@ class SchdController:
         iso_date = datetime.now().strftime('%Y-%m-%d')
         response_3b = self.DCC.a_b_post(portfolio,org,f'schd_runs/{iso_date}',json.dumps(response_3),'application/json',False)
 
-
         # Check s3 Response
         if response_3b['success']:
             if 'path' in response_3b:
@@ -175,10 +159,6 @@ class SchdController:
                 output_doc = 'Could not store in S3..'
         else:
             output_doc = 'Could not store in S3.'
-
-
-
-
 
         #4. Record the results from the handler run in the schd_runs document, return
 
@@ -197,10 +177,7 @@ class SchdController:
 
         #self.DAC.refresh_s3_cache(portfolio, org, 'schd_runs', None)
 
-
         return result, status
-
-
 
     def direct_run(self,handler,payload):
 
@@ -242,7 +219,6 @@ class SchdController:
 
         #print(f'Handler output:{response}')
 
-
         if not response['success']:
             result.append({'success':False,'action':action,'handler':handler_name,'input':payload,'output':response})
             return result, 400
@@ -250,8 +226,6 @@ class SchdController:
         result.append({'success':True,'action':action,'handler':handler_name,'input':payload,'output':response})
 
         return result, 200
-
-
 
     def handler_call(self,portfolio,org,extension,handler,payload):
         action = 'handler_call'
@@ -364,8 +338,6 @@ class SchdController:
             print(f'Error @handler_call:: {e}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call:: {e}'}
 
-
-
     def handler_check(self,portfolio,org,extension,handler,payload):
         action = 'handler_check'
 
@@ -395,8 +367,6 @@ class SchdController:
         except Exception as e:
             print(f'Error @handler_check: {e}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {e}'}
-
-
 
     def delete_rule(self, rule_name):
         try:

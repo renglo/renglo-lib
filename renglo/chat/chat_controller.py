@@ -9,7 +9,6 @@ import json
 import boto3
 from decimal import Decimal
 
-
 class ChatController:
 
     def __init__(self, config=None, tid=None, ip=None):
@@ -24,7 +23,6 @@ class ChatController:
         self.config = config or {}
         self.CHM = ChatModel(config=self.config, tid=tid, ip=ip)
 
-
     def error_chat(self, error, connection_id):
 
         try:
@@ -34,7 +32,6 @@ class ChatController:
         except Exception as e:
             print(f"Error initializing WebSocket client: {e}")
             self.apigw_client = None
-
 
         try:
             #print(f'Sending Error Message to:{connection_id}') #legacy print
@@ -55,7 +52,6 @@ class ChatController:
             print(f'Error sending message: {str(e)}')
             return False
 
-
     def get_current_user(self):
 
         current_app.logger.debug(f'Getting user')
@@ -71,7 +67,6 @@ class ChatController:
 
         return user_id
 
-
     # THREADS
 
     def list_threads(self,portfolio,org,entity_type,entity_id):
@@ -80,7 +75,6 @@ class ChatController:
 
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
         secondary = f"{entity_id}"
-
 
         # entity_id = ''  //This will return ALL the threads
         # entity_id = <entity_id_prefix>  //This will return everything that matches the prefix
@@ -101,8 +95,6 @@ class ChatController:
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
         query = f"{query}"
 
-
-
         limit = 99
         sort = 'desc'
 
@@ -110,13 +102,10 @@ class ChatController:
 
         return response
 
-
     def create_thread(self,portfolio,org,entity_type,entity_id,public_user=''):
-
 
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
         secondary = f"{entity_id}"
-
 
         if public_user:
             author_id = public_user
@@ -139,19 +128,15 @@ class ChatController:
 
         return response
 
-
-
     # TURNS
     # There is a document per turn in the database
     # Every turn document contains a list of messages that belong to that turn
 
     def list_turns(self,portfolio,org,entity_type,entity_id,thread_id):
 
-
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
 
         query = f"{entity_id}/{thread_id}"
-
 
         limit = 50
         sort = 'asc'
@@ -164,12 +149,10 @@ class ChatController:
 
         return response
 
-
     def get_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id):
 
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
         query = f"{entity_id}/{thread_id}"
-
 
         # Because we don't have 'time' we need to get all the turns, iterate through
         # that list until we find the one that has the 'turn_id' and then return that.
@@ -184,7 +167,6 @@ class ChatController:
 
         return {'success':False,'output':'Turn not found'}
 
-
     def create_turn(self,portfolio,org,entity_type, entity_id, thread_id, payload):
         #print('CHC:create_turn') #legacy print
         try:
@@ -194,7 +176,6 @@ class ChatController:
             index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
             time = str(datetime.now().timestamp())
             secondary = f"{entity_id}/{thread_id}/{time}"
-
 
             current_app.logger.debug(f'create_turn > input > {index}/{secondary}')
             current_app.logger.debug(f'payload: {payload}')
@@ -240,7 +221,6 @@ class ChatController:
                 "status": 500
             }
 
-
     def _convert_floats_to_strings(self, obj):
         """
         Recursively converts float and Decimal values to strings in a dictionary or list structure.
@@ -255,9 +235,6 @@ class ChatController:
         elif isinstance(obj, float):
             return str(obj)
         return obj
-
-
-
 
     def update_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id, update, call_id=False):
         # Sanitize update early to prevent serialization errors in logging
@@ -277,7 +254,6 @@ class ChatController:
 
             if 'messages' not in item or not isinstance(item['messages'], list):
                 item['messages'] = []
-
 
             if call_id:
                 #print('Call id found:') #legacy print
@@ -314,9 +290,7 @@ class ChatController:
                             if '_next' in update:
                                 item['messages'][index]['_next'] = update['_next']
 
-
                             #print(item['messages'][index]) #Verboso
-
 
                         except json.JSONDecodeError as e:
                             print(f"Error parsing JSON content: {e}")
@@ -341,8 +315,6 @@ class ChatController:
                 "status": 500
             }
 
-
-
     # WORKSPACE
 
     def list_workspaces(self,portfolio,org,entity_type,entity_id,thread_id):
@@ -350,15 +322,12 @@ class ChatController:
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*"
         query = f"{entity_id}/{thread_id}"
 
-
-
         limit = 50
         sort = 'asc'
 
         response = self.CHM.query_chat(index,query,limit,sort=sort)
 
         return response
-
 
     def get_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id):
 
@@ -375,7 +344,6 @@ class ChatController:
 
         return {'success':False,'output':'Workspace not found'}
 
-
     def create_workspace(self,portfolio,org,entity_type,entity_id,thread_id,payload):
         print('CHC:create_workspace')
         try:
@@ -386,7 +354,6 @@ class ChatController:
             index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*"
             time = str(datetime.now().timestamp())
             secondary = f"{entity_id}/{thread_id}/{time}"
-
 
             current_app.logger.debug(f'create_workspace > input > {index}/{secondary}')
             current_app.logger.debug(f'payload: {payload}')
@@ -410,7 +377,6 @@ class ChatController:
                 "history": [],          # log of completed intentions
                 "in_progress": None     # the current active plan (intention)
             }
-
 
             print('All fields required: OK')
 
@@ -458,7 +424,6 @@ class ChatController:
                 "message": f"Error creating workspace: {str(e)}",
                 "status": 500
             }
-
 
     def update_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id,payload):
         # Sanitize payload early to prevent serialization errors in logging

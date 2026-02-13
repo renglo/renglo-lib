@@ -21,7 +21,6 @@ class DecimalEncoder(json.JSONEncoder):
             return int(obj) if obj % 1 == 0 else float(obj)
         return super(DecimalEncoder, self).default(obj)
 
-
 class AgentUtilities:
     def __init__(self,
                  config,
@@ -96,7 +95,6 @@ class AgentUtilities:
             #print(f'thread: {self.thread}') #legacy print
             #print(f'filter: {filter}') #legacy print
 
-
             apply_filter = False
             filter_param = None
             filter_value = None
@@ -105,7 +103,6 @@ class AgentUtilities:
                 filter_param = filter['param']
                 filter_value = filter['begins_with']
                 apply_filter = True
-
 
             # Thread was not included, create a new one?
             if not self.thread:
@@ -142,7 +139,6 @@ class AgentUtilities:
                             continue
 
                         #print(f'Include in filtered results') #legacy print
-
 
                     out_message = m['_out']
                     if m['_type'] in ['user', 'consent', 'system', 'text', 'tool_rq', 'tool_rs']:  # OK to show to LLM
@@ -219,8 +215,6 @@ class AgentUtilities:
 
         return {'success': True, 'action': action, 'input': update, 'output': response}
 
-
-
     def save_chat(self, output, interface=None, connection_id=None, next=None, msg_type=None):
 
         function = 'save_chat'
@@ -258,7 +252,6 @@ class AgentUtilities:
                 doc = {'_out': self.sanitize(output), '_type': 'widget','_interface':interface}
                 self.update_chat_message_document(doc)
                 self.print_chat(doc,message_type, as_is=True)
-
 
             elif output.get('tool_calls') and output.get('role') == 'assistant':
                 #print('Saving the tool call') #legacy print
@@ -324,8 +317,6 @@ class AgentUtilities:
         except Exception as e:
             print(f"Error in {function}: {e}")
 
-
-
     def print_api(self, message, type='text', public_user=None):
         """
         Print message to API.
@@ -340,9 +331,7 @@ class AgentUtilities:
         """
         action = 'print_api'
 
-
         callback_msg_handler = self.config.get('CALLBACK_MSG_HANDLER', False)
-
 
         try:
             if callback_msg_handler:
@@ -543,7 +532,6 @@ class AgentUtilities:
                     "in_progress": None
                 }
 
-
             # 2. Store the output in the workspace
             for key, output in changes.items():
                 if key == 'belief':
@@ -661,7 +649,6 @@ class AgentUtilities:
                             if 'updated_at' in output:
                                 workspace['state_machine'][plan_id] = output['updated_at']
 
-
                 if key == 'action_log':
                     if isinstance(output, dict):
                         '''
@@ -703,8 +690,6 @@ class AgentUtilities:
                         #print(f'Log to add to action_log:{log}') #legacy print
                         #print(f'Updated workspace after adding item to action_log:{workspace}')
 
-
-
              # 3. Update document in DB
 
             # Sanitize the entire workspace object to convert Decimals before updating
@@ -730,7 +715,6 @@ class AgentUtilities:
         Returns:
             The LLM response or False if error
         """
-
 
         try:
             # Create base parameters
@@ -763,7 +747,6 @@ class AgentUtilities:
         except Exception as e:
             print(f"Error running LLM call: {e}")
             return False
-
 
     def new_chat_thread_document(self,public_user=''):
         """
@@ -801,14 +784,10 @@ class AgentUtilities:
                     'success': False,'action': action,'output': thread
                 }
 
-
-
         except Exception as e:
 
             print(f"Error getting/creating thread: {e}")
             return {'success': False,'action': action,'output': f"{e}"}
-
-
 
     def new_chat_message_document(self, message, public_user=None, next=None):
         """
@@ -876,7 +855,6 @@ class AgentUtilities:
 
             '''
 
-
             if 'document' in response and '_id' in response['document']:
                 self.chat_id = response['document']['_id']
 
@@ -887,14 +865,10 @@ class AgentUtilities:
 
             return {'success': True, 'action': action, 'input': message, 'output': response['document']}
 
-
         except Exception as e:
 
             print(f"Error getting/creating turn: {e}")
             return {'success': False,'action': action,'input': '','output': f"{e}"}
-
-
-
 
     def get_active_workspace(self, workspace_id=None):
         """
@@ -1307,7 +1281,6 @@ class AgentUtilities:
 
         return message_list
 
-
     def pre_process_message(self, message, list_actions=[]):
         """
         Combined function that processes a message through multiple stages in a single LLM call:
@@ -1475,7 +1448,6 @@ class AgentUtilities:
             if not response.content:
                 raise Exception('LLM response is empty')
 
-
             #print(f'PROCESS MESSAGE PROMPT >> {prompt}')
             result = self.clean_json_response(response.content)
             sanitized_result = self.sanitize(result)
@@ -1516,8 +1488,6 @@ class AgentUtilities:
                 'output': str(e)
             }
 
-
-
     def interpret(self, no_tools=False, list_actions=[], list_tools=[]):
 
         action = 'interpret'
@@ -1538,7 +1508,6 @@ class AgentUtilities:
             message_list = self.clear_tool_message_content(message_list['output'])
 
             #print(f'Cleared Message History: {message_list}')
-
 
             # Get current time and date
             current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -1622,7 +1591,6 @@ class AgentUtilities:
                 }
             '''
 
-
             if no_tools:
                 available_tools = None
 
@@ -1697,7 +1665,6 @@ class AgentUtilities:
             response = self.llm(prompt)
             #print(f'RAW RESPONSE >> {response}')
 
-
             if not response:
                 return {
                     'success': False,
@@ -1705,7 +1672,6 @@ class AgentUtilities:
                     'input': '',
                     'output': response
                 }
-
 
             validation = self.validate_interpret_openai_llm_response(response)
             if not validation['success']:
@@ -1720,7 +1686,6 @@ class AgentUtilities:
 
             # Saving : A) The tool call, or B) The message to the user
             self.save_chat(validated_result)
-
 
             return {
                 'success': True,
@@ -1737,8 +1702,6 @@ class AgentUtilities:
                 'input': '',
                 'output': str(e)
             }
-
-
 
     ## Execution of Intentions
     def act(self,plan,list_tools=[]):
@@ -1791,7 +1754,6 @@ class AgentUtilities:
                 self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
 
-
             portfolio = self.portfolio
             org = self.org
 
@@ -1825,8 +1787,6 @@ class AgentUtilities:
             elif isinstance(response['output'], list) and len(response['output']) > 0 and 'interface' in response['output'][0]:
                 interface = response['output'][0]['interface']
 
-
-
             tool_out = {
                     "role": "tool",
                     "tool_call_id": f'{tid}',
@@ -1834,15 +1794,12 @@ class AgentUtilities:
                     "tool_calls":False
                 }
 
-
             # Save the message after it's created
             if interface:
                 self.save_chat(tool_out,interface=interface)
 
             else:
                 self.save_chat(tool_out)
-
-
 
             #print(f'flag3') #legacy print
 

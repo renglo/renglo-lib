@@ -12,14 +12,12 @@ from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
 from renglo.logger import get_logger
 
-
 # Add this custom JSON encoder class at the top level of your file
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Decimal):
             return str(obj)
         return super(DecimalEncoder, self).default(obj)
-
 
 def convert_js_to_json(js_string):
     """
@@ -55,7 +53,6 @@ def convert_js_to_json(js_string):
 
     return js_string
 
-
 def convert_js_to_json_advanced(js_string):
     """
     More advanced JavaScript to JSON converter that handles complex cases.
@@ -85,7 +82,6 @@ def convert_js_to_json_advanced(js_string):
     #print(f"Advanced JS to JSON - Output: {js_string}") #legacy print
 
     return js_string
-
 
 def convert_js_to_json_robust(js_string):
     """
@@ -130,7 +126,6 @@ def convert_js_to_json_robust(js_string):
 
     return js_string
 
-
 def convert_js_to_json_simple(js_string):
     """
     Simple and reliable JavaScript to JSON converter.
@@ -160,7 +155,6 @@ def convert_js_to_json_simple(js_string):
 
     return js_string
 
-
 class DataController:
 
     def __init__(self, config=None, tid=None, ip=None):
@@ -169,8 +163,6 @@ class DataController:
         self.DAM = DataModel(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
-
-
 
     def refresh_s3_cache(self,portfolio, org, ring, sort=None):
 
@@ -213,8 +205,6 @@ class DataController:
 
         return result, 201
 
-
-
     def sanitize(self,obj):
         '''
         Avoids Floats being sent to DynamoDB
@@ -234,8 +224,6 @@ class DataController:
             return obj
         else:
             return obj
-
-
 
     def generate_index_string_x(self,blueprint,item_values):
         # Check if blueprint has an "indexes" key
@@ -316,7 +304,6 @@ class DataController:
 
         return index_string
 
-
     def generate_index_string(self,blueprint,org,item_values):
         # Check if blueprint has an "indexes" key
         indexes = blueprint.get('indexes')
@@ -358,7 +345,6 @@ class DataController:
 
         return index_string
 
-
     def construct_post_item(self,portfolio,org,ring,payload):
         '''
         Creates a new item following the blueprint fields and data submitted via the request.
@@ -390,9 +376,7 @@ class DataController:
         #flag_values = {}
         fields = blueprint['fields']
 
-
         self.logger.debug("post_a_b raw arguments from the Form fields:"+str(payload))
-
 
         for field in fields:
 
@@ -410,7 +394,6 @@ class DataController:
                 # Instead of skipping we put the field's default value
                 new_raw = field['default']
 
-
             if field['type'] == 'object':
                 try:
                     if isinstance(new_raw, dict):
@@ -422,7 +405,6 @@ class DataController:
                         item_values[field['name']] = {}
                     else:
                         item_values[field['name']] = str(new_raw).strip()
-
 
             elif field['type'] == 'array':
                 try:
@@ -437,7 +419,6 @@ class DataController:
                         item_values[field['name']] = []
                     else:
                         item_values[field['name']] = str(new_raw).strip()
-
 
             elif field['type'] == 'timestamp':
                 new_raw = new_raw.strip()
@@ -475,9 +456,7 @@ class DataController:
                 else:
                     item_values[field['name']] = None
 
-
             item_values[field['name']] = self.sanitize(item_values[field['name']])
-
 
         item = {}
 
@@ -498,17 +477,13 @@ class DataController:
 
         item['attributes'] = item_values
 
-
         index_string = self.generate_index_string(blueprint,org,item_values)
         if index_string:
             item['path_index'] = index_string
         elif 'path_index' in item:
             del item['path_index']
 
-
         return item
-
-
 
     def construct_put_item(self,portfolio,org,ring,idx,payload):
         '''
@@ -519,7 +494,6 @@ class DataController:
         @NOTES:
           - "request.url" are the arguments that come via url
           - "request.form" are the arguments that come via form
-
 
         @IN:
           request.url = {(string):(string),}
@@ -565,7 +539,6 @@ class DataController:
                 self.logger.debug('Found:'+field['name'])
                 # Attribute exists in the blueprint
                 new_raw = payload.get(field['name'])
-
 
                 if field['type'] == 'object':
                    #print(f'Field declared as object: {field["name"]}')
@@ -679,7 +652,6 @@ class DataController:
         if not putNeeded:
             return {'error':'Attributes not recognized'}
 
-
         # DEPRECATED (Update the index string.)
         # YOU CAN'T UPDATE THE LSI
         '''
@@ -757,7 +729,6 @@ class DataController:
         #return items,result['lastkey']
         return items
 
-
     #DEPRECATED
     def get_a_b_index(self,portfolio,prefix_path):
 
@@ -815,7 +786,6 @@ class DataController:
         #return items,result['lastkey']
         return items
 
-
     def get_a_b_query(self,query):
 
         '''
@@ -836,7 +806,6 @@ class DataController:
             'sort': <asc|desc>
             }
         '''
-
 
         #prefix = f'irn:h_index:{org}:{ring}:{index_tail}'
 
@@ -871,7 +840,6 @@ class DataController:
         if operator=='equal_to':
 
             response = self.DAM.get_a_b_equalto(query)
-
 
         items = []
         #response = self.DAM.get_a_b(portfolio,org,ring,limit=limit,lastkey=lastkey)
@@ -912,9 +880,7 @@ class DataController:
             if item:
                 items.append(item)
 
-
         last_id = response['lastkey']
-
 
         result['success'] = True
         result['items'] = items
@@ -923,8 +889,6 @@ class DataController:
         self.logger.debug('NUMBER OF ITEMS (QUERY):'+str(i))
 
         return result
-
-
 
     def get_a_b(self,portfolio,org,ring,limit=1000,lastkey=None,sort=None):
         '''
@@ -1000,7 +964,6 @@ class DataController:
         if len(items)>1 and sort:
             items = sorted(items, key=lambda item: item[sort], reverse=True)
 
-
         result['success'] = True
         result['items'] = items
         result['last_id'] = last_id
@@ -1008,8 +971,6 @@ class DataController:
         self.logger.debug('NUMBER OF ITEMS:'+str(i))
 
         return result
-
-
 
     def post_a_b(self,portfolio,org,ring,payload):
         '''
@@ -1053,8 +1014,6 @@ class DataController:
             status = 500
             return result, status
 
-
-
     def get_a_b_c(self,portfolio,org,ring,idx):
         '''
         Gets an existing item
@@ -1091,19 +1050,14 @@ class DataController:
             else:
                 result['_index'] = ''
 
-
             if 'modified' in response:
                 result['_modified'] = response['modified']
             else:
                 result['_modified'] = ''
 
-
-
         self.logger.debug('Returned object:'+str(result))
 
         return result
-
-
 
     def put_a_b_c(self,portfolio,org,ring,idx,payload):
         '''
@@ -1130,7 +1084,6 @@ class DataController:
 
         #self.logger.debug('Update response:'+str(response))
 
-
         if 'error' not in response:
             result['success'] = True
             result['message'] = 'Item saved (PUT)'
@@ -1148,8 +1101,6 @@ class DataController:
             self.logger.debug('Returned object:'+str(result))
 
             return result,status
-
-
 
     def delete_a_b_c(self,portfolio,org,ring,idx):
         '''
