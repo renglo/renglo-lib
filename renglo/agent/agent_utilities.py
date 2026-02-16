@@ -700,6 +700,8 @@ class AgentUtilities:
                             log['message'] = output['message']
                         if 'type' in output:
                             log['type'] = output['type']
+                        if 'actionable' in  output:
+                            log['actionable'] = output['actionable']
                         
                         # Use helper function to safely get or create the step
                         step = self.get_or_create_step(workspace, plan_id, plan_step)
