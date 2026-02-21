@@ -566,11 +566,10 @@ class AgentUtilities:
                 if key == 'desire':
                     if isinstance(output, str):
                         workspace['state']['desire'] = output
-                        
+                
                 if key == 'intent':
                     if isinstance(output, dict):
-                        # Sanitize nested intent data to ensure no Decimals slip through
-                        workspace['state']['intent'] = self.sanitize(output) 
+                        workspace['intent'] = self.sanitize(output)
                         
                 if key == 'belief_history':
                     if isinstance(output, dict):
