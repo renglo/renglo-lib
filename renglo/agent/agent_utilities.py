@@ -568,8 +568,15 @@ class AgentUtilities:
                         workspace['state']['desire'] = output
                 
                 if key == 'intent':
+                    print(f'Workspace before intent insert:{workspace}')
+                    print(f'Inserting Intent:{output}')
                     if isinstance(output, dict):
+                        print('Flag i1')
                         workspace['intent'] = self.sanitize(output)
+                    else:
+                        print('Flag i2')
+        
+                        
                         
                 if key == 'belief_history':
                     if isinstance(output, dict):
