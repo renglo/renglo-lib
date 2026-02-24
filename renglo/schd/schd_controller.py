@@ -223,7 +223,22 @@ class SchdController:
         else:
             result.append({'success':False,'action':action,'input':payload,'output':response})
             return result, 400
-            
+
+        payload['tool'] = extension
+
+        if has_external_handlers(extension) and is_external_handler_active(extension):
+            print(f'Calling external handler:{handler}')
+            response = run_external_handler(
+                extension_name=extension,
+                handler_name=handler_name,
+                payload=payload
+            )
+            if not response.get('success'):
+                result.append({'success': False, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
+                return result, 400
+            result.append({'success': True, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
+            return result, 200
+
         '''
         # This check exists because there should be a blueprint that defines the input shape of the handler. 
         # This only applies to handlers that are exposed publicly. 
@@ -237,7 +252,7 @@ class SchdController:
                 result.append({'success':False,'action':action,'input':payload,'error':f'Error with the blueprint:{handler_name}'}) 
                 return result, 400
         '''
-            
+           
         response = self.SHL.load_and_run(handler, payload = payload)
         
         #print(f'Handler output:{response}')
@@ -284,7 +299,7 @@ class SchdController:
                     if not response.get('success'):
                         # External handler failed - format to match SchdLoader error format
                         error_output = response.get('output', {})
-                        error_msg = response.get('error', 'External handler execution failed')
+                        error_msg = response.get('error', 'External handler execution failed [SCOH]')
                         
                         # Create error output in SchdLoader format
                         formatted_output = {
