@@ -503,10 +503,14 @@ class ChatController:
                 item['state_machine'] = payload['state_machine']
                 changed = True
                 
+            if 'intent' in payload:
+                item['intent'] = payload['intent']
+                changed = True
+                
             if changed:
                 #print('Something has changed. Updating the workspace')
                 #current_app.logger.debug(f'Prepared data for workspace update: {item}')
-                #print(item)
+                print(item)
                 response = self.CHM.update_chat(item)
                 print('Workspace has been updated.')
                 #print(response)
