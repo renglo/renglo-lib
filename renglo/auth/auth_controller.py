@@ -10,7 +10,6 @@ from ..common import *
 import uuid
 from decimal import Decimal
 from renglo.auth.auth_model import AuthModel
-from flask_cognito import cognito_auth_required, current_user, current_cognito_jwt
 import re
 import time
 from validate_email import validate_email
@@ -21,6 +20,8 @@ class AuthController:
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
         self.AUM = AuthModel(config=self.config)
+        self._invocation_user_id = None
+        self._invocation_jwt_claims = None
         # Set up logger
         self.logger = logging.getLogger(self.__class__.__name__)
         # Configure logger if not already configured (prevents duplicate handlers)
@@ -59,16 +60,56 @@ class AuthController:
         
         
     
-    def get_current_user(self):
+    def set_invocation_user(self, user_id):
+        """Set the current user for this invocation (e.g. from payload in Lambda/Docker)."""
+        self._invocation_user_id = user_id
 
-        if "cognito:username" in current_cognito_jwt:
-            # IdToken was used
-            user_id = create_md5_hash(current_cognito_jwt["cognito:username"],9)
-        else:
-            # AccessToken was used
-            user_id = create_md5_hash(current_cognito_jwt["username"],9)
+    def set_invocation_jwt_claims(self, jwt_claims):
+        """Set JWT claims for this invocation; get_current_user() will derive user_id from them."""
+        self._invocation_jwt_claims = jwt_claims
 
-        return user_id
+    @staticmethod
+    def _user_id_from_claims(claims):
+        if not claims:
+            return None
+        if "cognito:username" in claims:
+            return create_md5_hash(claims["cognito:username"], 9)
+        if "username" in claims:
+            return create_md5_hash(claims["username"], 9)
+        return None
+
+    def get_current_user(self, jwt_claims=None):
+        """
+        Return the current user id. Precedence:
+        1. jwt_claims argument (if provided)
+        2. _invocation_user_id (set by set_invocation_user for Lambda/Docker)
+        3. _invocation_jwt_claims (set from payload)
+        4. Flask request: g.current_user_id (set by API when using cognito_auth_required)
+        5. Optional: flask_cognito current_cognito_jwt (lazy import, when running in Flask app context)
+        """
+        if jwt_claims is not None:
+            uid = self._user_id_from_claims(jwt_claims)
+            if uid is not None:
+                return uid
+        if getattr(self, "_invocation_user_id", None) is not None:
+            return self._invocation_user_id
+        if getattr(self, "_invocation_jwt_claims", None) is not None:
+            uid = self._user_id_from_claims(self._invocation_jwt_claims)
+            if uid is not None:
+                return uid
+        try:
+            from flask import g
+            uid = getattr(g, "current_user_id", None)
+            if uid is not None:
+                return uid
+        except Exception:
+            pass
+        try:
+            from flask_cognito import current_cognito_jwt
+            return self._user_id_from_claims(dict(current_cognito_jwt) if current_cognito_jwt else None)
+        except Exception:
+            pass
+        return None
 
 
     def invite_user(self,email,team_id,portfolio_id,sender_id):
