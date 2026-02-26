@@ -17,14 +17,18 @@ from pathlib import Path
 
 try:
     import boto3
+    from botocore.exceptions import ClientError
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
+    ClientError = Exception  # type: ignore
 
 from renglo.schd.external_handlers_config import (
     get_lambda_config,
     get_local_config,
-    is_external_handler_active
+    is_external_handler_active,
+    is_ecs_handler,
+    get_ecs_config,
 )
 from renglo.common import load_config
 
@@ -160,8 +164,13 @@ def call_local_docker_handler(
     
     package_path = config['package_path']
     full_package_path = os.path.join(workspace_root, package_path)
-    image_latest = config['docker_image']
-    image_local = f"{extension_name}-lambda-builder:local"
+    # Use ECS (large) image for handlers in ECS list, else Lambda (small) image
+    if is_ecs_handler(extension_name, handler_name):
+        image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
+        image_local = f"{extension_name}-ecs-builder:local"
+    else:
+        image_latest = config['docker_image']
+        image_local = f"{extension_name}-lambda-builder:local"
 
     # Check if Docker is available
     try:
@@ -599,6 +608,116 @@ def call_lambda_handler(
         }
 
 
+def call_ecs_handler(
+    extension_name: str,
+    handler_name: str,
+    payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Call a handler via ECS run_task. Payload is written to S3, task reads it and
+    writes result to S3; this function polls for the result.
+    """
+    if not BOTO3_AVAILABLE:
+        return {
+            'success': False,
+            'error': 'boto3 is not available. Install it to use ECS handlers.'
+        }
+    import uuid
+    import time
+    ecs_cfg = get_ecs_config(extension_name)
+    if not ecs_cfg:
+        return {
+            'success': False,
+            'error': f'No ECS configuration found for extension: {extension_name}. Set ECS_RESULTS_BUCKET and ECS_CLUSTER.'
+        }
+    bucket = ecs_cfg['s3_bucket']
+    cluster = ecs_cfg['cluster']
+    task_def = ecs_cfg['task_definition']
+    region = ecs_cfg['region']
+    payload_prefix = ecs_cfg.get('payload_prefix', 'payloads')
+    result_prefix = ecs_cfg.get('result_prefix', 'results')
+    request_id = str(uuid.uuid4())
+    payload_key = f"{payload_prefix}/{request_id}.json"
+    result_key = f"{result_prefix}/{request_id}.json"
+    event = {'handler': handler_name, 'payload': payload}
+    try:
+        s3 = boto3.client('s3', region_name=region)
+        ecs = boto3.client('ecs', region_name=region)
+        s3.put_object(
+            Bucket=bucket,
+            Key=payload_key,
+            Body=json.dumps(event),
+            ContentType='application/json',
+        )
+        overrides = {
+            'containerOverrides': [{
+                'name': 'handler',
+                'environment': [
+                    {'name': 'REQUEST_ID', 'value': request_id},
+                    {'name': 'PAYLOAD_S3_BUCKET', 'value': bucket},
+                    {'name': 'PAYLOAD_S3_KEY', 'value': payload_key},
+                    {'name': 'RESULT_S3_BUCKET', 'value': bucket},
+                    {'name': 'RESULT_S3_KEY', 'value': result_key},
+                ]
+            }]
+        }
+        network_config = {
+            'awsvpcConfiguration': {
+                'subnets': ecs_cfg['subnets'],
+                'securityGroups': ecs_cfg['security_groups'],
+                'assignPublicIp': 'ENABLED',
+            }
+        }
+        resp = ecs.run_task(
+            cluster=cluster,
+            taskDefinition=task_def,
+            launchType='FARGATE',
+            networkConfiguration=network_config,
+            overrides=overrides,
+        )
+        failures = resp.get('failures', [])
+        if failures:
+            return {
+                'success': False,
+                'error': f'ECS run_task failed: {failures}'
+            }
+        tasks = resp.get('tasks', [])
+        if not tasks:
+            return {'success': False, 'error': 'ECS run_task returned no tasks'}
+        # Poll S3 for result (timeout 15 min, check every 2 s)
+        timeout_sec = 900
+        poll_interval = 2
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            try:
+                obj = s3.get_object(Bucket=bucket, Key=result_key)
+                body = json.loads(obj['Body'].read().decode())
+                if body.get('statusCode') == 200 and body.get('success'):
+                    return {'success': True, 'output': body.get('body', {})}
+                return {
+                    'success': False,
+                    'output': body.get('error') or body.get('body', {}),
+                    'error': body.get('error', 'ECS handler failed')
+                }
+            except ClientError as e:
+                if (e.response or {}).get('Error', {}).get('Code') == 'NoSuchKey':
+                    pass
+                else:
+                    print(f"ECS result poll error: {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"ECS result poll error: {e}", file=sys.stderr)
+            time.sleep(poll_interval)
+        return {
+            'success': False,
+            'error': f'Timeout waiting for ECS result (request_id={request_id})'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'ECS invocation failed: {str(e)}'
+        }
+
+
 def run_external_handler(
     extension_name: str,
     handler_name: str,
@@ -628,13 +747,17 @@ def run_external_handler(
     
     # Determine execution mode
     if is_running_locally() and use_dev_docker(extension_name):
-        print(f'Calling external handler: {extension_name}/{handler_name} in local docker. Payload:{payload}') 
+        print(f'Calling external handler: {extension_name}/{handler_name} in local docker. Payload:{payload}')
         response = call_local_docker_handler(extension_name, handler_name, payload)
         print(f'Response >> {response}')
         return response
-    
+
+    # Remote: ECS (large) vs Lambda (light) by list
+    if is_ecs_handler(extension_name, handler_name):
+        print(f'Calling external handler: {extension_name}/{handler_name} in ECS. Payload:{payload}')
+        response = call_ecs_handler(extension_name, handler_name, payload)
     else:
-        print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload} ')
+        print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload}')
         response = call_lambda_handler(extension_name, handler_name, payload)
-        print(f'Response >> {response}')
-        return response
+    print(f'Response >> {response}')
+    return response
