@@ -6,8 +6,13 @@ from renglo.blueprint.blueprint_controller import BlueprintController
 
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
-from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active
-from renglo.schd.external_handler_runner import run_external_handler
+from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, is_ecs_handler
+from renglo.schd.external_handler_runner import (
+    run_external_handler,
+    call_ecs_handler_async,
+    get_batch_result as run_get_batch_result,
+    get_batch_status as run_get_batch_status,
+)
 
 from datetime import datetime
 
@@ -411,7 +416,52 @@ class SchdController:
             print(f'Error @handler_check: {e}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {e}'}
 
-    
+    def handler_call_batch_start(self, portfolio, org, extension, handler, payload):
+        """Start ECS batch handler and return request_id + task_id (no S3 wait)."""
+        action = 'handler_call_batch_start'
+        payload = dict(payload or {})
+        payload['portfolio'] = portfolio
+        payload['org'] = org
+        payload['tool'] = extension
+        if not has_external_handlers(extension) or not is_external_handler_active(extension):
+            return {'success': False, 'error': 'External handlers not active for this extension'}
+        if not is_ecs_handler(extension, handler):
+            return {'success': False, 'error': 'Batch start only available for ECS handlers'}
+        response = call_ecs_handler_async(
+            extension_name=extension,
+            handler_name=handler,
+            payload=payload,
+        )
+        if not response.get('success'):
+            return {
+                'success': False,
+                'action': action,
+                'error': response.get('error', 'ECS start failed'),
+                'request_id': None,
+                'task_id': None,
+            }
+        return {
+            'success': True,
+            'action': action,
+            'request_id': response.get('request_id'),
+            'task_id': response.get('task_id'),
+        }
+
+    def get_batch_result(self, portfolio, org, extension, request_id):
+        """Return batch result from S3 or pending."""
+        result = run_get_batch_result(extension_name=extension, request_id=request_id)
+        result['portfolio'] = portfolio
+        result['org'] = org
+        result['extension'] = extension
+        return result
+
+    def get_batch_status(self, portfolio, org, extension, request_id):
+        """Return batch progress from S3 (status/<request_id>.json)."""
+        result = run_get_batch_status(extension_name=extension, request_id=request_id)
+        result['portfolio'] = portfolio
+        result['org'] = org
+        result['extension'] = extension
+        return result
 
     def delete_rule(self, rule_name):
         try:

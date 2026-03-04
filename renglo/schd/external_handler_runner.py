@@ -649,6 +649,7 @@ def call_ecs_handler(
             Body=json.dumps(event),
             ContentType='application/json',
         )
+        status_key = f"status/{request_id}.json"
         overrides = {
             'containerOverrides': [{
                 'name': 'handler',
@@ -658,6 +659,8 @@ def call_ecs_handler(
                     {'name': 'PAYLOAD_S3_KEY', 'value': payload_key},
                     {'name': 'RESULT_S3_BUCKET', 'value': bucket},
                     {'name': 'RESULT_S3_KEY', 'value': result_key},
+                    {'name': 'STATUS_S3_BUCKET', 'value': bucket},
+                    {'name': 'STATUS_S3_KEY', 'value': status_key},
                 ]
             }]
         }
@@ -716,6 +719,157 @@ def call_ecs_handler(
             'success': False,
             'error': f'ECS invocation failed: {str(e)}'
         }
+
+
+def call_ecs_handler_async(
+    extension_name: str,
+    handler_name: str,
+    payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Start an ECS handler and return immediately with request_id and task_id.
+    Used for batch (e.g. lab_batch_processor) so the client can poll result and logs.
+    """
+    if not BOTO3_AVAILABLE:
+        return {
+            'success': False,
+            'error': 'boto3 is not available. Install it to use ECS handlers.'
+        }
+    import uuid
+    ecs_cfg = get_ecs_config(extension_name)
+    if not ecs_cfg:
+        return {
+            'success': False,
+            'error': f'No ECS configuration found for extension: {extension_name}.'
+        }
+    bucket = ecs_cfg['s3_bucket']
+    cluster = ecs_cfg['cluster']
+    task_def = ecs_cfg['task_definition']
+    region = ecs_cfg['region']
+    payload_prefix = ecs_cfg.get('payload_prefix', 'payloads')
+    result_prefix = ecs_cfg.get('result_prefix', 'results')
+    request_id = str(uuid.uuid4())
+    payload_key = f"{payload_prefix}/{request_id}.json"
+    result_key = f"{result_prefix}/{request_id}.json"
+    status_key = f"status/{request_id}.json"
+    event = {'handler': handler_name, 'payload': payload}
+    try:
+        s3 = boto3.client('s3', region_name=region)
+        ecs = boto3.client('ecs', region_name=region)
+        s3.put_object(
+            Bucket=bucket,
+            Key=payload_key,
+            Body=json.dumps(event),
+            ContentType='application/json',
+        )
+        overrides = {
+            'containerOverrides': [{
+                'name': 'handler',
+                'environment': [
+                    {'name': 'REQUEST_ID', 'value': request_id},
+                    {'name': 'PAYLOAD_S3_BUCKET', 'value': bucket},
+                    {'name': 'PAYLOAD_S3_KEY', 'value': payload_key},
+                    {'name': 'RESULT_S3_BUCKET', 'value': bucket},
+                    {'name': 'RESULT_S3_KEY', 'value': result_key},
+                    {'name': 'STATUS_S3_BUCKET', 'value': bucket},
+                    {'name': 'STATUS_S3_KEY', 'value': status_key},
+                ]
+            }]
+        }
+        network_config = {
+            'awsvpcConfiguration': {
+                'subnets': ecs_cfg['subnets'],
+                'securityGroups': ecs_cfg['security_groups'],
+                'assignPublicIp': 'ENABLED',
+            }
+        }
+        resp = ecs.run_task(
+            cluster=cluster,
+            taskDefinition=task_def,
+            launchType='FARGATE',
+            networkConfiguration=network_config,
+            overrides=overrides,
+        )
+        failures = resp.get('failures', [])
+        if failures:
+            return {
+                'success': False,
+                'error': f'ECS run_task failed: {failures}'
+            }
+        tasks = resp.get('tasks', [])
+        if not tasks:
+            return {'success': False, 'error': 'ECS run_task returned no tasks'}
+        task_arn = tasks[0].get('taskArn', '')
+        task_id = task_arn.split('/')[-1] if task_arn else ''
+        return {
+            'success': True,
+            'request_id': request_id,
+            'task_id': task_id,
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'ECS invocation failed: {str(e)}'
+        }
+
+
+def get_batch_result(extension_name: str, request_id: str) -> Dict[str, Any]:
+    """
+    Read batch result from S3 (results/<request_id>.json). Returns pending if not found.
+    """
+    if not BOTO3_AVAILABLE:
+        return {'success': False, 'error': 'boto3 not available', 'status': 'error'}
+    ecs_cfg = get_ecs_config(extension_name)
+    if not ecs_cfg:
+        return {'success': False, 'error': 'No ECS config', 'status': 'error'}
+    bucket = ecs_cfg['s3_bucket']
+    region = ecs_cfg['region']
+    result_prefix = ecs_cfg.get('result_prefix', 'results')
+    result_key = f"{result_prefix}/{request_id}.json"
+    try:
+        s3 = boto3.client('s3', region_name=region)
+        obj = s3.get_object(Bucket=bucket, Key=result_key)
+        body = json.loads(obj['Body'].read().decode())
+        if body.get('statusCode') == 200 and body.get('success'):
+            return {'success': True, 'status': 'completed', 'output': body.get('body', body)}
+        return {
+            'success': False,
+            'status': 'completed',
+            'output': body.get('error') or body.get('body', {}),
+            'error': body.get('error', 'ECS handler failed'),
+        }
+    except ClientError as e:
+        if (e.response or {}).get('Error', {}).get('Code') == 'NoSuchKey':
+            return {'success': True, 'status': 'pending'}
+        return {'success': False, 'error': str(e), 'status': 'error'}
+    except Exception as e:
+        return {'success': False, 'error': str(e), 'status': 'error'}
+
+
+def get_batch_status(extension_name: str, request_id: str) -> Dict[str, Any]:
+    """
+    Read batch progress from S3 (status/<request_id>.json). Returns pending if not found.
+    """
+    if not BOTO3_AVAILABLE:
+        return {'success': False, 'error': 'boto3 not available', 'status': 'error', 'step': None}
+    ecs_cfg = get_ecs_config(extension_name)
+    if not ecs_cfg:
+        return {'success': False, 'error': 'No ECS config', 'status': 'error', 'step': None}
+    bucket = ecs_cfg['s3_bucket']
+    region = ecs_cfg['region']
+    status_key = f"status/{request_id}.json"
+    try:
+        s3 = boto3.client('s3', region_name=region)
+        obj = s3.get_object(Bucket=bucket, Key=status_key)
+        body = json.loads(obj['Body'].read().decode())
+        step = body.get('step')
+        return {'success': True, 'status': 'running', 'step': step}
+    except ClientError as e:
+        if (e.response or {}).get('Error', {}).get('Code') == 'NoSuchKey':
+            return {'success': True, 'status': 'pending', 'step': None}
+        return {'success': False, 'error': str(e), 'status': 'error', 'step': None}
+    except Exception as e:
+        return {'success': False, 'error': str(e), 'status': 'error', 'step': None}
 
 
 def run_external_handler(
