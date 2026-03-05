@@ -50,8 +50,8 @@ class DataModel:
         # Sort key (SK) prefix for querying documents based on org, ring, and a generated prefix
         prefix_doc_index = f'{org}:{ring}'  # This is the prefix we will use in begins_with for SK
         
-        print('portfolio_index:',portfolio_index)
-        print('prefix_doc_index:',prefix_doc_index)
+        #print('portfolio_index:',portfolio_index)
+        #print('prefix_doc_index:',prefix_doc_index)
                 
         try:
             # Build the query parameters with KeyConditionExpression
@@ -61,7 +61,7 @@ class DataModel:
                 'Limit': limit
             }
             
-            print('Data Model > query_params:',query_params)
+            #print('Data Model > query_params:',query_params)
 
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
             if lastkey:                  

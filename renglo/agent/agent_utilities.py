@@ -978,7 +978,25 @@ class AgentUtilities:
             return False
         
         if len(workspaces_list['items']) == 0:
-            return False
+            # Create a workspace as none exist
+            payload = {}
+            response = self.CHC.create_workspace(
+                self.portfolio,
+                self.org,
+                self.entity_type,
+                self.entity_id,
+                self.thread, payload
+            ) 
+            if not response['success']:
+                return False
+            # Regenerate workspaces_list
+            workspaces_list = self.CHC.list_workspaces(
+                self.portfolio,
+                self.org,
+                self.entity_type,
+                self.entity_id,
+                self.thread
+            ) 
         
         if not workspace_id:
             workspace = workspaces_list['items'][-1]
