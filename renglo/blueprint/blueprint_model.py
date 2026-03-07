@@ -1,6 +1,7 @@
-from flask import redirect,url_for, jsonify, current_app, session, request
+from flask import redirect, url_for, jsonify, session, request
 
 import boto3
+from renglo.logger import get_logger
 from botocore.exceptions import ClientError
 from datetime import datetime
 import uuid
@@ -30,7 +31,7 @@ class BlueprintModel:
 
         irn = 'irn:blueprint:' + handle +':'+ name
 
-        current_app.logger.debug('Get Blueprint '+irn+' v:'+v)
+        get_logger().debug('Get Blueprint '+irn+' v:'+v)
         
 
         try:
