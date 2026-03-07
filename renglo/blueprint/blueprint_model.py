@@ -1,6 +1,8 @@
+from flask import redirect, url_for, jsonify, session, request
+
 import boto3
-from botocore.exceptions import ClientError
 from renglo.logger import get_logger
+from botocore.exceptions import ClientError
 
 
 class BlueprintModel:
@@ -37,7 +39,7 @@ class BlueprintModel:
         irn = 'irn:blueprint:' + handle +':'+ name
         legacy_irn = 'blueprint:' + handle +':'+ name
 
-        self.logger.debug('Get Blueprint '+irn+' v:'+v)
+        get_logger().debug('Get Blueprint '+irn+' v:'+v)
         
 
         try:
@@ -94,4 +96,3 @@ class BlueprintModel:
             return {"success": True, "message": "Document deleted", "status": 200}
         except ClientError as e:
             return {"success": False, "error": e.response['Error']['Message'], "status": 500}
-
