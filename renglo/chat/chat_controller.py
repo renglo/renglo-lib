@@ -3,15 +3,19 @@ import copy
 import json
 import traceback
 import uuid
-import boto3
+from datetime import datetime
 from decimal import Decimal
 
-from flask import current_app
-from flask_cognito import current_cognito_jwt
-from datetime import datetime
-from renglo.docs.docs_controller import DocsController
+import boto3
+from flask import current_app, has_app_context
+
 from renglo.chat.chat_model import ChatModel
+from renglo.docs.docs_controller import DocsController
+from renglo.logger import get_logger
+
 from ..common import *
+
+logger = get_logger()
 
 
 class ChatController:
@@ -61,19 +65,20 @@ class ChatController:
         
         
     def get_current_user(self):
-        
-        print(f'Getting user')
-        user_id='101010'
-
+        # When running outside Flask (e.g. Lambda, external handler), no app context;
+        # return a default so create_turn/create_workspace can still persist chat.
+        if not has_app_context():
+            return "external-handler"
+        try:
+            from flask_cognito import current_cognito_jwt
+        except Exception:
+            return "external-handler"
+        logger.debug("Getting user")
         if "cognito:username" in current_cognito_jwt:
-            # IdToken was used
-            user_id = create_md5_hash(current_cognito_jwt["cognito:username"],9)
+            user_id = create_md5_hash(current_cognito_jwt["cognito:username"], 9)
         else:
-            # AccessToken was used
-            user_id = create_md5_hash(current_cognito_jwt["username"],9)
-            
-        print(f'User Id:{user_id}')
-
+            user_id = create_md5_hash(current_cognito_jwt["username"], 9)
+        logger.debug(f"User Id:{user_id}")
         return user_id
         
         
@@ -410,8 +415,8 @@ class ChatController:
             secondary = f"{entity_id}/{thread_id}/{time}"
             
             
-            current_app.logger.debug(f'create_turn > input > {index}/{secondary}')
-            current_app.logger.debug(f'payload: {payload}')
+            logger.debug(f"create_turn > input > {index}/{secondary}")
+            logger.debug(f"payload: {payload}")
             
             # Validate required payload fields
             required_fields = ['context']
@@ -441,13 +446,11 @@ class ChatController:
                 '_id': str(uuid.uuid4()) # This is the turn ID 
             }
             
-            current_app.logger.debug(f'Prepared data for chat creation: {data}')
-            
+            logger.debug("Prepared data for chat creation: %s", data)
             response = self.CHM.create_chat(data)
             return response
-            
         except Exception as e:
-            current_app.logger.error(f"Error in create_turn: {str(e)}")
+            logger.error("Error in create_turn: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error creating turn: {str(e)}",
@@ -548,7 +551,7 @@ class ChatController:
             return response
         
         except Exception as e:
-            current_app.logger.error(f"Error in update_turn: {str(e)}")
+            logger.error("Error in update_turn: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error updating message: {str(e)}",
@@ -602,8 +605,8 @@ class ChatController:
             secondary = f"{entity_id}/{thread_id}/{time}"
             
             
-            current_app.logger.debug(f'create_workspace > input > {index}/{secondary}')
-            current_app.logger.debug(f'payload: {payload}')
+            logger.debug("create_workspace > input > %s/%s", index, secondary)
+            logger.debug("payload: %s", payload)
             
             # Validate required payload fields
             '''required_fields = ['context']
@@ -661,13 +664,11 @@ class ChatController:
                 '_id': str(uuid.uuid4())
             }
             
-            current_app.logger.debug(f'Prepared data for chat creation: {data}')
-            
+            logger.debug("Prepared data for chat creation: %s", data)
             response = self.CHM.create_chat(data)
             return response
-            
         except Exception as e:
-            current_app.logger.error(f"Error in create_workspace: {str(e)}")
+            logger.error("Error in create_workspace: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error creating workspace: {str(e)}",
@@ -741,7 +742,7 @@ class ChatController:
                 print('No changes detected in workspace.')
         
         except Exception as e:
-            current_app.logger.error(f"Error in update_workspace: {str(e)}")
+            logger.error("Error in update_workspace: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error updating workspace: {str(e)}",

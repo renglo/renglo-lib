@@ -1,12 +1,14 @@
 # chat_model.py
 
-from flask import redirect,url_for, jsonify, current_app, session
-
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import BotoCoreError, ClientError
 from decimal import Decimal
 import json
+
+from renglo.logger import get_logger
+
+logger = get_logger()
 
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -171,7 +173,7 @@ class ChatModel:
         
         result = {}
         
-        current_app.logger.debug(f'get_chat: {index} > {message_id}')
+        logger.debug("get_chat: %s > %s", index, message_id)
         
         try:
             # Build the query parameters with KeyConditionExpression
@@ -185,7 +187,7 @@ class ChatModel:
             
 
 
-            current_app.logger.debug(f'Query parameters: {query_params}')
+            logger.debug("Query parameters: %s", query_params)
 
             # Query DynamoDB to get the specific item
             response = self.chat_table.query(**query_params)
@@ -196,7 +198,7 @@ class ChatModel:
             #current_app.logger.debug(f'Extracted items: {items}')
             
             if not items:
-                current_app.logger.debug(f'No items found for index: {index} and message_id: {message_id}')
+                logger.debug("No items found for index: %s and message_id: %s", index, message_id)
                 result['success'] = False
                 result['message'] = 'Item not found'
                 return result
@@ -210,7 +212,7 @@ class ChatModel:
             return result
 
         except Exception as e:
-            current_app.logger.error(f"Error in get_chat: {str(e)}")
+            logger.error("Error in get_chat: %s", str(e))
             result['success'] = False
             result['message'] = 'Item could not be retrieved'
             result['error'] = str(e)
@@ -226,7 +228,7 @@ class ChatModel:
             # Sanitize data before storing
             sanitized_data = self.sanitize(data)
             response = self.chat_table.put_item(Item=sanitized_data)
-            current_app.logger.debug('MODEL: Created chat successfully:'+str(sanitized_data))
+            logger.debug("MODEL: Created chat successfully: %s", sanitized_data)
             return {
                 "success":True, 
                 "message": "Chat created", 
@@ -277,7 +279,7 @@ class ChatModel:
 
         try:
             response = self.chat_table.delete_item(Key=keys)
-            current_app.logger.debug('MODEL: Deleted Chat:' + str(data))
+            logger.debug("MODEL: Deleted Chat: %s", data)
             return {
                 "success":True,
                 "message": "Entity deleted", 
