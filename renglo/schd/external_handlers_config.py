@@ -390,3 +390,36 @@ def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
         "payload_prefix": "payloads",
         "result_prefix": "results",
     }
+
+
+def get_batch_s3_config(extension_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Get S3 config for batch payload/result storage (bucket, region, prefixes).
+    Used by batch start/result/status when running locally (in-process or dev Docker)
+    without full ECS. Prefer get_ecs_config when available; otherwise use global
+    ECS_RESULTS_BUCKET + AWS_REGION so any handler can run in batch mode.
+    """
+    cfg = get_ecs_config(extension_name)
+    if cfg:
+        return {
+            "region": cfg["region"],
+            "s3_bucket": cfg["s3_bucket"],
+            "payload_prefix": cfg.get("payload_prefix", "payloads"),
+            "result_prefix": cfg.get("result_prefix", "results"),
+        }
+    try:
+        from renglo.common import load_config
+        config = load_config()
+    except Exception:
+        config = {}
+    bucket = (config.get("ECS_RESULTS_BUCKET") or os.getenv("ECS_RESULTS_BUCKET") or "").strip()
+    region = (config.get("AWS_REGION") or config.get("AWS_DEFAULT_REGION") or
+              os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1")
+    if not bucket:
+        return None
+    return {
+        "region": region,
+        "s3_bucket": bucket,
+        "payload_prefix": "payloads",
+        "result_prefix": "results",
+    }

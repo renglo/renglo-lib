@@ -29,6 +29,7 @@ from renglo.schd.external_handlers_config import (
     is_external_handler_active,
     is_ecs_handler,
     get_ecs_config,
+    get_batch_s3_config,
 )
 from renglo.common import load_config
 
@@ -813,18 +814,173 @@ def call_ecs_handler_async(
         }
 
 
+def call_local_docker_handler_batch_start(
+    extension_name: str,
+    handler_name: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Start a handler in local Docker in batch mode: write payload to S3, run container
+    in background with REQUEST_ID and S3 env vars (same as ECS). Container reads
+    payload from S3 and writes result/status to S3. Uses same bucket as ECS/local.
+    """
+    import uuid
+    if not BOTO3_AVAILABLE:
+        return {'success': False, 'error': 'boto3 not available'}
+    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    if not s3_cfg:
+        return {'success': False, 'error': 'No S3 config for batch (set ECS_RESULTS_BUCKET or ECS config)'}
+    config = get_local_config(extension_name)
+    if not config:
+        return {'success': False, 'error': f'No local Docker config for extension: {extension_name}'}
+
+    workspace_root = None
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "extensions").exists() and (parent / "dev").exists():
+            workspace_root = str(parent)
+            break
+    if not workspace_root:
+        return {'success': False, 'error': 'Could not determine workspace root'}
+
+    bucket = s3_cfg['s3_bucket']
+    region = s3_cfg['region']
+    payload_prefix = s3_cfg.get('payload_prefix', 'payloads')
+    result_prefix = s3_cfg.get('result_prefix', 'results')
+    request_id = str(uuid.uuid4())
+    payload_key = f"{payload_prefix}/{request_id}.json"
+    result_key = f"{result_prefix}/{request_id}.json"
+    status_key = f"status/{request_id}.json"
+    event = {'handler': handler_name, 'payload': payload}
+
+    try:
+        s3 = boto3.client('s3', region_name=region)
+        s3.put_object(
+            Bucket=bucket,
+            Key=payload_key,
+            Body=json.dumps(event),
+            ContentType='application/json',
+        )
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to write payload to S3: {e}'}
+
+    # Use ECS image so container uses S3 entrypoint (read payload from S3, write result to S3)
+    image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
+    image_local = f"{extension_name}-ecs-builder:local"
+
+    try:
+        subprocess.run(['docker', '--version'], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {'success': False, 'error': 'Docker not available or not in PATH'}
+
+    def _image_exists(img: str) -> bool:
+        result = subprocess.run(['docker', 'image', 'inspect', img], capture_output=True)
+        return result.returncode == 0
+
+    if _image_exists(image_local):
+        docker_image = image_local
+        run_platform = 'linux/arm64'
+    elif _image_exists(image_latest):
+        docker_image = image_latest
+        run_platform = 'linux/amd64'
+    else:
+        return {
+            'success': False,
+            'error': f'Docker image not found. Build ECS image: {image_latest} or {image_local}',
+        }
+
+    package_path = config['package_path']
+    full_package_path = os.path.join(workspace_root, package_path)
+    aws_dir = os.path.expanduser('~/.aws')
+    docker_args = [
+        'docker', 'run', '--rm',
+        '--platform', run_platform,
+        '-e', f'REQUEST_ID={request_id}',
+        '-e', f'PAYLOAD_S3_BUCKET={bucket}',
+        '-e', f'PAYLOAD_S3_KEY={payload_key}',
+        '-e', f'RESULT_S3_BUCKET={bucket}',
+        '-e', f'RESULT_S3_KEY={result_key}',
+        '-e', f'STATUS_S3_BUCKET={bucket}',
+        '-e', f'STATUS_S3_KEY={status_key}',
+        '-v', f'{full_package_path}:/package',
+        '-w', '/package',
+    ]
+    if os.path.isdir(aws_dir):
+        docker_args.extend(['-v', f'{aws_dir}:/root/.aws:ro'])
+    for env_var in ('AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_DEFAULT_REGION', 'AWS_REGION'):
+        value = os.getenv(env_var)
+        if value:
+            docker_args.extend(['-e', f'{env_var}={value}'])
+    config_env = load_config_for_docker()
+    for key, value in config_env.items():
+        if value is not None and value != '':
+            docker_args.extend(['-e', f'{key}={shlex.quote(str(value))}'])
+    docker_args.append(docker_image)
+    # Container default entrypoint (e.g. ecs_handler_entrypoint) reads S3 and writes result
+    try:
+        subprocess.Popen(
+            docker_args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            cwd=workspace_root,
+        )
+    except Exception as e:
+        return {'success': False, 'error': f'Failed to start Docker: {e}'}
+    return {'success': True, 'request_id': request_id, 'task_id': None}
+
+
+def write_batch_payload(extension_name: str, request_id: str, event: Dict[str, Any]) -> None:
+    """Write batch payload to S3 (payloads/<request_id>.json). Raises on failure."""
+    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    if not s3_cfg or not BOTO3_AVAILABLE:
+        raise RuntimeError('No S3 config or boto3 for batch payload')
+    prefix = s3_cfg.get('payload_prefix', 'payloads')
+    key = f"{prefix}/{request_id}.json"
+    s3 = boto3.client('s3', region_name=s3_cfg['region'])
+    s3.put_object(
+        Bucket=s3_cfg['s3_bucket'],
+        Key=key,
+        Body=json.dumps(event),
+        ContentType='application/json',
+    )
+
+
+def write_batch_result(extension_name: str, request_id: str, run_response: Dict[str, Any]) -> None:
+    """
+    Write batch result to S3 (results/<request_id>.json) in ECS-compatible format.
+    run_response: dict from SchdLoader.load_and_run (success, output, ...).
+    """
+    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    if not s3_cfg or not BOTO3_AVAILABLE:
+        raise RuntimeError('No S3 config or boto3 for batch result')
+    success = run_response.get('success', False)
+    output = run_response.get('output', run_response)
+    body = {'statusCode': 200 if success else 500, 'success': success, 'body': output}
+    if not success and run_response.get('error'):
+        body['error'] = run_response['error']
+    key = f"{s3_cfg.get('result_prefix', 'results')}/{request_id}.json"
+    s3 = boto3.client('s3', region_name=s3_cfg['region'])
+    s3.put_object(
+        Bucket=s3_cfg['s3_bucket'],
+        Key=key,
+        Body=json.dumps(body),
+        ContentType='application/json',
+    )
+
+
 def get_batch_result(extension_name: str, request_id: str) -> Dict[str, Any]:
     """
     Read batch result from S3 (results/<request_id>.json). Returns pending if not found.
+    Uses get_ecs_config or get_batch_s3_config so local and dev Docker batch results work.
     """
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available', 'status': 'error'}
-    ecs_cfg = get_ecs_config(extension_name)
-    if not ecs_cfg:
-        return {'success': False, 'error': 'No ECS config', 'status': 'error'}
-    bucket = ecs_cfg['s3_bucket']
-    region = ecs_cfg['region']
-    result_prefix = ecs_cfg.get('result_prefix', 'results')
+    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    if not s3_cfg:
+        return {'success': False, 'error': 'No S3 config for batch results', 'status': 'error'}
+    bucket = s3_cfg['s3_bucket']
+    region = s3_cfg['region']
+    result_prefix = s3_cfg.get('result_prefix', 'results')
     result_key = f"{result_prefix}/{request_id}.json"
     try:
         s3 = boto3.client('s3', region_name=region)
@@ -849,14 +1005,15 @@ def get_batch_result(extension_name: str, request_id: str) -> Dict[str, Any]:
 def get_batch_status(extension_name: str, request_id: str) -> Dict[str, Any]:
     """
     Read batch progress from S3 (status/<request_id>.json). Returns pending if not found.
+    Uses get_ecs_config or get_batch_s3_config so local and dev Docker batch status works.
     """
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available', 'status': 'error', 'step': None}
-    ecs_cfg = get_ecs_config(extension_name)
-    if not ecs_cfg:
-        return {'success': False, 'error': 'No ECS config', 'status': 'error', 'step': None}
-    bucket = ecs_cfg['s3_bucket']
-    region = ecs_cfg['region']
+    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    if not s3_cfg:
+        return {'success': False, 'error': 'No S3 config for batch status', 'status': 'error', 'step': None}
+    bucket = s3_cfg['s3_bucket']
+    region = s3_cfg['region']
     status_key = f"status/{request_id}.json"
     try:
         s3 = boto3.client('s3', region_name=region)
