@@ -6,18 +6,24 @@ from renglo.blueprint.blueprint_controller import BlueprintController
 
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
-from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, is_ecs_handler
+from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, is_ecs_handler, get_ecs_config, get_batch_s3_config
 from renglo.schd.external_handler_runner import (
     run_external_handler,
     call_ecs_handler_async,
+    call_local_docker_handler_batch_start,
     get_batch_result as run_get_batch_result,
     get_batch_status as run_get_batch_status,
+    use_dev_docker,
+    write_batch_payload,
+    write_batch_result,
 )
 
 from datetime import datetime
 
 import json
 import os
+import threading
+import uuid
 
 class SchdController:
 
@@ -416,35 +422,79 @@ class SchdController:
             print(f'Error @handler_check: {e}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {e}'}
 
+    def _run_batch_local_worker(self, extension: str, handler: str, payload: dict, request_id: str) -> None:
+        """Background worker: run handler in-process and write result to S3."""
+        try:
+            response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
+            write_batch_result(extension, request_id, response)
+        except Exception as e:
+            write_batch_result(extension, request_id, {'success': False, 'output': str(e), 'error': str(e)})
+
     def handler_call_batch_start(self, portfolio, org, extension, handler, payload):
-        """Start ECS batch handler and return request_id + task_id (no S3 wait)."""
+        """Start batch handler (any handler). Supports: local in-process, external dev Docker, or ECS."""
         action = 'handler_call_batch_start'
         payload = dict(payload or {})
         payload['portfolio'] = portfolio
         payload['org'] = org
         payload['tool'] = extension
-        if not has_external_handlers(extension) or not is_external_handler_active(extension):
-            return {'success': False, 'error': 'External handlers not active for this extension'}
-        if not is_ecs_handler(extension, handler):
-            return {'success': False, 'error': 'Batch start only available for ECS handlers'}
-        response = call_ecs_handler_async(
-            extension_name=extension,
-            handler_name=handler,
-            payload=payload,
-        )
-        if not response.get('success'):
+
+        s3_cfg = get_ecs_config(extension) if has_external_handlers(extension) else None
+        if not s3_cfg:
+            s3_cfg = get_batch_s3_config(extension)
+        if not s3_cfg:
+            return {'success': False, 'error': 'Batch requires ECS_RESULTS_BUCKET or ECS config for result storage'}
+
+        if has_external_handlers(extension) and is_external_handler_active(extension):
+            if use_dev_docker(extension):
+                response = call_local_docker_handler_batch_start(
+                    extension_name=extension,
+                    handler_name=handler,
+                    payload=payload,
+                )
+            else:
+                if not is_ecs_handler(extension, handler):
+                    return {
+                        'success': False,
+                        'error': 'Batch in production only for ECS handlers; use sync endpoint for this handler',
+                    }
+                response = call_ecs_handler_async(
+                    extension_name=extension,
+                    handler_name=handler,
+                    payload=payload,
+                )
+            if not response.get('success'):
+                return {
+                    'success': False,
+                    'action': action,
+                    'error': response.get('error', 'Batch start failed'),
+                    'request_id': None,
+                    'task_id': None,
+                }
             return {
-                'success': False,
+                'success': True,
                 'action': action,
-                'error': response.get('error', 'ECS start failed'),
-                'request_id': None,
-                'task_id': None,
+                'request_id': response.get('request_id'),
+                'task_id': response.get('task_id'),
             }
+
+        # Local (no external): run handler in background thread and write result to S3
+        request_id = str(uuid.uuid4())
+        event = {'handler': handler, 'payload': payload}
+        try:
+            write_batch_payload(extension, request_id, event)
+        except Exception as e:
+            return {'success': False, 'error': f'Failed to write batch payload: {e}'}
+        thread = threading.Thread(
+            target=self._run_batch_local_worker,
+            args=(extension, handler, payload, request_id),
+            daemon=True,
+        )
+        thread.start()
         return {
             'success': True,
             'action': action,
-            'request_id': response.get('request_id'),
-            'task_id': response.get('task_id'),
+            'request_id': request_id,
+            'task_id': None,
         }
 
     def get_batch_result(self, portfolio, org, extension, request_id):

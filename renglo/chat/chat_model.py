@@ -210,7 +210,7 @@ class ChatModel:
             return result
 
         except Exception as e:
-            self.logger.error(f"Error in get_chat: {str(e)}")
+            self.logger.error(f'Error in get_chat: {str(e)}')
             result['success'] = False
             result['message'] = 'Item could not be retrieved'
             result['error'] = str(e)
@@ -226,7 +226,7 @@ class ChatModel:
             # Sanitize data before storing
             sanitized_data = self.sanitize(data)
             response = self.chat_table.put_item(Item=sanitized_data)
-            self.logger.debug('MODEL: Created chat successfully:'+str(sanitized_data))
+            self.logger.debug(f'MODEL: Created chat successfully: {sanitized_data}')
             return {
                 "success":True, 
                 "message": "Chat created", 
@@ -277,7 +277,7 @@ class ChatModel:
 
         try:
             response = self.chat_table.delete_item(Key=keys)
-            self.logger.debug('MODEL: Deleted Chat:' + str(data))
+            self.logger.debug(f'MODEL: Deleted Chat: {data}')
             return {
                 "success":True,
                 "message": "Entity deleted", 

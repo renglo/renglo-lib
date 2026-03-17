@@ -3,12 +3,14 @@ import copy
 import json
 import traceback
 import uuid
-import boto3
+from datetime import datetime
 from decimal import Decimal
 
-from datetime import datetime
-from renglo.docs.docs_controller import DocsController
+import boto3
+from flask import has_app_context
+
 from renglo.chat.chat_model import ChatModel
+from renglo.docs.docs_controller import DocsController
 from renglo.logger import get_logger
 from renglo.runtime import get_current_jwt_claims
 from ..common import *
@@ -66,20 +68,36 @@ class ChatController:
         self._invocation_jwt_claims = jwt_claims
 
     def get_current_user(self):
-        
-        print(f'Getting user')
-        user_id='101010'
+        # Outside Flask: runtime/invocation JWT when set; else stable handler id (incoming).
+        if not has_app_context():
+            claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
+            if "cognito:username" in claims:
+                return create_md5_hash(claims["cognito:username"], 9)
+            if "username" in claims:
+                return create_md5_hash(claims["username"], 9)
+            return "external-handler"
 
         claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
-        if "cognito:username" in claims:
-            # IdToken was used
-            user_id = create_md5_hash(claims["cognito:username"],9)
-        elif "username" in claims:
-            # AccessToken was used
-            user_id = create_md5_hash(claims["username"],9)
-            
-        print(f'User Id:{user_id}')
+        if claims:
+            if "cognito:username" in claims:
+                user_id = create_md5_hash(claims["cognito:username"], 9)
+            elif "username" in claims:
+                user_id = create_md5_hash(claims["username"], 9)
+            else:
+                user_id = "external-handler"
+            self.logger.debug("User Id:%s", user_id)
+            return user_id
 
+        try:
+            from flask_cognito import current_cognito_jwt
+        except Exception:
+            return "external-handler"
+        self.logger.debug("Getting user")
+        if "cognito:username" in current_cognito_jwt:
+            user_id = create_md5_hash(current_cognito_jwt["cognito:username"], 9)
+        else:
+            user_id = create_md5_hash(current_cognito_jwt["username"], 9)
+        self.logger.debug("User Id:%s", user_id)
         return user_id
         
         
@@ -440,8 +458,8 @@ class ChatController:
             secondary = f"{entity_id}/{thread_id}/{time}"
             
             
-            self.logger.debug(f'create_turn > input > {index}/{secondary}')
-            self.logger.debug(f'payload: {payload}')
+            self.logger.debug("create_turn > input > %s/%s", index, secondary)
+            self.logger.debug("payload: %s", payload)
             
             # Validate required payload fields
             required_fields = ['context']
@@ -476,13 +494,11 @@ class ChatController:
                 '_id': str(uuid.uuid4()) # This is the turn ID 
             }
             
-            self.logger.debug(f'Prepared data for chat creation: {data}')
-            
+            self.logger.debug("Prepared data for chat creation: %s", data)
             response = self.CHM.create_chat(data)
             return response
-            
         except Exception as e:
-            self.logger.error(f"Error in create_turn: {str(e)}")
+            self.logger.error("Error in create_turn: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error creating turn: {str(e)}",
@@ -587,7 +603,7 @@ class ChatController:
             return response
         
         except Exception as e:
-            self.logger.error(f"Error in update_turn: {str(e)}")
+            self.logger.error("Error in update_turn: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error updating message: {str(e)}",
@@ -641,8 +657,8 @@ class ChatController:
             secondary = f"{entity_id}/{thread_id}/{time}"
             
             
-            self.logger.debug(f'create_workspace > input > {index}/{secondary}')
-            self.logger.debug(f'payload: {payload}')
+            self.logger.debug("create_workspace > input > %s/%s", index, secondary)
+            self.logger.debug("payload: %s", payload)
             
             # Validate required payload fields
             '''required_fields = ['context']
@@ -700,13 +716,11 @@ class ChatController:
                 '_id': str(uuid.uuid4())
             }
             
-            self.logger.debug(f'Prepared data for chat creation: {data}')
-            
+            self.logger.debug("Prepared data for chat creation: %s", data)
             response = self.CHM.create_chat(data)
             return response
-            
         except Exception as e:
-            self.logger.error(f"Error in create_workspace: {str(e)}")
+            self.logger.error("Error in create_workspace: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error creating workspace: {str(e)}",
@@ -780,7 +794,7 @@ class ChatController:
                 print('No changes detected in workspace.')
         
         except Exception as e:
-            self.logger.error(f"Error in update_workspace: {str(e)}")
+            self.logger.error("Error in update_workspace: %s", str(e))
             return {
                 "success": False,
                 "message": f"Error updating workspace: {str(e)}",
