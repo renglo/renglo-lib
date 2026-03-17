@@ -258,6 +258,27 @@ class AgentUtilities:
                 doc = {'_out': self.sanitize(output), '_type': 'widget','_interface':interface}
                 self.update_chat_message_document(doc)
                 self.print_chat(doc,message_type, as_is=True)
+
+            elif msg_type == 'transient' and output.get('content') and output.get('role') == 'assistant':
+                print('Saving transient message to the message roll')
+                message_type = 'transient'
+                doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc, message_type, as_is=True)
+
+            elif msg_type == 'json' and output.get('role') == 'assistant':
+                message_type = 'json'
+                out_val = output.get('content') if 'content' in output else output
+                doc = {'_out': self.sanitize(out_val), '_type': message_type, '_interface': interface or 'document', '_next': next}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc, message_type, as_is=True)
+
+            elif msg_type == 'option' and output.get('role') == 'assistant':
+                message_type = 'option'
+                out_val = output.get('content') if 'content' in output else output
+                doc = {'_out': self.sanitize(out_val), '_type': message_type, '_interface': interface or 'option', '_next': next}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc, message_type, as_is=True)
                  
                 
             elif output.get('tool_calls') and output.get('role') == 'assistant':
@@ -1593,10 +1614,102 @@ class AgentUtilities:
                 'input': message,
                 'output': str(e)
             }
-    
-    
-    
-    def interpret(self, no_tools=False, list_actions=[], list_tools=[]):
+
+    def introspection(self, message, list_actions=[]):
+        """
+        Produce an introspection paragraph: a third-person description of what the
+        user wants, whether more information is needed, and (if enough info) a plan.
+        This is NOT a response to the user; it describes the user as a third person.
+        Example: user says "What can you do for me" -> "The user wants to know what
+        I can do for them." Intended for display as a transient chat message.
+
+        Parameters
+        ----------
+        message : str
+            The user's message
+        list_actions : list, optional
+            Available actions for context (each with key, goal, slots)
+
+        Returns
+        -------
+        dict
+            {'success': bool, 'action': str, 'input': str, 'output': str}
+            output is the introspection paragraph on success, or error message on failure
+        """
+        action = 'summarize_intent_and_plan'
+        self.print_chat('Thinking...', 'transient')
+        try:
+            current_time = datetime.now().strftime("%Y-%m-%d")
+            workspace = self.get_active_workspace()
+            current_action = workspace.get('state', {}).get('action', '') if workspace else ''
+            last_belief = workspace.get('state', {}).get('beliefs', {}) if workspace else {}
+            intent = workspace.get('intent', {}) if workspace else {}
+            if isinstance(intent, str):
+                try:
+                    intent = json.loads(intent) if intent else {}
+                except json.JSONDecodeError:
+                    intent = {}
+
+            dict_actions = {}
+            for a in list_actions:
+                dict_actions[a['key']] = {
+                    'goal': a.get('goal', ''),
+                    'slots': a.get('slots', '')
+                }
+
+            prompt_text = f"""You are writing an introspection: a third-person observation about the user, NOT a response to them.
+Treat the user as "the user" throughout. Example: if the user says "What can you do for me", write "The user wants to know what I can do for them."
+
+Write ONE short paragraph (2-4 sentences) that:
+1. States what the user wants or is asking for, in third person (e.g. "The user wants to...", "The user is asking whether...").
+2. Says whether more information is needed to create a plan. If yes, briefly list what is missing.
+3. If there is enough information, describe the plan in third person (e.g. "The next step would be to search for flights, then hotels, then present options").
+
+Never address the user directly. This is an internal observation, not an answer.
+
+Today's date: {current_time}
+Current action context: {current_action}
+Current beliefs: {json.dumps(last_belief, indent=2) if last_belief else "{}"}
+Intent so far: {json.dumps(intent, indent=2) if intent else "{}"}
+Available actions: {json.dumps(dict_actions, indent=2)}
+
+User message: {message}
+
+Write only the paragraph, no JSON or labels."""
+
+            prompt = {
+                "model": self.AI_1_MODEL,
+                "messages": [{"role": "user", "content": prompt_text}],
+                "temperature": 0
+            }
+            prompt = self.sanitize(prompt)
+            response = self.llm(prompt)
+
+            if not response or not getattr(response, 'content', None):
+                return {
+                    'success': False,
+                    'action': action,
+                    'input': message,
+                    'output': 'No response from LLM'
+                }
+
+            paragraph = (response.content or '').strip()
+            return {
+                'success': True,
+                'action': action,
+                'input': message,
+                'output': paragraph
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'action': action,
+                'input': message,
+                'output': str(e)
+            }
+
+    def interpret(self, no_tools=False, list_actions=[], list_tools=[], structured_output=False):
         
         action = 'interpret'
         self.print_chat('Interpreting message...', 'transient')
@@ -1641,6 +1754,8 @@ class AgentUtilities:
             # Belief  
             current_beliefs = workspace.get('state', {}).get('beliefs', {}) if workspace else {}
             belief_str = 'Current beliefs: ' + self.string_from_object(current_beliefs)
+            if workspace and workspace.get('intent'):
+                belief_str += ' Current intent: ' + self.string_from_object(workspace['intent'])
             print(f'Current Belief:{belief_str}')
                 
             #belief_history = workspace.get('state', {}).get('history', []) if workspace else []             
@@ -1797,7 +1912,20 @@ class AgentUtilities:
             validated_result = validation['output']
            
             # Saving : A) The tool call, or B) The message to the user
-            self.save_chat(validated_result)  
+            parsed_intent = None
+            if structured_output and not validated_result.get('tool_calls'):
+                content = validated_result.get('content') or ''
+                if isinstance(content, str) and content.strip().startswith('{'):
+                    try:
+                        parsed = json.loads(content)
+                        if isinstance(parsed, dict) and 'message' in parsed and 'intent' in parsed:
+                            self.save_chat({'role': 'assistant', 'content': parsed['message']})
+                            parsed_intent = parsed.get('intent')
+                            validated_result = {'role': 'assistant', 'content': parsed['message'], 'parsed_intent': parsed_intent}
+                    except json.JSONDecodeError:
+                        pass
+            if parsed_intent is None:
+                self.save_chat(validated_result)
  
                       
             return {
