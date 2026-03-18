@@ -446,13 +446,17 @@ class AgentCore:
                 
                 list_tools = [] 
                 for t in list_tools_raw:
+                    attrs = t.get('attributes', {}) if isinstance(t, dict) else {}
+                    tool_key = t.get('key') or attrs.get('key')
+                    tool_goal = t.get('goal') or attrs.get('goal', '')
+                    tool_input_raw = t.get('input') or attrs.get('input', '[]')
                     
-                    if t.get('key') in approved_tools:
+                    if tool_key in approved_tools:
                         # Parse the escaped JSON string into a Python object
                         try:
-                            tool_input = json.loads(t.get('input', '[]'))
+                            tool_input = json.loads(tool_input_raw)
                         except json.JSONDecodeError:
-                            print(f"Invalid JSON in tool input for tool {t.get('key', 'unknown')}. Using empty array.")
+                            print(f"Invalid JSON in tool input for tool {tool_key or 'unknown'}. Using empty array.")
                             tool_input = []
                         
                         dict_params = {}
@@ -484,8 +488,8 @@ class AgentCore:
                         tool = {
                             'type': 'function',
                             'function': {
-                                'name': t.get('key', ''),
-                                'description': t.get('goal', ''),
+                                'name': tool_key or '',
+                                'description': tool_goal,
                                 'parameters': {
                                     'type': 'object',
                                     'properties': dict_params,
@@ -568,7 +572,11 @@ class AgentCore:
         
         list_handlers = {}
         for t in list_tools_raw:
-            list_handlers[t.get('key', '')] = t.get('handler', '')
+            attrs = t.get('attributes', {}) if isinstance(t, dict) else {}
+            key = t.get('key') or attrs.get('key')
+            handler = t.get('handler') or attrs.get('handler', '')
+            if key:
+                list_handlers[key] = handler
             
         self._update_context(list_handlers=list_handlers)
     
@@ -824,6 +832,34 @@ class AgentCore:
         
         tools = self.DAC.get_a_b(context.portfolio, context.org, 'schd_tools')
         context.list_tools = tools['items']
+
+        # Safety net: some orgs are created without schd_tools/schd_actions catalogs.
+        # When that happens, tool selection succeeds but act() can't resolve handlers.
+        # Auto-upload catalogs and reload before processing the first user message.
+        if not context.list_tools or not context.list_actions:
+            try:
+                print("Catalog missing for org; running upload_tools_and_actions...")
+                bootstrap_payload = {
+                    "subhandler": "upload_all",
+                    "mode": "reset",
+                    "force_refresh": True
+                }
+                bootstrap = self.SHC.handler_call(
+                    context.portfolio,
+                    context.org,
+                    "noma",
+                    "upload_tools_and_actions",
+                    bootstrap_payload
+                )
+                print(f"Catalog bootstrap result: {bootstrap}")
+            except Exception as e:
+                print(f"Catalog bootstrap failed: {e}")
+
+            # Reload catalogs regardless of bootstrap outcome.
+            actions = self.DAC.get_a_b(context.portfolio, context.org, 'schd_actions')
+            context.list_actions = actions.get('items', [])
+            tools = self.DAC.get_a_b(context.portfolio, context.org, 'schd_tools')
+            context.list_tools = tools.get('items', [])
         
         # Set the initial context for this turn
         self._set_context(context)

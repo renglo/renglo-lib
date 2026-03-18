@@ -1685,13 +1685,17 @@ class AgentUtilities:
                 
                 available_tools = [] 
                 for t in available_tools_raw:
+                    attrs = t.get('attributes', {}) if isinstance(t, dict) else {}
+                    tool_key = t.get('key') or attrs.get('key')
+                    tool_goal = t.get('goal') or attrs.get('goal', '')
+                    tool_input_raw = t.get('input') or attrs.get('input', '[]')
                     
-                    if t.get('key') in approved_tools:
+                    if tool_key in approved_tools:
                         # Parse the escaped JSON string into a Python object
                         try:
-                            tool_input = json.loads(t.get('input', '[]'))
+                            tool_input = json.loads(tool_input_raw)
                         except json.JSONDecodeError:
-                            print(f"Invalid JSON in tool input for tool {t.get('key', 'unknown')}. Using empty array.")
+                            print(f"Invalid JSON in tool input for tool {tool_key or 'unknown'}. Using empty array.")
                             tool_input = []
                         
                         dict_params = {}
@@ -1723,8 +1727,8 @@ class AgentUtilities:
                         tool = {
                             'type': 'function',
                             'function': {
-                                'name': t.get('key', ''),
-                                'description': t.get('goal', ''),
+                                'name': tool_key or '',
+                                'description': tool_goal,
                                 'parameters': {
                                     'type': 'object',
                                     'properties': dict_params,
