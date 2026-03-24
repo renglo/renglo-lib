@@ -66,7 +66,8 @@ def _get_workspace_root() -> Optional[Path]:
 def _load_ecs_deploy_config(extension_name: str) -> Optional[Dict[str, Any]]:
     """
     Load ECS deploy config from extensions/<name>/installer/service/ecs_deploy_config.json
-    if present. Written by deploy_ecs.sh. Keys: s3_bucket, cluster, task_definition, subnets[], security_groups[].
+    if present. Written by deploy_ecs.sh. Keys: s3_bucket, cluster, task_definition,
+    launch_type (fargate|ec2), network_mode (awsvpc|bridge|host), subnets[], security_groups[].
     """
     root = _get_workspace_root()
     if not root:
@@ -369,22 +370,50 @@ def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
     bucket = _str("s3_bucket", "ECS_RESULTS_BUCKET")
     cluster = _str("cluster", "ECS_CLUSTER")
     task_def = _str("task_definition", "ECS_TASK_DEFINITION") or f"{extension_name}-handlers-ecs"
+    launch_type = (
+        _str("launch_type", "ECS_LAUNCH_TYPE", "fargate").lower() or "fargate"
+    )
+    if launch_type not in ("fargate", "ec2"):
+        launch_type = "fargate"
+    network_mode = (_str("network_mode", "ECS_NETWORK_MODE", "") or "").lower()
+    if network_mode not in ("awsvpc", "bridge", "host", ""):
+        network_mode = ""
+
+    def _effective_network_mode() -> str:
+        if network_mode:
+            return network_mode
+        return "bridge" if launch_type == "ec2" else "awsvpc"
+
+    eff_net = _effective_network_mode()
+    if launch_type == "fargate" and eff_net != "awsvpc":
+        eff_net = "awsvpc"
+
+    needs_awsvpc_net = launch_type == "fargate" or (
+        launch_type == "ec2" and eff_net == "awsvpc"
+    )
+
     subnets = _list("subnets", "ECS_SUBNETS")
     security_groups = _list("security_groups", "ECS_SECURITY_GROUPS")
     # Auto-fill from default VPC if bucket/cluster are set but network is missing
-    if bucket and cluster and (not subnets or not security_groups):
+    if needs_awsvpc_net and bucket and cluster and (not subnets or not security_groups):
         default_net = _get_default_vpc_network_config(region)
         if not subnets and default_net.get("subnets"):
             subnets = default_net["subnets"]
         if not security_groups and default_net.get("security_groups"):
             security_groups = default_net["security_groups"]
-    if not bucket or not cluster or not subnets or not security_groups:
+
+    if not bucket or not cluster:
         return None
+    if needs_awsvpc_net and (not subnets or not security_groups):
+        return None
+
     return {
         "region": region,
         "s3_bucket": bucket,
         "cluster": cluster,
         "task_definition": task_def,
+        "launch_type": launch_type,
+        "network_mode": eff_net,
         "subnets": subnets,
         "security_groups": security_groups,
         "payload_prefix": "payloads",
