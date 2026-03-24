@@ -31,6 +31,29 @@ from renglo.schd.external_handlers_config import (
     get_ecs_config,
     get_batch_s3_config,
 )
+
+
+def _ecs_run_task_params(ecs_cfg: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """Build kwargs for boto3 ecs.run_task from merged ECS config (Fargate or EC2)."""
+    launch = str(ecs_cfg.get("launch_type") or "fargate").upper()
+    network_mode = str(ecs_cfg.get("network_mode") or "awsvpc").lower()
+    params: Dict[str, Any] = {
+        "cluster": ecs_cfg["cluster"],
+        "taskDefinition": ecs_cfg["task_definition"],
+        "overrides": overrides,
+    }
+    if launch not in ("FARGATE", "EC2"):
+        launch = "FARGATE"
+    params["launchType"] = launch
+    if launch == "FARGATE" or (launch == "EC2" and network_mode == "awsvpc"):
+        params["networkConfiguration"] = {
+            "awsvpcConfiguration": {
+                "subnets": ecs_cfg["subnets"],
+                "securityGroups": ecs_cfg["security_groups"],
+                "assignPublicIp": "ENABLED",
+            }
+        }
+    return params
 from renglo.common import load_config
 
 
@@ -632,8 +655,6 @@ def call_ecs_handler(
             'error': f'No ECS configuration found for extension: {extension_name}. Set ECS_RESULTS_BUCKET and ECS_CLUSTER.'
         }
     bucket = ecs_cfg['s3_bucket']
-    cluster = ecs_cfg['cluster']
-    task_def = ecs_cfg['task_definition']
     region = ecs_cfg['region']
     payload_prefix = ecs_cfg.get('payload_prefix', 'payloads')
     result_prefix = ecs_cfg.get('result_prefix', 'results')
@@ -665,20 +686,7 @@ def call_ecs_handler(
                 ]
             }]
         }
-        network_config = {
-            'awsvpcConfiguration': {
-                'subnets': ecs_cfg['subnets'],
-                'securityGroups': ecs_cfg['security_groups'],
-                'assignPublicIp': 'ENABLED',
-            }
-        }
-        resp = ecs.run_task(
-            cluster=cluster,
-            taskDefinition=task_def,
-            launchType='FARGATE',
-            networkConfiguration=network_config,
-            overrides=overrides,
-        )
+        resp = ecs.run_task(**_ecs_run_task_params(ecs_cfg, overrides))
         failures = resp.get('failures', [])
         if failures:
             return {
@@ -744,8 +752,6 @@ def call_ecs_handler_async(
             'error': f'No ECS configuration found for extension: {extension_name}.'
         }
     bucket = ecs_cfg['s3_bucket']
-    cluster = ecs_cfg['cluster']
-    task_def = ecs_cfg['task_definition']
     region = ecs_cfg['region']
     payload_prefix = ecs_cfg.get('payload_prefix', 'payloads')
     result_prefix = ecs_cfg.get('result_prefix', 'results')
@@ -777,20 +783,7 @@ def call_ecs_handler_async(
                 ]
             }]
         }
-        network_config = {
-            'awsvpcConfiguration': {
-                'subnets': ecs_cfg['subnets'],
-                'securityGroups': ecs_cfg['security_groups'],
-                'assignPublicIp': 'ENABLED',
-            }
-        }
-        resp = ecs.run_task(
-            cluster=cluster,
-            taskDefinition=task_def,
-            launchType='FARGATE',
-            networkConfiguration=network_config,
-            overrides=overrides,
-        )
+        resp = ecs.run_task(**_ecs_run_task_params(ecs_cfg, overrides))
         failures = resp.get('failures', [])
         if failures:
             return {
