@@ -10,6 +10,7 @@ from decimal import Decimal
 from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
+from renglo.search.search_index_service import SearchIndexService
 from renglo.logger import get_logger
 from renglo.logger import get_logger
 
@@ -170,6 +171,7 @@ class DataController:
         self.DAM = DataModel(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
+        self.search_index = SearchIndexService(config=self.config)
         
             
         
@@ -431,12 +433,14 @@ class DataController:
                 try:
                     if isinstance(new_raw, list):
                         item_values[field['name']] = new_raw
+                    elif new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
+                        item_values[field['name']] = []
                     else:
-                        item_values[field['name']] = json.loads(new_raw.strip())
+                        item_values[field['name']] = json.loads(str(new_raw).strip())
                 except Exception as e:
                     print(f'CPI > Blueprint : Type : array > Error details: {str(e)}')
                     print(f'CPI > Blueprint : Type : array > Error type: {type(e).__name__}')
-                    if new_raw == '':
+                    if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
                         item_values[field['name']] = []
                     else:
                         item_values[field['name']] = str(new_raw).strip()
@@ -1029,12 +1033,13 @@ class DataController:
             result = {}
             status = 0
 
-            if 'error' not in response:                    
+            if 'error' not in response:
                 result['success'] = True
                 result['message'] = 'Item saved (POST)'
                 result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+item['_id'])
                 result['item'] = item
                 status = 200
+                self.search_index.index_document(portfolio, org, ring, item)
 
             else:
                 result['success'] = False
@@ -1134,14 +1139,15 @@ class DataController:
         #self.logger.debug('Update response:'+str(response))
 
 
-        if 'error' not in response:                    
+        if 'error' not in response:
             result['success'] = True
             result['message'] = 'Item saved (PUT)'
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
-            self.logger.debug('Returned object:'+str(result)) ## COMMENT OUT
+            self.logger.debug('Returned object:'+str(result))
+            self.search_index.index_document(portfolio, org, ring, item)
 
-            return result,status
+            return result, status
 
         else:
             result['success'] = False
@@ -1150,11 +1156,9 @@ class DataController:
             status = 500
             self.logger.debug('Returned object:'+str(result))
 
-            return result,status
-        
-        
-    
-    def delete_a_b_c(self,portfolio,org,ring,idx):
+            return result, status
+
+    def delete_a_b_c(self, portfolio, org, ring, idx):
         '''
         Delete an existing document.
         '''
@@ -1165,14 +1169,15 @@ class DataController:
 
         result = {}
 
-        if 'error' not in response:                    
+        if 'error' not in response:
             result['success'] = True
             result['message'] = 'Item deleted'
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
+            self.search_index.delete_document(portfolio, org, ring, idx)
 
-            return result,status
+            return result, status
 
         else:
             result['success'] = False
@@ -1181,7 +1186,7 @@ class DataController:
             status = 500
             self.logger.debug('Returned object:'+str(result))
 
-            return result,status
+            return result, status
         
         
 

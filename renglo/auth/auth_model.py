@@ -1,11 +1,11 @@
-from flask import redirect,url_for, jsonify, current_app, session
-
+import logging
 import boto3
 from botocore.exceptions import ClientError
 from datetime import datetime
 import uuid
 from decimal import Decimal
 
+logger = logging.getLogger(__name__)
 
 
 class AuthModel:
@@ -35,7 +35,7 @@ class AuthModel:
             # Get the email from the request
             #email = request.json.get('email')
             if not email:
-                return jsonify({'error': 'Email is required'}), 400
+                return {'success': False, 'error': 'Email is required', 'status': 400}
 
             # List users by email filter
             response = self.cognito_client.list_users(
@@ -355,14 +355,14 @@ class AuthModel:
     def get_entity(self,index,id):
    
         try:
-            current_app.logger.debug('INDEX:'+index)
-            current_app.logger.debug('ID:'+id)
+            logger.debug('INDEX:'+index)
+            logger.debug('ID:'+id)
             response = self.entity_table.get_item(Key={'index':index,'_id':id})
             item = response.get('Item')
-            current_app.logger.debug('MODEL: get_entity:')
-            current_app.logger.debug(response)
-            current_app.logger.debug('MODEL: item:')
-            current_app.logger.debug(item)
+            logger.debug('MODEL: get_entity:')
+            logger.debug(response)
+            logger.debug('MODEL: item:')
+            logger.debug(item)
             
 
             if item:
@@ -393,7 +393,7 @@ class AuthModel:
         
         try:
             response = self.entity_table.put_item(Item=data)
-            current_app.logger.debug('MODEL: Created entity successfully:'+str(data))
+            logger.debug('MODEL: Created entity successfully:'+str(data))
             return {
                 "success":True, 
                 "message": "Entity created", 
@@ -416,7 +416,7 @@ class AuthModel:
         
         try:
             response = self.entity_table.put_item(Item=data)
-            #current_app.logger.debug('MODEL: Updated entity successfully')
+            #logger.debug('MODEL: Updated entity successfully')
             return {
                 "success":True, 
                 "message": "Entity updated", 
@@ -443,7 +443,7 @@ class AuthModel:
 
         try:
             response = self.entity_table.delete_item(Key=keys)
-            current_app.logger.debug('MODEL: Deleted Entity:' + str(entity_document))
+            logger.debug('MODEL: Deleted Entity:' + str(entity_document))
             return {
                 "success":True,
                 "message": "Entity deleted", 
@@ -570,7 +570,7 @@ class AuthModel:
         
         try:
             response = self.rel_table.put_item(Item=rel_document)
-            current_app.logger.debug('MODEL: Created Relationship:' + str(rel_document))
+            logger.debug('MODEL: Created Relationship:' + str(rel_document))
             return {
                 "success":True,
                 "message": "Rel created", 
@@ -597,7 +597,7 @@ class AuthModel:
 
         try:
             response = self.rel_table.delete_item(Key=keys)
-            current_app.logger.debug('MODEL: Deleted Relationship:' + str(rel_document))
+            logger.debug('MODEL: Deleted Relationship:' + str(rel_document))
             return {
                 "success":True,
                 "message": "Rel deleted", 

@@ -223,7 +223,22 @@ class SchdController:
         else:
             result.append({'success':False,'action':action,'input':payload,'output':response})
             return result, 400
-            
+
+        payload['tool'] = extension
+
+        if has_external_handlers(extension) and is_external_handler_active(extension):
+            print(f'Calling external handler:{handler}')
+            response = run_external_handler(
+                extension_name=extension,
+                handler_name=handler_name,
+                payload=payload
+            )
+            if not response.get('success'):
+                result.append({'success': False, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
+                return result, 400
+            result.append({'success': True, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
+            return result, 200
+
         '''
         # This check exists because there should be a blueprint that defines the input shape of the handler. 
         # This only applies to handlers that are exposed publicly. 
@@ -237,7 +252,7 @@ class SchdController:
                 result.append({'success':False,'action':action,'input':payload,'error':f'Error with the blueprint:{handler_name}'}) 
                 return result, 400
         '''
-            
+           
         response = self.SHL.load_and_run(handler, payload = payload)
         
         #print(f'Handler output:{response}')
@@ -284,7 +299,7 @@ class SchdController:
                     if not response.get('success'):
                         # External handler failed - format to match SchdLoader error format
                         error_output = response.get('output', {})
-                        error_msg = response.get('error', 'External handler execution failed')
+                        error_msg = response.get('error', 'External handler execution failed [SCOH]')
                         
                         # Create error output in SchdLoader format
                         formatted_output = {
@@ -321,7 +336,7 @@ class SchdController:
                             canonical = external_output
                             interface = None
                         
-                        return {
+                        ext_ret = {
                             'success': True,
                             'action': action,
                             'handler': handler,
@@ -330,6 +345,9 @@ class SchdController:
                             'output': canonical,
                             'stack': {'success': True, 'output': formatted_output}
                         }
+                        if isinstance(external_output, dict) and external_output.get('next'):
+                            ext_ret['next'] = external_output['next']
+                        return ext_ret
                 else:
                     # External handlers are deactivated - fall back to internal
                     print(f'External handlers for {extension} are deactivated, using internal handler')
@@ -358,7 +376,10 @@ class SchdController:
                 return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
             canonical = out.get('output', out)
             interface = out.get('interface') if isinstance(out, dict) else None
-            return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+            ret = {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+            if isinstance(out, dict) and out.get('next'):
+                ret['next'] = out['next']
+            return ret
 
         except Exception as e:
             print(f'Error @handler_call:: {e}')
