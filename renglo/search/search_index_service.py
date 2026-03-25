@@ -13,7 +13,7 @@ class SearchIndexService:
     """
     Agnostic indexer: indexes documents based on blueprint schema.
     Only fields with searchable=true in the blueprint are indexed.
-    Tenant isolation is enforced via tenant_id field.
+    Org isolation is enforced via org field.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, opensearch_client=None):
@@ -116,7 +116,7 @@ class SearchIndexService:
                 search_text_parts.append(self._stringify_for_search(v))
 
         index_doc = {
-            'tenant_id': org,
+            'org': org,
             'datatype': ring,
             'portfolio': portfolio,
             'doc_id': doc_id,
@@ -206,7 +206,7 @@ class SearchIndexService:
             mapping = {
                 "mappings": {
                     "properties": {
-                        "tenant_id": {"type": "keyword"},
+                        "org": {"type": "keyword"},
                         "datatype": {"type": "keyword"},
                         "portfolio": {"type": "keyword"},
                         "doc_id": {"type": "keyword"},

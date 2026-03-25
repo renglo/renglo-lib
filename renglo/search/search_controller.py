@@ -7,7 +7,7 @@ from renglo.search.search_index_service import SearchIndexService
 
 class SearchController:
     """
-    Search API controller. All searches require tenant_id - no cross-tenant results.
+    Search API controller. All searches require org - no cross-org results.
     
     
     Usage
@@ -53,7 +53,7 @@ class SearchController:
 
     def search(
         self,
-        tenant_id: str,
+        org: str,
         query: str,
         datatypes: Optional[List[str]] = None,
         filters: Optional[Dict[str, Any]] = None,
@@ -63,8 +63,8 @@ class SearchController:
         boost_fields: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
-        Full-text search with MANDATORY tenant_id filter.
-        Never returns cross-tenant results.
+        Full-text search with MANDATORY org filter.
+        Never returns cross-org results.
 
         search_fields: If provided, search ONLY on these attributes (attributes.<field>).
             Ignores _search_text. Use when the caller knows which fields to search.
@@ -79,16 +79,16 @@ class SearchController:
                 'total': 0,
             }
 
-        if not tenant_id:
+        if not org:
             return {
                 'success': False,
-                'message': 'tenant_id is required',
+                'message': 'org is required',
                 'items': [],
                 'total': 0,
             }
 
         try:
-            must = [{'term': {'tenant_id': tenant_id}}]
+            must = [{'term': {'org': org}}]
 
             if datatypes:
                 must.append({'terms': {'datatype': datatypes}})
@@ -142,7 +142,7 @@ class SearchController:
                 'query': {'bool': bool_query},
                 'from': offset,
                 'size': min(limit, 100),
-                '_source': ['tenant_id', 'datatype', 'portfolio', 'doc_id', 'doc_index', 'attributes', 'added', 'modified'],
+                '_source': ['org', 'datatype', 'portfolio', 'doc_id', 'doc_index', 'attributes', 'added', 'modified'],
                 'sort': [{'_score': 'desc'}] if (query and query.strip()) else [{'modified': 'desc'}],
             }
 

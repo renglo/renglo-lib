@@ -52,11 +52,11 @@ Documents are indexed automatically on:
 }
 ```
 
-- `tenant_id` = `org` (mandatory, from URL)
+- `org` (mandatory, from URL)
 - Results are always scoped to the tenant
 - `search_fields`: Optional. If provided, search ONLY on these attributes (`attributes.<field>`). Ignores `_search_text`. Use when the caller knows which fields to search.
 - `boost_fields`: Optional. Dict of `field_name` -> boost factor. Boosts `attributes.<field>` in ranking. E.g. `{"title": 4}` boosts title matches. Works with or without `search_fields`.
 
 ## Tenant Isolation
 
-All documents include `tenant_id`. Search queries always filter by `tenant_id` - no cross-tenant results.
+All documents include `org`. Search queries always filter by `org` - no cross-org results.
