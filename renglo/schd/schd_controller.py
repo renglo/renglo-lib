@@ -336,7 +336,7 @@ class SchdController:
                             canonical = external_output
                             interface = None
                         
-                        return {
+                        ext_ret = {
                             'success': True,
                             'action': action,
                             'handler': handler,
@@ -345,6 +345,9 @@ class SchdController:
                             'output': canonical,
                             'stack': {'success': True, 'output': formatted_output}
                         }
+                        if isinstance(external_output, dict) and external_output.get('next'):
+                            ext_ret['next'] = external_output['next']
+                        return ext_ret
                 else:
                     # External handlers are deactivated - fall back to internal
                     print(f'External handlers for {extension} are deactivated, using internal handler')
@@ -373,7 +376,10 @@ class SchdController:
                 return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
             canonical = out.get('output', out)
             interface = out.get('interface') if isinstance(out, dict) else None
-            return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+            ret = {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+            if isinstance(out, dict) and out.get('next'):
+                ret['next'] = out['next']
+            return ret
 
         except Exception as e:
             print(f'Error @handler_call:: {e}')
