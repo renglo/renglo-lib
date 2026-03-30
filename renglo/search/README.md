@@ -43,7 +43,7 @@ Documents are indexed automatically on:
 ```json
 {
   "query": "search terms",
-  "datatypes": ["noma_travels", "noma_rel"],
+  "datatypes": ["x_travels", "x_rel"],
   "filters": {"status": "confirmed"},
   "limit": 20,
   "offset": 0,

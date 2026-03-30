@@ -15,7 +15,7 @@ class SearchController:
 
         {
         "query": "Miami Jun 2nd",
-        "datatypes": ["noma_travels"],
+        "datatypes": ["travels"],
         "search_fields": ["title"]
         }
         Only attributes.title is searched; _search_text is ignored.
@@ -24,7 +24,7 @@ class SearchController:
 
         {
         "query": "Miami Jun 2nd",
-        "datatypes": ["noma_travels"],
+        "datatypes": ["travels"],
         "boost_fields": {"title": 4}
         }
         Searches attributes.title (boosted) and _search_text.
@@ -33,7 +33,7 @@ class SearchController:
 
         {
         "query": "Miami Jun 2nd",
-        "datatypes": ["noma_travels"],
+        "datatypes": ["travels"],
         "search_fields": ["title", "flights"],
         "boost_fields": {"title": 4}
         }
@@ -41,8 +41,8 @@ class SearchController:
 
         For the search_trip tool, add to init:
 
-        "init": "{\"datatypes\":[\"noma_travels\"],\"limit\":20,\"offset\":0,\"boost_fields\":{\"title\":4}}"
-        If search_fields is set and a document lacks that attribute (e.g. noma_attendants without title), that document will not match, which is expected when restricting by field.
+        "init": "{\"datatypes\":[\"travels\"],\"limit\":20,\"offset\":0,\"boost_fields\":{\"title\":4}}"
+        If search_fields is set and a document lacks that attribute (e.g. x_attendants without title), that document will not match, which is expected when restricting by field.
 
 
     """
