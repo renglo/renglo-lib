@@ -1878,6 +1878,17 @@ class AgentUtilities:
             
             # Meta Instructions
             meta_instructions = {}
+            # Language directive (highest priority)
+            lang = str(self.config.get("AGENT_LANGUAGE", "pt-BR") or "pt-BR")
+            if lang.lower().startswith("en"):
+                meta_instructions["language_directive"] = (
+                    "IMPORTANT: You MUST respond ONLY in English in all your messages to the user. "
+                )
+            else:
+                meta_instructions["language_directive"] = (
+                    "IMPORTANTE: Você DEVE responder APENAS em Português do Brasil em todas as suas mensagens ao usuário. "
+                    "Isso se aplica a toda resposta, pergunta, esclarecimento e mensagem de erro que você produzir. "
+                )
             # Initial instructions
             meta_instructions['opening_message'] = "You are an AI assistant. You can reason over conversation history, beliefs, and goals."
             # Provide the current time
@@ -1887,6 +1898,7 @@ class AgentUtilities:
                   
             # Message array
             messages = [
+                { "role": "system", "content": meta_instructions["language_directive"]}, # LANGUAGE DIRECTIVE
                 { "role": "system", "content": meta_instructions['opening_message']}, # META INSTRUCTIONS
                 { "role": "system", "content": meta_instructions['current_time']}, # CURRENT TIME         
                 { "role": "system", "content": action_instructions}, # CURRENT ACTIONS
