@@ -10,6 +10,8 @@ from decimal import Decimal
 from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
+from renglo.search.search_index_service import SearchIndexService
+from renglo.logger import get_logger
 from renglo.logger import get_logger
 
 # Add this custom JSON encoder class at the top level of your file
@@ -163,11 +165,16 @@ class DataController:
         self.DAM = DataModel(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
+        self.search_index = SearchIndexService(config=self.config)
+
+
 
     def refresh_s3_cache(self,portfolio, org, ring, sort=None):
 
         s3_client = boto3.client('s3')
         bucket_name = self.config.get('S3_BUCKET_NAME')
+        if not bucket_name:
+            raise ValueError("S3_BUCKET_NAME not found in config")
         self.logger.debug(f'Refreshing s3 cache')
         # Proceed to regenerate the document
         response = []  # Initialize response
@@ -410,12 +417,14 @@ class DataController:
                 try:
                     if isinstance(new_raw, list):
                         item_values[field['name']] = new_raw
+                    elif new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
+                        item_values[field['name']] = []
                     else:
-                        item_values[field['name']] = json.loads(new_raw.strip())
+                        item_values[field['name']] = json.loads(str(new_raw).strip())
                 except Exception as e:
                     print(f'CPI > Blueprint : Type : array > Error details: {str(e)}')
                     print(f'CPI > Blueprint : Type : array > Error type: {type(e).__name__}')
-                    if new_raw == '':
+                    if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
                         item_values[field['name']] = []
                     else:
                         item_values[field['name']] = str(new_raw).strip()
@@ -993,6 +1002,7 @@ class DataController:
                 result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+item['_id'])
                 result['item'] = item
                 status = 200
+                self.search_index.index_document(portfolio, org, ring, item)
 
             else:
                 result['success'] = False
@@ -1090,9 +1100,10 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             print(f"[DOC] save | path={result['path']} | status=success")
             status = 200
-            self.logger.debug('Returned object:'+str(result)) ## COMMENT OUT
+            self.logger.debug('Returned object:'+str(result))
+            self.search_index.index_document(portfolio, org, ring, item)
 
-            return result,status
+            return result, status
 
         else:
             result['success'] = False
@@ -1103,6 +1114,8 @@ class DataController:
             self.logger.debug('Returned object:'+str(result))
 
             return result,status
+
+
 
     def delete_a_b_c(self,portfolio,org,ring,idx):
         '''
@@ -1121,8 +1134,9 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
+            self.search_index.delete_document(portfolio, org, ring, idx)
 
-            return result,status
+            return result, status
 
         else:
             result['success'] = False

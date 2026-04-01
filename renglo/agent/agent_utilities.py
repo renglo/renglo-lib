@@ -254,6 +254,28 @@ class AgentUtilities:
                 self.update_chat_message_document(doc)
                 self.print_chat(doc,message_type, as_is=True)
 
+            elif msg_type == 'transient' and output.get('content') and output.get('role') == 'assistant':
+                print('Saving transient message to the message roll')
+                message_type = 'transient'
+                doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc, message_type, as_is=True)
+
+            elif msg_type == 'json' and output.get('role') == 'assistant':
+                message_type = 'json'
+                out_val = output.get('content') if 'content' in output else output
+                doc = {'_out': self.sanitize(out_val), '_type': message_type, '_interface': interface or 'document', '_next': next}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc, message_type, as_is=True)
+
+            elif msg_type == 'option' and output.get('role') == 'assistant':
+                message_type = 'option'
+                out_val = output.get('content') if 'content' in output else output
+                doc = {'_out': self.sanitize(out_val), '_type': message_type, '_interface': interface or 'option', '_next': next}
+                self.update_chat_message_document(doc)
+                self.print_chat(doc, message_type, as_is=True)
+
+
             elif output.get('tool_calls') and output.get('role') == 'assistant':
                 #print('Saving the tool call') #legacy print
                 # This is a tool call
@@ -294,22 +316,32 @@ class AgentUtilities:
                 #print(f'Including Tool Response in the chat: {output}') #Verboso
                 # This is the tool response
                 message_type = 'tool_rs'
+                message_type = 'tool_rs'
                 doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': next}
-                # Memorize to permanent storage
+                # Memorize to permanent storage (DB path keeps content as string)
                 self.update_chat_message_document(doc, output['tool_call_id'])
 
                 if interface:
-                    # Parse content if it's a JSON string for websocket (frontend expects object, not string)
-                    # Database stores as string, but websocket should send as parsed object
+                    # For WebSocket, mirror ChatController.update_turn's normalization:
+                    # - If parsed content is an object (dict), wrap it in a single-element list.
+                    # - If it's a list of dicts, keep as-is.
+                    # - Otherwise (string/number/etc.), leave the original string.
                     doc_for_websocket = doc.copy()
                     if '_out' in doc_for_websocket and 'content' in doc_for_websocket['_out']:
                         content = doc_for_websocket['_out']['content']
                         if isinstance(content, str):
                             try:
-                                # Try to parse the JSON string
                                 parsed_content = json.loads(content)
-                                doc_for_websocket['_out'] = doc_for_websocket['_out'].copy()
-                                doc_for_websocket['_out']['content'] = parsed_content
+                                if isinstance(parsed_content, dict):
+                                    parsed_content = [parsed_content]
+                                elif isinstance(parsed_content, list):
+                                    if not all(isinstance(item, dict) for item in parsed_content):
+                                        parsed_content = content
+                                else:
+                                    parsed_content = content
+                                if parsed_content is not content:
+                                    doc_for_websocket['_out'] = doc_for_websocket['_out'].copy()
+                                    doc_for_websocket['_out']['content'] = parsed_content
                             except (json.JSONDecodeError, TypeError):
                                 # If parsing fails, keep original string
                                 pass
@@ -549,6 +581,8 @@ class AgentUtilities:
                         workspace['state']['desire'] = output
 
                 if key == 'intent':
+                    print(f'Workspace before intent insert:{workspace}')
+                    print(f'Inserting Intent:{output}')
                     if isinstance(output, dict):
                         # Sanitize nested intent data to ensure no Decimals slip through
                         workspace['state']['intent'] = self.sanitize(output)
@@ -680,6 +714,8 @@ class AgentUtilities:
                             log['message'] = output['message']
                         if 'type' in output:
                             log['type'] = output['type']
+                        if 'actionable' in  output:
+                            log['actionable'] = output['actionable']
 
                         # Use helper function to safely get or create the step
                         step = self.get_or_create_step(workspace, plan_id, plan_step)
@@ -750,6 +786,50 @@ class AgentUtilities:
         except Exception as e:
             print(f"Error running LLM call: {e}")
             return False
+
+    def llm_responses(self, input_items, tools, model=None):
+        """
+        Call the OpenAI Responses API (not Completions) with the given input and tools.
+        Returns a dict compatible with inca openai_adapter: {"output_text": str, "output": list}.
+        """
+        if self.AI_2 is None:
+            return {"output_text": "", "output": []}
+        try:
+            params = {
+                "model": model or self.AI_2_MODEL,
+                "input": input_items,
+                "tools": tools,
+            }
+            if not hasattr(self.AI_2, "responses"):
+                return {"output_text": "", "output": []}
+            response = self.AI_2.responses.create(**params)
+            output_text_parts = []
+            output_items = []
+            output = getattr(response, "output", None) or []
+            for item in output:
+                content = getattr(item, "content", None) or []
+                for c in content:
+                    c_type = getattr(c, "type", None)
+                    if c_type in ("message", "text") or hasattr(c, "text"):
+                        text = getattr(c, "text", None)
+                        if isinstance(text, str):
+                            output_text_parts.append(text)
+                    elif c_type == "tool_use":
+                        output_items.append({
+                            "type": "tool_call",
+                            "id": getattr(c, "id", None),
+                            "tool_call_id": getattr(c, "id", None),
+                            "name": getattr(c, "name", None),
+                            "arguments": getattr(c, "input", None) or {},
+                        })
+            return {
+                "output_text": "\n".join(output_text_parts).strip() if output_text_parts else "",
+                "output": output_items,
+            }
+        except Exception as e:
+            print(f"Error running Responses API call: {e}")
+            return {"output_text": "", "output": []}
+
 
     def new_chat_thread_document(self,public_user=''):
         """
@@ -896,6 +976,26 @@ class AgentUtilities:
 
         if len(workspaces_list['items']) == 0:
             return False
+
+            # Create a workspace as none exist
+            payload = {}
+            response = self.CHC.create_workspace(
+                self.portfolio,
+                self.org,
+                self.entity_type,
+                self.entity_id,
+                self.thread, payload
+            )
+            if not response['success']:
+                return False
+            # Regenerate workspaces_list
+            workspaces_list = self.CHC.list_workspaces(
+                self.portfolio,
+                self.org,
+                self.entity_type,
+                self.entity_id,
+                self.thread
+            )
 
         if not workspace_id:
             workspace = workspaces_list['items'][-1]
@@ -1535,6 +1635,8 @@ class AgentUtilities:
             # Belief
             current_beliefs = workspace.get('state', {}).get('beliefs', {}) if workspace else {}
             belief_str = 'Current beliefs: ' + self.string_from_object(current_beliefs)
+            if workspace and workspace.get('intent'):
+                belief_str += ' Current intent: ' + self.string_from_object(workspace['intent'])
             #print(f'Current Belief:{belief_str}') #legacy print
 
             #belief_history = workspace.get('state', {}).get('history', []) if workspace else []
@@ -1689,6 +1791,7 @@ class AgentUtilities:
 
             # Saving : A) The tool call, or B) The message to the user
             self.save_chat(validated_result)
+
 
             return {
                 'success': True,

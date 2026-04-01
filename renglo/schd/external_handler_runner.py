@@ -44,6 +44,62 @@ def is_running_locally() -> bool:
     return True
 
 
+def use_dev_docker(extension_name: str) -> bool:
+    """
+    Check if the extension should use local Docker instead of Lambda.
+    
+    This is controlled by the EXTERNAL_HANDLERS_USE_DEV_DOCKER environment variable,
+    which contains a comma-separated list of extension names that should use
+    local Docker even when running in a local environment.
+    
+    Args:
+        extension_name: Name of the extension to check
+        
+    Returns:
+        True if the extension should use local Docker, False otherwise
+    """
+    # Check environment variable
+    use_dev_docker_list = os.getenv("EXTERNAL_HANDLERS_USE_DEV_DOCKER", "")
+    
+    if not use_dev_docker_list:
+        # Try to get from load_config() (reads from env_config.py or environment variables)
+        try:
+            config = load_config()
+            use_dev_docker_list = config.get('EXTERNAL_HANDLERS_USE_DEV_DOCKER', '') or use_dev_docker_list
+        except Exception:
+            # If config can't be loaded, just use empty string
+            pass
+    
+    if use_dev_docker_list:
+        # Parse comma-separated list (handle spaces)
+        extensions = [ext.strip().lower() for ext in use_dev_docker_list.split(",") if ext.strip()]
+        return extension_name.lower() in extensions
+    
+    return False
+
+
+def _emit_docker_logs(
+    stdout: Optional[str],
+    stderr: Optional[str],
+    title: str = "Docker Logs",
+    show_stdout_first: bool = False,
+) -> None:
+    """Print Docker container stdout/stderr to process stderr so they appear in the API server log."""
+    if not stdout and not stderr:
+        return
+    print(f"\n=== {title} ===", file=sys.stderr)
+    if show_stdout_first and stdout:
+        print("STDOUT:", file=sys.stderr)
+        print(stdout, file=sys.stderr)
+    if stderr:
+        print("STDERR:" if show_stdout_first else "", file=sys.stderr)
+        print(stderr, file=sys.stderr)
+    if not show_stdout_first and stdout:
+        print("STDOUT:", file=sys.stderr)
+        print(stdout, file=sys.stderr)
+    print("=== End Docker Logs ===\n", file=sys.stderr)
+
+
 def load_config_for_docker() -> Dict[str, Any]:
     """
     Load configuration using the stable load_config() function from renglo.common.
@@ -102,10 +158,11 @@ def call_local_docker_handler(
             'error': 'Could not determine workspace root'
         }
     
-    docker_image = config['docker_image']
     package_path = config['package_path']
     full_package_path = os.path.join(workspace_root, package_path)
-    
+    image_latest = config['docker_image']
+    image_local = f"{extension_name}-lambda-builder:local"
+
     # Check if Docker is available
     try:
         subprocess.run(['docker', '--version'], capture_output=True, check=True)
@@ -114,18 +171,29 @@ def call_local_docker_handler(
             'success': False,
             'error': 'Docker is not available or not in PATH'
         }
-    
-    # Check if Docker image exists
-    try:
+
+    def _image_exists(img: str) -> bool:
         result = subprocess.run(
-            ['docker', 'image', 'inspect', docker_image],
+            ['docker', 'image', 'inspect', img],
             capture_output=True,
-            check=True
         )
-    except subprocess.CalledProcessError:
+        return result.returncode == 0
+
+    # Prefer :local if it exists (from "build --local"), else use :latest. Same as run_handler_local.sh.
+    if _image_exists(image_local):
+        docker_image = image_local
+        run_platform = 'linux/arm64'
+    elif _image_exists(image_latest):
+        docker_image = image_latest
+        run_platform = 'linux/amd64'
+    else:
         return {
             'success': False,
-            'error': f'Docker image {docker_image} not found. Please build it first.'
+            'error': (
+                f'Docker image not found. Build one with: '
+                f'python3 dev/extension-service/run.py {extension_name} build '
+                f'(or build --local for ARM).'
+            )
         }
     
     # Create event JSON
@@ -139,6 +207,7 @@ def call_local_docker_handler(
     aws_dir = os.path.expanduser('~/.aws')
     docker_args = [
         'docker', 'run', '--rm',
+        '--platform', run_platform,
         '--entrypoint', '/bin/sh',
         '-v', f'{full_package_path}:/package',
         '-w', '/package'
@@ -216,6 +285,8 @@ log("=" * 60)
 log("Starting handler execution in Docker")
 log("=" * 60)
 
+# renglo and deps are installed in the image at /build/output (see build_lambda_package.sh)
+sys.path.insert(0, '/build/output')
 sys.path.insert(0, '/package')
 from lambda_router import lambda_handler
 
@@ -226,7 +297,7 @@ event = json.loads(event_str)
 try:
     log("Calling lambda_handler...")
     result = lambda_handler(event, None)
-    log("Handler execution completed successfully")
+    log("Handler execution completed")
     
     # Normalize the result before JSON serialization
     normalized_result = normalize_for_json(result)
@@ -241,7 +312,7 @@ try:
     
 except Exception as e:
     import traceback
-    log(f"ERROR: Handler execution failed: {{str(e)}}")
+    log(f"ERROR: Handler execution failed (EHRC): {{str(e)}}")
     log(f"Traceback: {{traceback.format_exc()}}")
     
     error_result = {{
@@ -270,13 +341,8 @@ PYTHON_SCRIPT"""
             check=True,
             cwd=workspace_root
         )
-        
-        # Log stderr output for debugging (this contains our log messages)
-        if result.stderr:
-            print("=== Docker Execution Logs ===", file=sys.stderr)
-            print(result.stderr, file=sys.stderr)
-            print("=== End Docker Logs ===", file=sys.stderr)
-        
+        _emit_docker_logs(result.stdout, result.stderr, "Docker Execution Logs")
+
         # Parse output
         # The handler may output debug messages before the JSON
         # The JSON is typically the last complete JSON object in the output
@@ -313,38 +379,41 @@ PYTHON_SCRIPT"""
             last_brace = stdout_text.rfind('{')
             if last_brace >= 0:
                 brace_positions = [last_brace]
-        
-        # Try parsing from each potential JSON start position (try first/outermost one first)
-        # The outermost JSON object is usually what we want
-        for first_brace in brace_positions:
+
+        # Try parsing from each potential JSON start position (last first: handler prints
+        # logs then the final JSON response, so the last complete object is the Lambda response)
+        for first_brace in reversed(brace_positions):
             if first_brace >= 0:
                 # Strategy 1: Try to parse from this '{' to the end
                 json_text = stdout_text[first_brace:].strip()
                 try:
-                    json_output = json.loads(json_text)
-                    break  # Success! Stop trying other positions
+                    parsed = json.loads(json_text)
+                    if isinstance(parsed, dict) and 'statusCode' in parsed:
+                        json_output = parsed
+                        break
                 except json.JSONDecodeError:
-                    # Strategy 2: Find the complete JSON object by matching braces
-                    brace_count = 0
-                    json_start = first_brace
-                    json_end = len(stdout_text)
-                    
-                    for i in range(first_brace, len(stdout_text)):
-                        if stdout_text[i] == '{':
-                            brace_count += 1
-                        elif stdout_text[i] == '}':
-                            brace_count -= 1
-                            if brace_count == 0:
-                                json_end = i + 1
-                                break
-                    
-                    if brace_count == 0:
-                        json_text = stdout_text[json_start:json_end].strip()
-                        try:
-                            json_output = json.loads(json_text)
-                            break  # Success! Stop trying other positions
-                        except json.JSONDecodeError:
-                            continue  # Try next brace position
+                    pass
+                if json_output is not None:
+                    break
+                brace_count = 0
+                json_end = len(stdout_text)
+                for i in range(first_brace, len(stdout_text)):
+                    if stdout_text[i] == '{':
+                        brace_count += 1
+                    elif stdout_text[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_end = i + 1
+                            break
+                if brace_count == 0:
+                    json_text = stdout_text[first_brace:json_end].strip()
+                    try:
+                        parsed = json.loads(json_text)
+                        if isinstance(parsed, dict) and 'statusCode' in parsed:
+                            json_output = parsed
+                            break
+                    except json.JSONDecodeError:
+                        continue
         
         if json_output:
             # Convert Lambda handler response format to SchdLoader format
@@ -357,40 +426,28 @@ PYTHON_SCRIPT"""
                 return {
                     'success': False,
                     'output': json_output.get('error') or json_output.get('body', {}),
-                    'error': json_output.get('error', 'Handler execution failed')
+                    'error': json_output.get('error', 'Handler execution failed (EHRP)')
                 }
         else:
             # Log the raw output for debugging
-            print("=== Could not parse JSON from Docker output ===", file=sys.stderr)
-            print("STDOUT:", file=sys.stderr)
-            print(result.stdout, file=sys.stderr)
-            if result.stderr:
-                print("STDERR:", file=sys.stderr)
-                print(result.stderr, file=sys.stderr)
-            print("=== End Docker output ===", file=sys.stderr)
-            
+            _emit_docker_logs(result.stdout, result.stderr, "Could not parse JSON from Docker output", show_stdout_first=True)
             return {
                 'success': False,
-                'error': 'Could not parse handler output as JSON. Check logs for details.',
+                'error': 'Could not parse handler output as JSON. Check server logs or response raw_stderr.',
                 'raw_output': result.stdout,
                 'raw_stderr': result.stderr
             }
-            
+
     except subprocess.CalledProcessError as e:
-        # Log stderr for debugging
-        if e.stderr:
-            print("=== Docker Execution Error Logs ===", file=sys.stderr)
-            print(e.stderr, file=sys.stderr)
-            print("=== End Docker Error Logs ===", file=sys.stderr)
-        if e.stdout:
-            print("=== Docker Execution Output ===", file=sys.stderr)
-            print(e.stdout, file=sys.stderr)
-            print("=== End Docker Output ===", file=sys.stderr)
-        
+        # Container exited non-zero: emit logs so you can see handler tracebacks/prints
+        docker_stdout = getattr(e, 'stdout', None) or getattr(e, 'output', '')
+        docker_stderr = getattr(e, 'stderr', None) or ''
+        _emit_docker_logs(docker_stdout, docker_stderr, "Docker Execution Error (container exited non-zero)")
         return {
             'success': False,
-            'error': f'Docker execution failed: {e.stderr}',
-            'raw_output': e.stdout
+            'error': f'Docker execution failed: {(docker_stderr or docker_stdout or str(e))[:500]}',
+            'raw_output': docker_stdout,
+            'raw_stderr': docker_stderr
         }
 
 
@@ -461,9 +518,25 @@ def call_lambda_handler(
         missing_critical = [k for k in critical_vars 
                            if k not in current_env and k in config and config[k]]
         
-        # Check for any other config vars that should be in Lambda but aren't
-        vars_to_update = {k: str(v) for k, v in config.items() 
-                         if k not in current_env and v is not None and v != ''}
+        # Check for any other config vars that should be in Lambda but aren't.
+        # IMPORTANT: Do NOT try to set reserved AWS_* keys (like AWS_REGION),
+        # as Lambda will reject updates that attempt to modify them.
+        reserved_env_keys = {
+            'AWS_REGION',
+            'AWS_DEFAULT_REGION',
+            'AWS_EXECUTION_ENV',
+            'AWS_LAMBDA_FUNCTION_NAME',
+            'AWS_LAMBDA_LOG_GROUP_NAME',
+            'AWS_LAMBDA_LOG_STREAM_NAME',
+        }
+        vars_to_update = {
+            k: str(v)
+            for k, v in config.items()
+            if k not in current_env
+            and v is not None
+            and v != ''
+            and k not in reserved_env_keys
+        }
         
         if missing_critical:
             # Update Lambda function environment variables with missing critical vars
@@ -516,7 +589,7 @@ def call_lambda_handler(
             return {
                 'success': False,
                 'output': response_payload.get('error') or response_payload.get('body', {}),
-                'error': response_payload.get('error', 'Handler execution failed')
+                'error': response_payload.get('error', 'Handler execution failed [EHHR]')
             }
             
     except Exception as e:
@@ -554,7 +627,14 @@ def run_external_handler(
         }
     
     # Determine execution mode
-    if is_running_locally():
-        return call_local_docker_handler(extension_name, handler_name, payload)
+    if is_running_locally() and use_dev_docker(extension_name):
+        print(f'Calling external handler: {extension_name}/{handler_name} in local docker. Payload:{payload}') 
+        response = call_local_docker_handler(extension_name, handler_name, payload)
+        print(f'Response >> {response}')
+        return response
+    
     else:
-        return call_lambda_handler(extension_name, handler_name, payload)
+        print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload} ')
+        response = call_lambda_handler(extension_name, handler_name, payload)
+        print(f'Response >> {response}')
+        return response

@@ -1,15 +1,8 @@
-import jwt
 import re
 import hashlib
 import os
 import sys
 import importlib.util
-
-
-def decode_jwt(token):
-    # Decode the JWT to get the user information
-    decoded = jwt.decode(token, options={"verify_signature": False})
-    return decoded
 
 
 def get_username_from_email(email):
@@ -120,7 +113,8 @@ def load_config():
         'COGNITO_CHECK_TOKEN_EXPIRATION',
         'PREVIEW_LAYER', 'S3_BUCKET_NAME',
         'OPENAI_API_KEY', 'WEBSOCKET_CONNECTIONS',
-        'ALLOW_DEV_ORIGINS', 'EXTERNAL_HANDLERS'
+        'ALLOW_DEV_ORIGINS', 'EXTERNAL_HANDLERS',
+        'OPENSEARCH_ENDPOINT', 'OPENSEARCH_INDEX', 'OPENSEARCH_REFRESH'
     ]
     
     env_loaded_count = 0
