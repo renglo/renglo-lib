@@ -14,6 +14,11 @@ import re
 from decimal import Decimal
 import time
 import uuid
+from renglo.debug_json import djson
+import logging
+
+_logger_workspace = logging.getLogger("agent.workspace")
+_logger_llm = logging.getLogger("agent.llm")
 
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -58,9 +63,8 @@ class AgentUtilities:
             openai_key = self.config.get('OPENAI_API_KEY', '')
             self.AI_1 = OpenAI(api_key=openai_key)
             self.AI_2 = OpenAI(api_key=openai_key)
-            print(f"OpenAI client initialized")
         except Exception as e:
-            print(f"Error initializing OpenAI client: {e}")
+            _logger_llm.error("openai_init_failed | %s", e)
             self.AI_1 = None
             self.AI_2 = None
 
@@ -90,10 +94,7 @@ class AgentUtilities:
         action = 'get_message_history'
 
         try:
-            #print(f'type: {self.entity_type}') #legacy print
-            #print(f'entity_id: {self.entity_id}') #legacy print
-            #print(f'thread: {self.thread}') #legacy print
-            #print(f'filter: {filter}') #legacy print
+            _logger_workspace.debug("get_message_history | type=%s | entity_id=%s | thread=%s | filter=%s", self.entity_type, self.entity_id, self.thread, filter)
 
             apply_filter = False
             filter_param = None
@@ -117,7 +118,7 @@ class AgentUtilities:
             )
 
             if 'success' not in response:
-                print(f'Something failed during message list: {response}')
+                _logger_workspace.error("message_list_failed | %s", response)
                 return {'success': False, 'action': action, 'input': filter, 'output': response}
 
             # Prepare messages to look like an OpenAI message array
@@ -138,16 +139,17 @@ class AgentUtilities:
                             #print(f'{param_value} does not begin with:{filter_value}, filter out')
                             continue
 
-                        #print(f'Include in filtered results') #legacy print
+                        _logger_workspace.debug("message_filter_include | param=%s | value=%s", filter_param, param_value)
 
                     out_message = m['_out']
                     if m['_type'] in ['user', 'consent', 'system', 'text', 'tool_rq', 'tool_rs']:  # OK to show to LLM
                         message_list.append(out_message)
 
+            djson("message_history.json", message_list)
             return {'success': True, 'action': action, 'input': filter, 'output': message_list}
 
         except Exception as e:
-            print(f'Get message history failed: {str(e)}')
+            _logger_workspace.error("get_message_history_failed | %s", e)
             return {'success': False, 'action': action, 'input': filter, 'output': f'Error: {str(e)}'}
 
     def update_chat_message_document(self, update, call_id=False):
@@ -162,7 +164,7 @@ class AgentUtilities:
             dict: Success status and response
         """
         action = 'update_chat_message_document'
-        #print(f'Running: {action}') #legacy print
+        _logger_workspace.debug("update_chat_message_document | running")
 
         try:
             response = self.CHC.update_turn(
@@ -177,13 +179,13 @@ class AgentUtilities:
             )
 
             if 'success' not in response:
-                print(f'Something failed during update chat message {response}')
+                _logger_workspace.error("update_chat_message_failed | %s", response)
                 return {'success': False, 'action': action, 'input': update, 'output': response}
 
             return {'success': True, 'action': action, 'input': update, 'output': response}
 
         except Exception as e:
-            print(f'Update chat message failed: {str(e)}')
+            _logger_workspace.error("update_chat_message_failed | %s", e)
             return {'success': False, 'action': action, 'output': f'Error: {str(e)}'}
 
     def update_workspace_document(self, update, workspace_id):
@@ -233,9 +235,8 @@ class AgentUtilities:
             }
         """
         try:
-            print(f"[DOC] save_chat | msg_type={msg_type or 'auto'} | next={next}")
             if msg_type == 'consent':
-                #print('Sending consent form') #legacy print
+                _logger_workspace.debug("save_chat | type=consent")
                 # This is a consent request from the agent to the user
                 message_type = 'consent'
                 if not interface:
@@ -245,7 +246,7 @@ class AgentUtilities:
                 self.print_chat(doc,message_type, as_is=True)
 
             elif msg_type == 'widget':
-                #print('Custom widget') #legacy print
+                _logger_workspace.debug("save_chat | type=widget")
                 # This is a consent request from the agent to the user
                 message_type = 'widget'
                 if not interface:
@@ -255,7 +256,7 @@ class AgentUtilities:
                 self.print_chat(doc,message_type, as_is=True)
 
             elif msg_type == 'transient' and output.get('content') and output.get('role') == 'assistant':
-                print('Saving transient message to the message roll')
+                _logger_workspace.debug("save_chat | type=transient")
                 message_type = 'transient'
                 doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
                 self.update_chat_message_document(doc)
@@ -277,7 +278,7 @@ class AgentUtilities:
 
 
             elif output.get('tool_calls') and output.get('role') == 'assistant':
-                #print('Saving the tool call') #legacy print
+                _logger_workspace.debug("save_chat | type=tool_rq")
                 # This is a tool call
                 message_type = 'tool_rq'
                 doc = {'_out': self.sanitize(output), '_type': 'tool_rq','_next': next}
@@ -294,12 +295,12 @@ class AgentUtilities:
                         "tool_call_id": tool_call['id'],
                         "content": []
                     }
-                    #print(f'Saving placeholder message for:{tool_call['id']}') #legacy print
+                    _logger_workspace.debug("save_chat | type=tool_rs_placeholder | id=%s", tool_call['id'])
                     doc_rs_placeholder = {'_out': rs_template, '_type': 'tool_rs','_next': next}
                     self.update_chat_message_document(doc_rs_placeholder)
 
             elif output.get('content') and output.get('role') == 'assistant':
-                #print('Saving the assistant message to the user') #legacy print
+                _logger_workspace.debug("save_chat | type=text")
                 # This is a human readable message from the agent to the user
                 message_type = 'text'
                 doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
@@ -312,11 +313,9 @@ class AgentUtilities:
                 self.print_api(output['content'], message_type)
 
             elif 'tool_call_id' in output and 'role' in output and output['role'] == 'tool':
-                # This is a response from the tool
-                #print(f'Including Tool Response in the chat: {output}') #Verboso
                 # This is the tool response
                 message_type = 'tool_rs'
-                message_type = 'tool_rs'
+                _logger_workspace.debug("save_chat | type=tool_rs | interface=%s", interface)
                 doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': next}
                 # Memorize to permanent storage (DB path keeps content as string)
                 self.update_chat_message_document(doc, output['tool_call_id'])
@@ -348,7 +347,7 @@ class AgentUtilities:
                     self.print_chat(doc_for_websocket, message_type, as_is=True)
 
         except Exception as e:
-            print(f"Error in {function}: {e}")
+            _logger_workspace.error("save_chat_failed | fn=%s | %s", function, e)
 
     def print_api(self, message, type='text', public_user=None):
         """
@@ -378,11 +377,11 @@ class AgentUtilities:
                 parts = callback_msg_handler.split('/')
                 if len(parts) != 2:
                     error_msg = f"{callback_msg_handler} is not a valid tool."
-                    print(error_msg)
+                    _logger_workspace.error("print_api_invalid_handler | %s", error_msg)
                     self.print_chat(error_msg, 'error')
                     raise ValueError(error_msg)
 
-                #print(f'Calling {callback_msg_handler}') #legacy print
+                _logger_workspace.debug("print_api_calling | %s", callback_msg_handler)
                 response = self.SHC.handler_call(self.portfolio, self.org, parts[0], parts[1], params)
 
                 return response
@@ -390,10 +389,10 @@ class AgentUtilities:
                 return {'success': False, 'action': action, 'input': message, 'output': ''}
 
         except ValueError as ve:
-            print(f"ValueError in {action}: {ve}")
+            _logger_workspace.error("print_api_failed | %s", ve)
             return {'success': False, 'action': action, 'input': message, 'output': str(ve)}
         except Exception as e:
-            print(f"Error in {action}: {e}")
+            _logger_workspace.error("print_api_failed | %s", e)
             return {'success': False, 'action': action, 'input': message, 'output': str(e)}
 
     def print_chat(self, output, type='text', as_is=False, connection_id=None, next= None):
@@ -409,7 +408,7 @@ class AgentUtilities:
         Returns:
             bool: Success status
         """
-        #print(f'print_chat: {output}') #Verboso
+        _logger_workspace.debug("print_chat | type=%s", type)
 
         if not connection_id:
             #Try the context
@@ -438,8 +437,7 @@ class AgentUtilities:
         success = self.ws_client.send_message(connection_id, doc)
 
         if success:
-            pass
-            #print(f'Message has been updated') #legacy print
+            _logger_workspace.debug("print_chat | ws_sent=True")
 
         return success
 
@@ -507,9 +505,7 @@ class AgentUtilities:
 
             # Sanitize changes early to prevent serialization errors in logging
             changes = self.sanitize(changes)
-            first_key = next(iter(changes), None)
-            print(f"[WORKSPACE] mutation | keys={list(changes.keys())} | first={first_key}")
-            #print("MUTATE_WORKSPACE>>", first_key) #legacy print
+            _logger_workspace.debug("workspace_mutation | keys=%s", list(changes.keys()) if isinstance(changes, dict) else '?')
 
             # 1. Get the workspace in this thread
             #print(f'Looking for workspaces @:{self.portfolio}:{self.org}:{self.entity_type}:{self.entity_id}:{self.thread} ')
@@ -581,8 +577,7 @@ class AgentUtilities:
                         workspace['state']['desire'] = output
 
                 if key == 'intent':
-                    print(f'Workspace before intent insert:{workspace}')
-                    print(f'Inserting Intent:{output}')
+                    _logger_workspace.debug("mutate_intent | inserting=%s", output)
                     if isinstance(output, dict):
                         # Sanitize nested intent data to ensure no Decimals slip through
                         workspace['state']['intent'] = self.sanitize(output)
@@ -600,7 +595,7 @@ class AgentUtilities:
                             workspace['state']['history'].append(history_event)
 
                 if key == 'cache':
-                    #print(f'Updating workspace cache: {output}') #Verboso
+                    _logger_workspace.debug("workspace_cache_update")
                     if 'cache' not in workspace:
                         workspace['cache'] = {}
                     if isinstance(output, dict):
@@ -638,7 +633,7 @@ class AgentUtilities:
                         workspace['plan'][plan_id] = self.sanitize(output)
 
                 if key == 'new_state_machine':
-                    print('[STATE_MACHINE] initializing')
+                    _logger_workspace.debug("state_machine_init")
                     if isinstance(output, dict):
                         plan_id = output['plan_id']
                         if 'state_machine' not in workspace:
@@ -647,7 +642,6 @@ class AgentUtilities:
                         if plan_id not in workspace['state_machine']:
                             # It won't override entire state machine if it already exists.
                             workspace['state_machine'][plan_id] = self.sanitize(output)
-                    #print(workspace) #Verboso
 
                 if key == 'step_state':
 
@@ -675,7 +669,7 @@ class AgentUtilities:
                 if key == 'plan_state':
                     if isinstance(output, dict):
 
-                        #print(f'@mutate:plan_state: workspace: {workspace}') #Verboso
+                        _logger_workspace.debug("mutate_plan_state | %s", output)
 
                         if 'plan_id' in output :
                             plan_id = output['plan_id']
@@ -700,7 +694,7 @@ class AgentUtilities:
                         '''
                         # Storing action_log:{'plan_id': 'd6e47334', 'plan_step': '0', 'tool': 'search_flights', 'status': 3, 'details': {'commands': [{'id': 'call_tMtY0uDa3WAnl9kyz9MqXnhA', 'function': {'arguments': '{"from_airport_code":"DFW","to_airport_code":"JFK","outbound_date":"2026-01-25","return_date":"2026-02-01"}', 'name': 'search_flights'}, 'type': 'function'}], 'interface': 'binary_consent', 'nonce': 116360, 'message': {'role': 'assistant', 'content': 'I would like to call search_flights tool with the following parameters:from_airport_code: DFW, to_airport_code: JFK, outbound_date: 2026-01-25, return_date: 2026-02-01. Please confirm it is ok'}}}
 
-                        #print(f'Storing action_log:{output}') #legacy print
+                        _logger_workspace.debug("storing_action_log")
                         plan_id = output['plan_id']
                         plan_step = output['plan_step']
                         log = {}
@@ -732,16 +726,15 @@ class AgentUtilities:
 
             # Sanitize the entire workspace object to convert Decimals before updating
             sanitized_workspace = self.sanitize(workspace)
-            #print(f'WORSKPACE > Inserting updated workspace')
             self.update_workspace_document(
                 sanitized_workspace,
                 workspace['_id']
             )
-            print(f"[WORKSPACE] mutation_done | workspace_id={workspace.get('_id')}")
+            djson("workspace.json", workspace)
             return True
 
         except Exception as e:
-            print(f'Error updating workspace: {str(e)}')
+            _logger_workspace.error("workspace_mutation_failed | %s", e)
             return False
 
     def llm(self, prompt):
@@ -777,14 +770,23 @@ class AgentUtilities:
             if 'response_format' in prompt:
                 params['response_format'] = prompt['response_format']
 
+            model = params['model']
+            messages = params['messages']
+            tools = params.get('tools')
+            _logger_llm.info("llm call model=%s messages=%d tools=%d", model, len(messages) if isinstance(messages, list) else 0, len(tools or []))
+            djson("llm_last_prompt.json", {"model": model, "messages": messages, "tools": tools})
+
             # AI_1 is gpt-3.5-turbo which doesn't support structured outputs. AI_2 uses gpt-4o-mini which does.
             # response = self.AI_1.chat.completions.create(**params)
             response = self.AI_2.chat.completions.create(**params)
 
-            return response.choices[0].message
+            resp = response.choices[0].message
+            _logger_llm.info("llm result returned successfully and has_tool_calls=%s", bool(resp.tool_calls))
+            djson("llm_last_response.json", {"role": resp.role, "content": resp.content, "tool_calls": [{"id": tc.id, "function": {"name": tc.function.name}} for tc in (resp.tool_calls or [])]})
+            return resp
 
         except Exception as e:
-            print(f"Error running LLM call: {e}")
+            _logger_llm.error("llm error model=%s %s", params.get('model', ''), e)
             return False
 
     def llm_responses(self, input_items, tools, model=None):
@@ -827,7 +829,7 @@ class AgentUtilities:
                 "output": output_items,
             }
         except Exception as e:
-            print(f"Error running Responses API call: {e}")
+            _logger_llm.error("llm_responses_failed | %s", e)
             return {"output_text": "", "output": []}
 
 
@@ -837,21 +839,21 @@ class AgentUtilities:
 
         """
         action = 'new_chat_thread_document'
-        #print(f'Running: {action}') #legacy print
+        _logger_workspace.debug("new_chat_thread_document | running")
 
         try:
         # List threads
             threads = self.CHC.list_threads(self.portfolio,self.org,self.entity_type,self.entity_id)
-            #print(f'List Threads: {threads}') #legacy print
+            _logger_workspace.debug("list_threads | result=%s", threads.get('success'))
 
             if 'success' in threads:
                 if len(threads['items']) < 1:
                     # No threads found
-                    #print('Creating new thread') #legacy print
+                    _logger_workspace.debug("creating_new_thread")
                     response_2 = self.CHC.create_thread(self.portfolio,self.org,self.entity_type, self.entity_id, public_user=public_user)
 
                     if not response_2.get('success'):
-                        #print(f'Failed to create thread: {response_2}') #legacy print
+                        _logger_workspace.error("create_thread_failed | %s", response_2)
                         return {'success': False,'action': action,'input': '','output': response_2}
 
                     thread = response_2['document']
@@ -868,8 +870,7 @@ class AgentUtilities:
                 }
 
         except Exception as e:
-
-            print(f"Error getting/creating thread: {e}")
+            _logger_workspace.error("get_or_create_thread_failed | %s", e)
             return {'success': False,'action': action,'output': f"{e}"}
 
     def new_chat_message_document(self, message, public_user=None, next=None):
@@ -884,7 +885,7 @@ class AgentUtilities:
             dict: Success status and response
         """
         action = 'new_chat_message_document'
-        #print(f'Running: {action}') #legacy print
+        _logger_workspace.debug("new_chat_message_document | running")
 
         try:
 
@@ -941,7 +942,7 @@ class AgentUtilities:
             if 'document' in response and '_id' in response['document']:
                 self.chat_id = response['document']['_id']
 
-            #print(f'Response: {response}') #legacy print
+            _logger_workspace.debug("new_chat_message_document | response=%s", response.get('success'))
 
             if 'success' not in response:
                 return {'success': False, 'action': action, 'input': message, 'output': response}
@@ -949,8 +950,7 @@ class AgentUtilities:
             return {'success': True, 'action': action, 'input': message, 'output': response['document']}
 
         except Exception as e:
-
-            print(f"Error getting/creating turn: {e}")
+            _logger_workspace.error("get_or_create_turn_failed | %s", e)
             return {'success': False,'action': action,'input': '','output': f"{e}"}
 
     def get_active_workspace(self, workspace_id=None):
@@ -1188,7 +1188,7 @@ class AgentUtilities:
             try:
                 return json.loads(cleaned_response)
             except json.JSONDecodeError as e:
-                print(f"First attempt failed. Error: {e}")
+                _logger_workspace.error("clean_json_first_attempt_failed | %s", e)
 
                 # If first attempt fails, try to fix the raw field specifically
                 # Find the raw field and ensure it's properly formatted
@@ -1203,7 +1203,7 @@ class AgentUtilities:
                 return json.loads(cleaned_response)
 
         except json.JSONDecodeError as e:
-            print(f"Error parsing cleaned JSON response: {e}")
+            _logger_workspace.error("clean_json_parse_failed | %s", e)
             raise
 
     def _convert_to_dict(self, obj):
@@ -1253,7 +1253,7 @@ class AgentUtilities:
                 return json.dumps(outer_parsed)
 
         except json.JSONDecodeError as e:
-            print(f"Error parsing double-escaped JSON: {e}")
+            _logger_workspace.error("remove_outer_escape_failed | %s", e)
             return None
 
     def validate_interpret_openai_llm_response(self, raw_response: dict) -> dict:
@@ -1581,7 +1581,7 @@ class AgentUtilities:
             }
 
         except Exception as e:
-            print(f"Error Pre-Processing message: {e}")
+            _logger_workspace.error("pre_process_message_failed | %s", e)
             # Only print raw response if it exists
 
             return {
@@ -1712,7 +1712,7 @@ class AgentUtilities:
                         try:
                             tool_input = json.loads(t.get('input', '[]'))
                         except json.JSONDecodeError:
-                            print(f"Invalid JSON in tool input for tool {t.get('key', 'unknown')}. Using empty array.")
+                            _logger_workspace.error("invalid_tool_input_json | tool=%s", t.get('key', 'unknown'))
                             tool_input = []
 
                         dict_params = {}
@@ -1739,7 +1739,7 @@ class AgentUtilities:
                                 dict_params[key] = {'type': 'string', 'description': val}
                                 required_params.append(key)
 
-                        print(f'Required parameters:{required_params}')
+                        _logger_workspace.debug("interpret | required_params=%s", required_params)
 
                         tool = {
                             'type': 'function',
@@ -1801,7 +1801,7 @@ class AgentUtilities:
             }
 
         except Exception as e:
-            print(f"Error in interpret() message: {e}")
+            _logger_workspace.error("interpret_failed | %s", e)
             return {
                 'success': False,
                 'action': action,
@@ -1840,14 +1840,14 @@ class AgentUtilities:
             # Check if handler exists
             if tool_name not in list_handlers:
                 error_msg = f"❌ No handler found for tool '{tool_name}'"
-                print(error_msg)
+                _logger_workspace.error("act_no_handler | tool=%s", tool_name)
                 self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
 
             # Check if handler is an empty string
             if list_handlers[tool_name] == '':
                 error_msg = f"❌ Handler is empty"
-                print(error_msg)
+                _logger_workspace.error("act_empty_handler | tool=%s", tool_name)
                 self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
 
@@ -1856,7 +1856,7 @@ class AgentUtilities:
             parts = handler_route.split('/')
             if len(parts) != 2:
                 error_msg = f"❌ {tool_name} is not a valid tool."
-                print(error_msg)
+                _logger_workspace.error("act_invalid_handler | tool=%s | route=%s", tool_name, handler_route)
                 self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
 
@@ -1869,7 +1869,7 @@ class AgentUtilities:
             params['_entity_id'] = self.entity_id
             params['_thread'] = self.thread
 
-            print(f'Calling {handler_route} ')
+            _logger_workspace.debug("act_calling | route=%s", handler_route)
 
             response = self.SHC.handler_call(portfolio,org,parts[0],parts[1],params)
 
@@ -1929,8 +1929,7 @@ class AgentUtilities:
 
             #print(f'flag5') #legacy print
 
-            #print(f'message output: {tool_out}')
-            print("✅ Tool execution complete.")
+            _logger_workspace.debug("act_tool_execution_complete | tool=%s", tool_name)
 
             return {"success": True, "action": action, "input": plan, "output": tool_out}
 
@@ -1938,7 +1937,7 @@ class AgentUtilities:
 
             error_msg = f"❌ Execute Intention failed. @act trying to run tool:'{tool_name}': {str(e)}"
             self.print_chat(error_msg,'error')
-            print(error_msg)
+            _logger_workspace.error("act_failed | tool=%s | %s", tool_name, e)
             self._update_context(execute_intention_error=error_msg)
 
             error_result = {

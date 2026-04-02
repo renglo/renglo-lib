@@ -6,8 +6,11 @@ from datetime import datetime
 from ..common import *
 import uuid
 import json
+import logging
 import boto3
 from decimal import Decimal
+
+_logger_workspace = logging.getLogger("agent.workspace")
 
 class ChatController:
 
@@ -30,7 +33,7 @@ class ChatController:
             self.apigw_client = boto3.client("apigatewaymanagementapi", endpoint_url=websocket_url)
 
         except Exception as e:
-            print(f"Error initializing WebSocket client: {e}")
+            _logger_workspace.error("websocket_init_failed | %s", e)
             self.apigw_client = None
 
         try:
@@ -46,10 +49,10 @@ class ChatController:
             return True
 
         except self.apigw_client.exceptions.GoneException:
-            print(f'Connection is no longer available')
+            _logger_workspace.warning("websocket_connection_gone")
             return False
         except Exception as e:
-            print(f'Error sending message: {str(e)}')
+            _logger_workspace.error("websocket_send_failed | %s", e)
             return False
 
     def get_current_user(self):
@@ -293,7 +296,7 @@ class ChatController:
                             #print(item['messages'][index]) #Verboso
 
                         except json.JSONDecodeError as e:
-                            print(f"Error parsing JSON content: {e}")
+                            _logger_workspace.error("json_parse_error | %s", e)
                             # If JSON parsing fails, keep the original string
                             parsed_content = self._convert_floats_to_strings(update['content'])
                             item['messages'][index]['_out']['content'] = parsed_content
@@ -345,7 +348,7 @@ class ChatController:
         return {'success':False,'output':'Workspace not found'}
 
     def create_workspace(self,portfolio,org,entity_type,entity_id,thread_id,payload):
-        print('CHC:create_workspace')
+        _logger_workspace.debug("create_workspace | running")
         try:
 
             if not all([entity_type, entity_id, thread_id]):
@@ -378,7 +381,7 @@ class ChatController:
                 "in_progress": None     # the current active plan (intention)
             }
 
-            print('All fields required: OK')
+            _logger_workspace.debug("create_workspace | fields_ok")
 
             cache = {}
             if 'cache' in payload and isinstance(payload['cache'], dict):
@@ -473,15 +476,10 @@ class ChatController:
                 changed = True
 
             if changed:
-                #print('Something has changed. Updating the workspace')
-                #current_app.logger.debug(f'Prepared data for workspace update: {item}')
-                print(item)
                 response = self.CHM.update_chat(item)
-                #print('Workspace has been updated.') #legacy print
-                #print(response)
                 return response
             else:
-                print('No changes detected in workspace.')
+                _logger_workspace.debug("update_workspace | no_changes")
 
         except Exception as e:
             current_app.logger.error(f"Error in update_workspace: {str(e)}")

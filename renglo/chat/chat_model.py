@@ -7,6 +7,9 @@ from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import BotoCoreError, ClientError
 from decimal import Decimal
 import json
+import logging
+
+_logger_workspace = logging.getLogger("agent.workspace")
 
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -231,7 +234,7 @@ class ChatModel:
                 "status" : response['ResponseMetadata']['HTTPStatusCode']
                 }
         except ClientError as e:
-            print(f'create_chat > error:{e}')
+            _logger_workspace.error("create_chat_failed | %s", e)
             return {
                 "success":False,
                 "message": e.response['Error']['Message'],

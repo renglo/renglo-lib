@@ -1,4 +1,5 @@
 from renglo.logger import get_logger
+from renglo.debug_json import djson
 
 from renglo.data.data_controller import DataController
 from renglo.docs.docs_controller import DocsController
@@ -12,7 +13,10 @@ from renglo.schd.external_handler_runner import run_external_handler
 from datetime import datetime
 
 import json
+import logging
 import os
+
+_logger_schd = logging.getLogger("agent.schd")
 
 class SchdController:
 
@@ -204,15 +208,17 @@ class SchdController:
         payload['tool'] = extension
 
         if has_external_handlers(extension) and is_external_handler_active(extension):
-            print(f'Calling external handler:{handler}')
+            _logger_schd.info("calling handler %s", handler)
             response = run_external_handler(
                 extension_name=extension,
                 handler_name=handler_name,
                 payload=payload
             )
             if not response.get('success'):
+                _logger_schd.error("handler %s returned success=False", handler)
                 result.append({'success': False, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
                 return result, 400
+            _logger_schd.info("handler %s returned success=True", handler)
             result.append({'success': True, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
             return result, 200
 
@@ -230,14 +236,15 @@ class SchdController:
                 return result, 400
         '''
 
+        _logger_schd.info("calling handler %s", handler)
         response = self.SHL.load_and_run(handler, payload = payload)
 
-        #print(f'Handler output:{response}')
-
         if not response['success']:
+            _logger_schd.error("handler %s returned success=False", handler)
             result.append({'success':False,'action':action,'handler':handler_name,'input':payload,'output':response})
             return result, 400
 
+        _logger_schd.info("handler %s returned success=True", handler)
         result.append({'success':True,'action':action,'handler':handler_name,'input':payload,'output':response})
 
         return result, 200
@@ -248,7 +255,7 @@ class SchdController:
         #print(f'Calling handler:{handler}, payload:{payload}') #Verboso
 
         try:
-            print(f"[SCHD] handler_call_start | extension={extension} | handler={handler}")
+            _logger_schd.info("calling handler %s", handler)
             # We override portfolio, org and extension that might come in the payload.
             payload['portfolio'] = portfolio
             payload['org'] = org
@@ -322,7 +329,7 @@ class SchdController:
                         }
                 else:
                     # External handlers are deactivated - fall back to internal
-                    print(f'External handlers for {extension} are deactivated, using internal handler')
+                    _logger_schd.debug("external_handler_deactivated | ext=%s | using_internal", extension)
                     response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
             else:
                 # Extension does not have external handlers - use internal handler loader
@@ -333,6 +340,7 @@ class SchdController:
             out = response.get('output')
             if not isinstance(out, dict):
                 canonical = [out] if out is not None else [response.get('error', 'Handler failed')]
+                _logger_schd.error("handler %s returned success=False | %s", handler, canonical)
                 return {
                     'success': False,
                     'action': action,
@@ -345,14 +353,16 @@ class SchdController:
                 canonical = out.get('output', out)
                 if not isinstance(canonical, list):
                     canonical = [canonical] if canonical is not None else []
+                _logger_schd.error("handler %s returned success=False | %s", handler, canonical)
                 return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
             canonical = out.get('output', out)
             interface = out.get('interface') if isinstance(out, dict) else None
-            print(f"[SCHD] handler_call_end | extension={extension} | handler={handler} | success=True")
+            _logger_schd.info("handler %s returned success=True", handler)
+            djson("last_handler_response.json", {"handler": handler, "success": True, "output": canonical})
             return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
 
         except Exception as e:
-            print(f'Error @handler_call:: {e}') #logging error
+            _logger_schd.error("handler_call_failed | ext=%s | handler=%s | %s", extension, handler, e)
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call:: {e}'}
 
     def handler_check(self,portfolio,org,extension,handler,payload):
@@ -361,7 +371,7 @@ class SchdController:
         #print(f'Calling handler check:{handler}, payload:{payload}') #Verboso
 
         try:
-            print(f"[SCHD] handler_check_start | extension={extension} | handler={handler}")
+            _logger_schd.info("checking handler %s", handler)
             # We override portfolio, org and extension that might come in the payload.
             payload['portfolio'] = portfolio
             payload['org'] = org
@@ -374,17 +384,19 @@ class SchdController:
             out = response.get('output')
             if not isinstance(out, dict):
                 canonical = out if out is not None else response.get('error', 'Handler check failed')
+                _logger_schd.error("handler check %s returned success=False | %s", handler, canonical)
                 return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
             if not response.get('success'):
                 canonical = out.get('output', out)
+                _logger_schd.error("handler check %s returned success=False | %s", handler, canonical)
                 return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
             canonical = out.get('output', out)
             interface = out.get('interface') if isinstance(out, dict) else None
-            print(f"[SCHD] handler_check_end | extension={extension} | handler={handler} | success=True")
+            _logger_schd.info("handler check %s returned success=True", handler)
             return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
 
         except Exception as e:
-            print(f'Error @handler_check: {e}') #logging error
+            _logger_schd.error("handler_check_failed | ext=%s | handler=%s | %s", extension, handler, e)
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {e}'}
 
     def delete_rule(self, rule_name):

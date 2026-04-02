@@ -1,8 +1,11 @@
 from renglo.logger import get_logger
 import importlib
+import logging
 import os
 import sys
 import gc
+
+_logger_schd = logging.getLogger("agent.schd")
 
 class SchdLoader:
 
@@ -49,24 +52,21 @@ class SchdLoader:
             # This will import: from enerclave.handlers.geocoding_handler import GeocodingHandler
             instance = load_code_class('enerclave', 'geocoding_handler', 'GeocodingHandler')
         """
-        logger = get_logger()
-        logger.debug(f"Attempting to load: {module_path}.handlers.{module_name}.{class_name}")
-
         try:
             # Construct the full module path
             # Example: "enerclave.handlers.geocoding_handler"
             full_module_path = f"{module_path}.handlers.{module_name}"
 
-            #print(f'Loading module: {full_module_path}') #legacy print
+            _logger_schd.debug("loading_module | %s", full_module_path)
 
             # Dynamically import the module
             # This will work if the package is installed (e.g., via pip install)
             module = importlib.import_module(full_module_path)
-            #print(f'Getting class: {class_name}') #legacy print
+
             # Get the class from the module
             class_ = getattr(module, class_name)
 
-            #print(f'Class loaded: {class_.__name__}') #legacy print
+            _logger_schd.debug("class_loaded | %s", class_.__name__)
 
             # Instantiate the class
             # Check if it needs config (convention: handlers ending in 'onboardings' need config)
@@ -80,39 +80,36 @@ class SchdLoader:
                         config = current_app.renglo_config
                 except (ImportError, RuntimeError):
                     pass
-                #print(f'Creating instance with config') #legacy print
                 instance = class_()
             else:
                 # Most handlers don't need config in __init__
-                #print(f'Creating instance') #legacy print
                 instance = class_()
 
-            # print(f'Instance created: {instance.__class__.__name__}') #legacy print
-            logger.debug(f"Successfully loaded {class_name} from {full_module_path}")
+            _logger_schd.debug("instance_created | %s", instance.__class__.__name__)
 
             return instance
 
         except ModuleNotFoundError as e:
             # Module not found - package probably not installed
-            logger.error(f"Module '{full_module_path}' not found: {e}")
-            logger.error(f"Make sure the package is installed via pip (e.g., pip install -e {module_path}-module/)")
+            _logger_schd.error("module_not_found | %s | %s", full_module_path, e)
+            _logger_schd.error("install_hint | pip install -e %s-module/", module_path)
             return None
 
         except AttributeError as e:
             # Class not found in module
-            logger.error(f"Class '{class_name}' not found in module '{full_module_path}': {e}")
+            _logger_schd.error("class_not_found | class=%s | module=%s | %s", class_name, full_module_path, e)
             return None
 
         except TypeError as e:
             # Error instantiating the class
-            logger.error(f"TypeError when instantiating '{class_name}': {e}")
+            _logger_schd.error("instantiation_error | class=%s | %s", class_name, e)
             return None
 
         except Exception as e:
             # Any other error
-            logger.error(f"Unexpected error loading '{class_name}' from '{full_module_path}': {e}")
+            _logger_schd.error("load_class_failed | class=%s | module=%s | %s", class_name, full_module_path, e)
             import traceback
-            logger.error(traceback.format_exc())
+            _logger_schd.error(traceback.format_exc())
             return None
 
 
@@ -134,7 +131,7 @@ class SchdLoader:
         - arbitium/helper_rds/restore-snapshot
         """
         func_name = "load_and_run"
-        # print(f'running: {func_name}') #legacy print
+        _logger_schd.debug("running_handler | %s", module_name)
 
         try:
             # Handle both file paths and dot-notation module names
@@ -155,7 +152,7 @@ class SchdLoader:
             subhandler = None
             if len(module_parts) >= 3:
                 subhandler = module_parts[2]
-                #print(f'Subhandler detected: {subhandler}') #legacy print
+                _logger_schd.debug("subhandler_detected | %s", subhandler)
                 # Use only the first two parts for module loading
                 actual_module_name = '.'.join(module_parts[:2])
             else:
@@ -163,7 +160,7 @@ class SchdLoader:
 
             # Derive class name from the module name (second part), not the subhandler
             class_name = self.convert_module_name_to_class(module_parts[1])
-            #print(f'Attempting to load class:{class_name}') #legacy print
+            _logger_schd.debug("loading_class | %s", class_name)
 
             payload = kwargs.get('payload')  # Extract payload from kwargs
             check = kwargs.get('check',False)
@@ -175,7 +172,7 @@ class SchdLoader:
                 # Only set subhandler if not already present in payload (allow override)
                 if 'subhandler' not in payload:
                     payload['subhandler'] = subhandler
-                    #print(f'Injected subhandler into payload: {subhandler}') #legacy print
+                    _logger_schd.debug("subhandler_injected | %s", subhandler)
 
             instance = self.load_code_class(module_parts[0], module_parts[1], class_name, *args, **kwargs)
             runtime_loaded_class = True
@@ -184,14 +181,12 @@ class SchdLoader:
                 error = f"Class '{class_name}' in '{actual_module_name}' could not be loaded."
                 return {'success':False,'action':func_name,'error':error,'output':error,'status':500}
 
-            #print(f'Class Loaded:{class_name}') #legacy print
-
             if check:
                 if hasattr(instance, "check"):
                     result = instance.check(payload)  # Pass payload to run
                 else:
                     error = f"Class '{class_name}' in '{actual_module_name}' has no 'check' method."
-                    print(error)
+                    _logger_schd.error("no_check_method | class=%s | module=%s", class_name, actual_module_name)
                     return {'success':False,'action':func_name,'error':error,'status':500}
 
             else:
@@ -199,7 +194,7 @@ class SchdLoader:
                     result = instance.run(payload)  # Pass payload to run
                 else:
                     error = f"Class '{class_name}' in '{actual_module_name}' has no 'run' method."
-                    print(error)
+                    _logger_schd.error("no_run_method | class=%s | module=%s", class_name, actual_module_name)
                     return {'success':False,'action':func_name,'error':error,'status':500}
 
 
@@ -219,7 +214,7 @@ class SchdLoader:
             return {'success':True,'action':func_name,'output':result,'status':200}
 
         except Exception as e:
-            print(f'Error @load_and_run: {str(e)}')
+            _logger_schd.error("load_and_run_failed | module=%s | %s", module_name, e)
             return {'success':False,'action':func_name,'input':module_name,'output':f'Error @load_and_run: {str(e)}'}
 
 
