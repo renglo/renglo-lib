@@ -58,7 +58,8 @@ class ChatController:
         
     def get_current_user(self):
         
-        current_app.logger.debug(f'Getting user')
+        print(f'Getting user')
+        user_id='101010'
 
         if "cognito:username" in current_cognito_jwt:
             # IdToken was used
@@ -67,7 +68,7 @@ class ChatController:
             # AccessToken was used
             user_id = create_md5_hash(current_cognito_jwt["username"],9)
             
-        current_app.logger.debug(f'User Id:{user_id}')
+        print(f'User Id:{user_id}')
 
         return user_id
         
