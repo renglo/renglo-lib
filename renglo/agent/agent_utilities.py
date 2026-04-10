@@ -22,22 +22,6 @@ class DecimalEncoder(json.JSONEncoder):
         return super(DecimalEncoder, self).default(obj)
 
 
-def _parse_stack(val, sep="/"):
-    """If val contains sep, return (parts, True). Else return ([val], False)."""
-    if not val or sep not in str(val):
-        return ([val] if val else [], False)
-    return ([p.strip() for p in str(val).split(sep) if p.strip()], True)
-
-
-def _pad_parts(parts, n):
-    """Pad parts to length n, repeating last element if needed."""
-    if not parts:
-        return []
-    while len(parts) < n:
-        parts = parts + [parts[-1]]
-    return parts[:n]
-
-
 class AgentUtilities:
     def __init__(self, 
                  config, 
@@ -46,16 +30,10 @@ class AgentUtilities:
                  entity_type, 
                  entity_id, 
                  thread,
-                 connection_id = None,
-                 chat_id_stack = None
+                 connection_id = None
                  ):
         """
         Initialize AgentUtilities with configuration and required parameters.
-
-        Stack support: When entity_type, entity_id, or thread contain "/", they form
-        a calling stack (outer/innermost). Rightmost = current context. chat_id_stack
-        holds turn IDs for outer levels; inner turn ID is set after new_chat_message_document.
-        save_chat dual-writes to each level in the stack.
         
         Args:
             config (dict): Configuration dictionary containing API keys, URLs, etc.
@@ -63,10 +41,9 @@ class AgentUtilities:
         Args:
             portfolio (str): Portfolio identifier
             org (str): Organization identifier  
-            entity_type (str): Type of entity (or "outer/inner" for stack)
-            entity_id (str): Entity identifier (or "outer_id/inner_id" for stack)
-            thread (str): Thread identifier (or "outer_thread/inner_thread" for stack)
-            chat_id_stack (str): Turn IDs for outer levels, "/" separated (optional)
+            entity_type (str): Type of entity
+            entity_id (str): Entity identifier
+            thread (str): Thread identifier
         """
         self.config = config or {}
         self.portfolio = portfolio
@@ -76,20 +53,6 @@ class AgentUtilities:
         self.thread = thread
         self.chat_id = None
         self.connection_id = connection_id
-        self._chat_id_stack_pre = (chat_id_stack or "").strip() or None
-        self._chat_id_stack_full = None
-        self._last_continuity_next = None
-
-        et_parts, self._has_stack = _parse_stack(entity_type)
-        eid_parts, _ = _parse_stack(entity_id)
-        th_parts, _ = _parse_stack(thread)
-        n = max(len(et_parts), len(eid_parts), len(th_parts), 1)
-        self._entity_type_parts = _pad_parts(et_parts, n)
-        self._entity_id_parts = _pad_parts(eid_parts, n)
-        self._thread_parts = _pad_parts(th_parts, n)
-        self._entity_type_curr = self._entity_type_parts[-1] if self._entity_type_parts else (entity_type or "")
-        self._entity_id_curr = self._entity_id_parts[-1] if self._entity_id_parts else (entity_id or "")
-        self._thread_curr = self._thread_parts[-1] if self._thread_parts else (thread or "")
         
         # OpenAI Client
         try:    
@@ -145,15 +108,15 @@ class AgentUtilities:
                     
         
             # Thread was not included, create a new one?
-            if not self._thread_curr:
+            if not self.thread:
                 return {'success': False, 'action': action, 'input': filter, 'output': 'Error: No thread provided'}
                 
             response = self.CHC.list_turns(
                 self.portfolio,
                 self.org,
-                self._entity_type_curr,
-                self._entity_id_curr,
-                self._thread_curr
+                self.entity_type,
+                self.entity_id,
+                self.thread
             )
              
             if 'success' not in response:
@@ -183,151 +146,45 @@ class AgentUtilities:
                     
                     out_message = m['_out']
                     if m['_type'] in ['user', 'consent', 'system', 'text', 'tool_rq', 'tool_rs']:  # OK to show to LLM
-                        message_list.append(out_message)
-
-            # Deduplicate tool messages by tool_call_id (keep last). OpenAI requires exactly one
-            # tool response per tool call; duplicates cause "content[0].type" errors.
-            seen_tool_ids = {}
-            deduped = []
-            for msg in message_list:
-                if msg.get('role') == 'tool' and msg.get('tool_call_id'):
-                    tid = msg['tool_call_id']
-                    if tid in seen_tool_ids:
-                        deduped[seen_tool_ids[tid]] = msg
-                    else:
-                        seen_tool_ids[tid] = len(deduped)
-                        deduped.append(msg)
-                else:
-                    deduped.append(msg)
-
-            return {'success': True, 'action': action, 'input': filter, 'output': deduped}
+                        message_list.append(out_message)      
+            
+            return {'success': True, 'action': action, 'input': filter, 'output': message_list}
         
         except Exception as e:
             print(f'Get message history failed: {str(e)}')
             return {'success': False, 'action': action, 'input': filter, 'output': f'Error: {str(e)}'}
 
-    def _get_r_id_for_stack(self):
-        """
-        Return r_id so triage (or caller) can route user replies without re-introspecting.
-        Format: irn:r_id:<portfolio>:<org>:<entity_type>:<entity_id>:<thread_id>
-        Returns r_id ONLY when in a stack (inner agent called from triage/outer agent).
-        When running directly, returns None — r_id is only needed when nested.
-        """
-        if not getattr(self, '_has_stack', False) or not getattr(self, '_entity_type_parts', None) or len(self._entity_type_parts) < 2:
-            return None
-        et = self._entity_type_parts[-1]
-        eid = self._entity_id_parts[-1]
-        th = self._thread_parts[-1]
-        if not et or not eid or not th:
-            return None
-        return f'irn:r_id:{self.portfolio}:{self.org}:{et}:{eid}:{th}'
-
-    def normalize_continuity_id_for_inner(self, next_val):
-        """
-        Strip triage envelope irn:r_id:.../irn:c_id:... down to the inner continuity id.
-
-        Callers (e.g. trip executor) should pass payload['next'] through here once so
-        routing logic only sees irn:c_id:... . Bare irn:c_id: and other strings pass through.
-        """
-        if not next_val or not isinstance(next_val, str):
-            return next_val
-        if '/' in next_val and 'irn:c_id:' in next_val:
-            tail = next_val.split('/irn:c_id:')[-1]
-            if not tail.startswith('irn:c_id:'):
-                tail = 'irn:c_id:' + tail
-            return tail
-        return next_val
-
-    def _wrap_next_with_r_id(self, update):
-        """
-        For dual-write outer levels: wrap _next (c_id) with r_id so triage can route
-        user replies. Format: irn:r_id:<portfolio>:<org>:<entity_type>:<entity_id>:<thread_id>/irn:c_id:...
-        Uses inner context (parts[-1]) since the c_id belongs to the inner agent.
-        """
-        next_val = update.get('_next')
-        if not next_val or not isinstance(next_val, str) or not next_val.startswith('irn:c_id:'):
-            return update
-        if not getattr(self, '_entity_type_parts', None) or len(self._entity_type_parts) < 2:
-            return update
-        et = self._entity_type_parts[-1]
-        eid = self._entity_id_parts[-1]
-        th = self._thread_parts[-1]
-        r_id = f'irn:r_id:{self.portfolio}:{self.org}:{et}:{eid}:{th}'
-        wrapped = f'{r_id}/{next_val}'
-        out = dict(update)
-        out['_next'] = wrapped
-        return out
-
-    def _parse_tool_content_for_append(self, update):
-        """
-        For dual-write outer levels we append (no call_id). The append path stores
-        as-is, so content stays string. Return a copy with content parsed to object
-        so the frontend gets consistent format (object) in persisted triage thread.
-        """
-        content = update.get('_out', {}).get('content')
-        if content is None or not isinstance(content, str):
-            return update
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                parsed = [parsed]
-            elif isinstance(parsed, list) and not all(isinstance(x, dict) for x in parsed):
-                return update
-            out = dict(update)
-            out['_out'] = dict(out['_out'])
-            out['_out']['content'] = parsed
-            return out
-        except (json.JSONDecodeError, TypeError):
-            return update
-
     def update_chat_message_document(self, update, call_id=False):
         """
-        Update a chat message document. When entity/thread/chat_id form a stack,
-        dual-writes to each level (append same message to each turn).
+        Update a chat message document.
+        
+        Args:
+            update (dict): The update to apply
+            call_id (bool): Whether to use call_id
+            
+        Returns:
+            dict: Success status and response
         """
         action = 'update_chat_message_document'
         print(f'Running: {action}')
         
         try:
-            chat_id_parts = []
-            if getattr(self, '_chat_id_stack_full', None) and "/" in self._chat_id_stack_full:
-                chat_id_parts = [p.strip() for p in self._chat_id_stack_full.split("/") if p.strip()]
-            else:
-                chat_id_parts = [self.chat_id] if self.chat_id else []
-
-            if len(chat_id_parts) > 1 and getattr(self, '_has_stack', False) and len(self._entity_type_parts) >= len(chat_id_parts):
-                resp = None
-                for i in range(len(chat_id_parts)):
-                    use_call_id = call_id
-                    payload = dict(update)
-                    if i < len(chat_id_parts) - 1:
-                        payload = self._wrap_next_with_r_id(payload)
-                    resp = self.CHC.update_turn(
-                        self.portfolio, self.org,
-                        self._entity_type_parts[i],
-                        self._entity_id_parts[i],
-                        self._thread_parts[i],
-                        chat_id_parts[i],
-                        payload,
-                        call_id=use_call_id
-                    )
-                    if 'success' not in resp:
-                        print(f'Dual-write update_turn failed for level {i}: {resp}')
-                return {'success': True, 'action': action, 'input': update, 'output': resp or {}}
-            else:
-                response = self.CHC.update_turn(
-                    self.portfolio, self.org,
-                    self._entity_type_curr,
-                    self._entity_id_curr,
-                    self._thread_curr,
-                    self.chat_id,
-                    update,
-                    call_id=call_id
-                )
-                if 'success' not in response:
-                    print(f'Something failed during update chat message {response}')
-                    return {'success': False, 'action': action, 'input': update, 'output': response}
-                return {'success': True, 'action': action, 'input': update, 'output': response}
+            response = self.CHC.update_turn(
+                self.portfolio,
+                self.org,
+                self.entity_type,
+                self.entity_id,
+                self.thread,
+                self.chat_id,
+                update,
+                call_id=call_id
+            )
+            
+            if 'success' not in response:
+                print(f'Something failed during update chat message {response}')
+                return {'success': False, 'action': action, 'input': update, 'output': response}
+            
+            return {'success': True, 'action': action, 'input': update, 'output': response}
         
         except Exception as e:
             print(f'Update chat message failed: {str(e)}')
@@ -350,9 +207,9 @@ class AgentUtilities:
         response = self.CHC.update_workspace(
             self.portfolio,
             self.org,
-            self._entity_type_curr,
-            self._entity_id_curr,
-            self._thread_curr,
+            self.entity_type,
+            self.entity_id,
+            self.thread,
             workspace_id,
             update
         )
@@ -382,25 +239,6 @@ class AgentUtilities:
             }
         """
         try:
-            r_id = self._get_r_id_for_stack()
-            if r_id:
-                if next and isinstance(next, str) and next.startswith('irn:c_id:'):
-                    next = f'{r_id}/{next}'
-                elif next and isinstance(next, str) and next.startswith('irn:r_id:'):
-                    pass
-                else:
-                    # Do not emit bare r_id: clients lose the c_id and break consent / resume.
-                    prior = getattr(self, '_last_continuity_next', None)
-                    if next is None and isinstance(prior, str) and 'irn:c_id:' in prior:
-                        if prior.startswith(r_id):
-                            next = prior
-                        elif prior.startswith('irn:c_id:'):
-                            next = f'{r_id}/{prior}'
-                print(f"[save_chat] Nested: wrapped or carried continuity (no bare r_id fallback)")
-            elif next is None:
-                next = None
-                if output.get('content') and output.get('role') == 'assistant':
-                    print(f"[save_chat] Direct: no r_id, no next")
             if msg_type == 'consent':
                 print('Sending consent form')
                 # This is a consent request from the agent to the user
@@ -479,14 +317,13 @@ class AgentUtilities:
                 self.print_api(output['content'], message_type)
                 
             elif 'tool_call_id' in output and 'role' in output and output['role'] == 'tool':
-                # This is a response from the tool. Pass through as-is.
-                # interface=<x> tells the client the payload format; we do not transform it here.
-                # Handlers own their format; widget/json payloads go out unchanged.
+                # This is a response from the tool
                 print(f'Including Tool Response in the chat: {output}')
                 print(f'Tool is returning interface:{interface}')
+                # This is the tool response
                 message_type = 'tool_rs'
-                out_to_save = dict(output)
-                doc = {'_out': self.sanitize(out_to_save), '_type': message_type, '_interface': interface, '_next': next}
+                doc = {'_out': self.sanitize(output), '_type': message_type, '_interface': interface, '_next': next}
+                # Memorize to permanent storage (DB path keeps content as string)
                 self.update_chat_message_document(doc, output['tool_call_id'])
 
                 if interface:
@@ -514,9 +351,6 @@ class AgentUtilities:
                                 # If parsing fails, keep original string
                                 pass
                     self.print_chat(doc_for_websocket, message_type, as_is=True)
-
-            if next and isinstance(next, str) and 'irn:c_id:' in next:
-                self._last_continuity_next = next
                     
         except Exception as e:
             print(f"Error in {function}: {e}")
@@ -671,7 +505,7 @@ class AgentUtilities:
         """
         try:
         
-            if not self._thread_curr:
+            if not self.thread:
                 return False
             
             if public_user:
@@ -689,9 +523,9 @@ class AgentUtilities:
             workspaces_list = self.CHC.list_workspaces(
                 self.portfolio,
                 self.org,
-                self._entity_type_curr,
-                self._entity_id_curr,
-                self._thread_curr
+                self.entity_type,
+                self.entity_id,
+                self.thread
             ) 
             #print('WORKSPACES_LIST >>', workspaces_list) 
             
@@ -703,9 +537,9 @@ class AgentUtilities:
                 response = self.CHC.create_workspace(
                     self.portfolio,
                     self.org,
-                    self._entity_type_curr,
-                    self._entity_id_curr,
-                    self._thread_curr, payload
+                    self.entity_type,
+                    self.entity_id,
+                    self.thread, payload
                 ) 
                 if not response['success']:
                     return False
@@ -713,9 +547,9 @@ class AgentUtilities:
                 workspaces_list = self.CHC.list_workspaces(
                     self.portfolio,
                     self.org,
-                    self._entity_type_curr,
-                    self._entity_id_curr,
-                    self._thread_curr
+                    self.entity_type,
+                    self.entity_id,
+                    self.thread
                 ) 
                 #print('UPDATED WORKSPACES_LIST >>>>', workspaces_list) 
                 
@@ -1022,14 +856,14 @@ class AgentUtilities:
         
         try:
         # List threads
-            threads = self.CHC.list_threads(self.portfolio,self.org,self._entity_type_curr,self._entity_id_curr)
+            threads = self.CHC.list_threads(self.portfolio,self.org,self.entity_type,self.entity_id)
             print(f'List Threads: {threads}')
             
             if 'success' in threads:
                 if len(threads['items']) < 1:
                     # No threads found
                     print('Creating new thread')
-                    response_2 = self.CHC.create_thread(self.portfolio,self.org,self._entity_type_curr, self._entity_id_curr, public_user=public_user)
+                    response_2 = self.CHC.create_thread(self.portfolio,self.org,self.entity_type, self.entity_id, public_user=public_user)
                     
                     if not response_2.get('success'):
                         print(f'Failed to create thread: {response_2}')
@@ -1077,9 +911,9 @@ class AgentUtilities:
             message_context['portfolio'] = self.portfolio
             message_context['org'] = self.org
             message_context['public_user'] = public_user
-            message_context['entity_type'] = self._entity_type_curr
-            message_context['entity_id'] = self._entity_id_curr
-            message_context['thread'] = self._thread_curr
+            message_context['entity_type'] = self.entity_type
+            message_context['entity_id'] = self.entity_id
+            message_context['thread'] = self.thread
             
             new_message = {"role": "user", "content": message}
             msg_wrap = {
@@ -1088,7 +922,7 @@ class AgentUtilities:
                 "_next": next   
             }
             
-            # Append new message to permanent storage (create in current/innermost context only)
+            # Append new message to permanent storage
             message_object = {}
             message_object['context'] = message_context
             message_object['messages'] = [msg_wrap]
@@ -1096,9 +930,9 @@ class AgentUtilities:
             response = self.CHC.create_turn(
                 self.portfolio,
                 self.org,
-                self._entity_type_curr,
-                self._entity_id_curr,
-                self._thread_curr,
+                self.entity_type,
+                self.entity_id,
+                self.thread,
                 message_object
             )
             
@@ -1126,49 +960,11 @@ class AgentUtilities:
             
             if 'document' in response and '_id' in response['document']:
                 self.chat_id = response['document']['_id']
-                if self._chat_id_stack_pre:
-                    self._chat_id_stack_full = f"{self._chat_id_stack_pre}/{self.chat_id}"
-                else:
-                    self._chat_id_stack_full = self.chat_id
             
             print(f'Response: {response}')
         
             if 'success' not in response:
                 return {'success': False, 'action': action, 'input': message, 'output': response}
-
-            if (
-                self._chat_id_stack_pre
-                and getattr(self, '_has_stack', False)
-                and len(getattr(self, '_entity_type_parts', []) or []) >= 2
-            ):
-                outer_next = next
-                if next and isinstance(next, str):
-                    if next.startswith('irn:c_id:'):
-                        rid = self._get_r_id_for_stack()
-                        if rid:
-                            outer_next = f'{rid}/{next}'
-                    elif next.startswith('irn:r_id:'):
-                        outer_next = next
-                outer_wrap = {
-                    '_out': {"role": "user", "content": message},
-                    '_type': 'text',
-                    '_next': outer_next,
-                }
-                try:
-                    out_resp = self.CHC.update_turn(
-                        self.portfolio,
-                        self.org,
-                        self._entity_type_parts[0],
-                        self._entity_id_parts[0],
-                        self._thread_parts[0],
-                        self._chat_id_stack_pre,
-                        outer_wrap,
-                        call_id=False,
-                    )
-                    if 'success' not in out_resp:
-                        print(f'[new_chat_message_document] Outer dual-append failed: {out_resp}')
-                except Exception as ex:
-                    print(f'[new_chat_message_document] Outer dual-append error: {ex}')
             
             return {'success': True, 'action': action, 'input': message, 'output': response['document']}
         
@@ -1194,9 +990,9 @@ class AgentUtilities:
         workspaces_list = self.CHC.list_workspaces(
             self.portfolio,
             self.org,
-            self._entity_type_curr,
-            self._entity_id_curr,
-            self._thread_curr
+            self.entity_type,
+            self.entity_id,
+            self.thread
         ) 
         
         if not workspaces_list['success']:
@@ -1208,9 +1004,9 @@ class AgentUtilities:
             response = self.CHC.create_workspace(
                 self.portfolio,
                 self.org,
-                self._entity_type_curr,
-                self._entity_id_curr,
-                self._thread_curr, payload
+                self.entity_type,
+                self.entity_id,
+                self.thread, payload
             ) 
             if not response['success']:
                 return False
@@ -1218,9 +1014,9 @@ class AgentUtilities:
             workspaces_list = self.CHC.list_workspaces(
                 self.portfolio,
                 self.org,
-                self._entity_type_curr,
-                self._entity_id_curr,
-                self._thread_curr
+                self.entity_type,
+                self.entity_id,
+                self.thread
             ) 
         
         if not workspace_id:
@@ -1819,7 +1615,7 @@ class AgentUtilities:
                 'output': str(e)
             }
 
-    def interpret(self, no_tools=False, list_actions=[], list_tools=[], next=None):
+    def interpret(self, no_tools=False, list_actions=[], list_tools=[]):
         
         action = 'interpret'
         self.print_chat('Interpreting message...', 'transient')
@@ -1990,17 +1786,15 @@ class AgentUtilities:
     
                         available_tools.append(tool)            
                     
-            # Prompt. Only include tools/tool_choice when tools are specified;
-            # OpenAI rejects tool_choice when tools is None.
+            # Prompt
             prompt = {
-                "model": self.AI_1_MODEL,
-                "messages": messages,
-                "temperature": 0,
-            }
-            if available_tools is not None:
-                prompt["tools"] = available_tools
-                prompt["tool_choice"] = "auto"
-
+                    "model": self.AI_1_MODEL,
+                    "messages": messages,
+                    "tools": available_tools,
+                    "temperature":0,
+                    "tool_choice": "auto"
+                }
+              
             prompt = self.sanitize(prompt)
             #print(f'RAW PROMPT >> {prompt}')
             response = self.llm(prompt)
@@ -2029,7 +1823,7 @@ class AgentUtilities:
            
             # Saving : A) The tool call, or B) The message to the user
             parsed_intent = validated_result.get('parsed_intent')
-            self.save_chat(validated_result, next=next)
+            self.save_chat(validated_result)
  
                       
             return {
@@ -2054,18 +1848,9 @@ class AgentUtilities:
     def act(self,plan,list_tools=[]):
         action = 'act'
         
-        list_tools_raw = list_tools
         list_handlers = {}
-        list_inits = {}
         for t in list_tools_raw:
             list_handlers[t.get('key', '')] = t.get('handler', '')
-            init_value = t.get('init', {})
-            if isinstance(init_value, str):
-                try:
-                    init_value = json.loads(init_value)
-                except (json.JSONDecodeError, ValueError):
-                    init_value = {}
-            list_inits[t.get('key', '')] = init_value if isinstance(init_value, dict) else {}
             
         self._update_context(list_handlers=list_handlers)
     
@@ -2109,20 +1894,16 @@ class AgentUtilities:
                 print(error_msg)
                 self.print_chat(error_msg, 'error')
                 raise ValueError(error_msg)
-
-            handler_init = {}
-            if tool_name in list_inits and isinstance(list_inits[tool_name], dict):
-                handler_init = list_inits[tool_name]
+            
 
             portfolio = self.portfolio
             org = self.org
             
             params['_portfolio'] = self.portfolio
             params['_org'] = self.org
-            params['_entity_type'] = self._entity_type_curr
-            params['_entity_id'] = self._entity_id_curr
-            params['_thread'] = self._thread_curr
-            params['_init'] = handler_init
+            params['_entity_type'] = self.entity_type
+            params['_entity_id'] = self.entity_id
+            params['_thread'] = self.thread
             
             print(f'Calling {handler_route} ') 
             

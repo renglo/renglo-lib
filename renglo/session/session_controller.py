@@ -1,65 +1,35 @@
-# chat_controller.py
+# session_controller.py
 from flask import current_app
-from renglo.chat.chat_model import ChatModel
+from renglo.session.session_model import SessionModel
 from flask_cognito import current_cognito_jwt
 from datetime import datetime
 from ..common import *
 import uuid
 import json
 import boto3
+import traceback
 from decimal import Decimal
 
 
-class ChatController:
+class SessionController:
 
     def __init__(self, config=None, tid=None, ip=None):
         """
-        Initialize ChatController with configuration.
+        Initialize SessionController with configuration.
         
         Args:
-            config (dict): Configuration dictionary containing WEBSOCKET_CONNECTIONS, etc.
+            config (dict): Configuration dictionary
             tid: Transaction ID (optional)
             ip: IP address (optional)
         """
         self.config = config or {}
-        self.CHM = ChatModel(config=self.config, tid=tid, ip=ip)
+        self.SSM = SessionModel(config=self.config, tid=tid, ip=ip)
         
-        
-    def error_chat(self, error, connection_id):
-    
-        try:
-            websocket_url = self.config.get('WEBSOCKET_CONNECTIONS', '')
-            self.apigw_client = boto3.client("apigatewaymanagementapi", endpoint_url=websocket_url)
-        
-        except Exception as e:
-            print(f"Error initializing WebSocket client: {e}")
-            self.apigw_client = None
-        
-     
-        try:
-            print(f'Sending Error Message to:{connection_id}')
-            
-            # WebSocket
-            self.apigw_client.post_to_connection(
-                ConnectionId=connection_id,
-                Data=error
-            )
-               
-            print(f'Error Message has been sent: {error}')
-            return True
-        
-        except self.apigw_client.exceptions.GoneException:
-            print(f'Connection is no longer available')
-            return False
-        except Exception as e:
-            print(f'Error sending message: {str(e)}')
-            return False
         
         
     def get_current_user(self):
         
-        print(f'Getting user')
-        user_id='101010'
+        current_app.logger.debug(f'Getting user')
 
         if "cognito:username" in current_cognito_jwt:
             # IdToken was used
@@ -68,7 +38,7 @@ class ChatController:
             # AccessToken was used
             user_id = create_md5_hash(current_cognito_jwt["username"],9)
             
-        print(f'User Id:{user_id}')
+        current_app.logger.debug(f'User Id:{user_id}')
 
         return user_id
         
@@ -79,7 +49,7 @@ class ChatController:
         
         #TO-DO : Check is this user has access to this tool before returning threads.
           
-        index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
+        index = f"irn:session:{portfolio}:{org}:{entity_type}/thread:*/*"
         secondary = f"{entity_id}"
 
         
@@ -91,7 +61,7 @@ class ChatController:
         limit = 10
         sort = 'desc'
         
-        response = self.CHM.list_chat(index,secondary,limit,sort=sort)
+        response = self.SSM.list_session(index,secondary,limit,sort=sort)
         
         return response
      
@@ -99,7 +69,7 @@ class ChatController:
         
         #TO-DO : Check is this user has access to this tool before returning threads.  
         
-        index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
+        index = f"irn:session:{portfolio}:{org}:{entity_type}/thread:*/*"
         query = f"{query}"
 
         
@@ -107,7 +77,7 @@ class ChatController:
         limit = 99
         sort = 'desc'
         
-        response = self.CHM.query_chat(index,query,limit,sort=sort)
+        response = self.SSM.query_session(index,query,limit,sort=sort)
         
         return response
          
@@ -115,7 +85,7 @@ class ChatController:
     def create_thread(self,portfolio,org,entity_type,entity_id,public_user=''):
         
 
-        index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
+        index = f"irn:session:{portfolio}:{org}:{entity_type}/thread:*/*"
         secondary = f"{entity_id}"
 
         
@@ -136,20 +106,27 @@ class ChatController:
             '_id':str(uuid.uuid4()),        
         }
         
-        response = self.CHM.create_chat(data)
+        response = self.SSM.create_session(data)
         
         return response
     
 
     
     # TURNS
-    # There is a document per turn in the database
-    # Every turn document contains a list of messages that belong to that turn
-    
+    # There is a document per turn in the database; entries live under ``events``.
+
+    def _turn_entries(self, item: dict) -> list:
+        """Return the mutable list of turn entries under ``events`` (empty list if missing or wrong type)."""
+        ev = item.get("events")
+        if isinstance(ev, list):
+            return ev
+        item["events"] = []
+        return item["events"]
+
     def list_turns(self,portfolio,org,entity_type,entity_id,thread_id):
               
 
-        index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
+        index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
 
         query = f"{entity_id}/{thread_id}"
         
@@ -158,8 +135,8 @@ class ChatController:
         sort = 'asc'
         
         #print(f'List Turns params >> {index} , {query}')
-        #response = self.CHM.list_chat(index,secondary,limit,sort=sort)
-        response = self.CHM.query_chat(index,query,limit,sort=sort)
+        #response = self.SSM.list_session(index,secondary,limit,sort=sort)
+        response = self.SSM.query_session(index,query,limit,sort=sort)
         
         #print(f'List Turns>> {response}')
         
@@ -168,7 +145,7 @@ class ChatController:
     
     def get_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id):
         
-        index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
+        index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
         query = f"{entity_id}/{thread_id}"
 
         
@@ -179,7 +156,7 @@ class ChatController:
         
         list_of_turns = self.list_turns(portfolio,org,entity_type,entity_id,thread_id)
         
-        for t in list_of_turns['items']:
+        for t in (list_of_turns or {}).get("items") or []:
             if t['_id'] == turn_id:
                 return {'success':True,'item':t}
           
@@ -187,12 +164,12 @@ class ChatController:
     
     
     def create_turn(self,portfolio,org,entity_type, entity_id, thread_id, payload):
-        print('CHC:create_turn')
+        print('SSC:create_turn')
         try:
             if not all([entity_type, entity_id, thread_id, payload]):
                 raise ValueError("Missing required parameters")
 
-            index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
+            index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
             time = str(datetime.now().timestamp())
             secondary = f"{entity_id}/{thread_id}/{time}"
             
@@ -208,9 +185,9 @@ class ChatController:
             
             print('All fields required: OK')
             
-            messages = []
-            if 'messages' in payload and isinstance(payload['messages'], list):
-                messages = payload['messages']
+            events: list = []
+            if "events" in payload and isinstance(payload["events"], list):
+                events = payload["events"]
                 
             if payload['context']['public_user']:
                 author_id = payload['context']['public_user']
@@ -222,15 +199,15 @@ class ChatController:
                 'time': time,
                 'is_active': True,
                 'context': payload['context'],
-                'messages': messages,
+                'events': events,
                 'index': index,
                 'entity_index': secondary,
                 '_id': str(uuid.uuid4()) # This is the turn ID 
             }
             
-            current_app.logger.debug(f'Prepared data for chat creation: {data}')
+            current_app.logger.debug(f'Prepared data for session creation: {data}')
             
-            response = self.CHM.create_chat(data)
+            response = self.SSM.create_session(data)
             return response
             
         except Exception as e:
@@ -263,7 +240,7 @@ class ChatController:
     def update_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id, update, call_id=False):
         # Sanitize update early to prevent serialization errors in logging
         update = self._convert_floats_to_strings(update)
-        print(f'CHC:update_turn {entity_type}/{thread_id}/{turn_id}::{call_id}')
+        print(f'SSC:update_turn {entity_type}/{thread_id}/{turn_id}::{call_id}')
         try:
             data = self.get_turn(portfolio,org,entity_type, entity_id, thread_id, turn_id)
             
@@ -276,19 +253,17 @@ class ChatController:
             item = self._convert_floats_to_strings(item)
             #print(f'Document retrieved:{item}')
             
-            if 'messages' not in item or not isinstance(item['messages'], list):
-                item['messages'] = []
-            
+            entries = self._turn_entries(item)
             
             if call_id: 
                 print('Call id found:')  
-                print(item['messages'])
-                for i in item['messages']:
+                print(entries)
+                for i in entries:
                     if 'tool_call_id' in i['_out'] and i['_out']['tool_call_id'] == call_id:
                         print(f'Found the message with matching id:{i}')
                         print(f'Replacing with new doc:{update}') 
                         # Find the index of the item in the list
-                        index = item['messages'].index(i)
+                        index = entries.index(i)
                         # Parse JSON string to Python object and replace content
                         try:
                             parsed_content = json.loads(update['_out']['content'])
@@ -299,7 +274,7 @@ class ChatController:
                                 parsed_content = [parsed_content]
                             elif isinstance(parsed_content, list):
                                 # If it's a list, validate that all items are dictionaries
-                                if not all(isinstance(item, dict) for item in parsed_content):
+                                if not all(isinstance(elem, dict) for elem in parsed_content):
                                     # If any item is not a dict, use original content
                                     parsed_content = update['_out']['content']
                             else:
@@ -307,35 +282,37 @@ class ChatController:
                                 parsed_content = update['_out']['content']
                                 
                             parsed_content = self._convert_floats_to_strings(parsed_content)
-                            item['messages'][index]['_out']['content'] = parsed_content
+                            entries[index]['_out']['content'] = parsed_content
                             
                             if '_interface' in update:
-                                item['messages'][index]['_interface'] = update['_interface']
+                                entries[index]['_interface'] = update['_interface']
                                 
                             if '_next' in update:
-                                item['messages'][index]['_next'] = update['_next']
+                                entries[index]['_next'] = update['_next']
                                 
                                 
-                            print(item['messages'][index])
+                            print(entries[index])
                             
                             
                         except json.JSONDecodeError as e:
                             print(f"Error parsing JSON content: {e}")
-                            # If JSON parsing fails, keep the original string
-                            parsed_content = self._convert_floats_to_strings(update['content'])
-                            item['messages'][index]['_out']['content'] = parsed_content
+                            out = update.get("_out") or {}
+                            fallback = out.get("content", "")
+                            parsed_content = self._convert_floats_to_strings(fallback)
+                            entries[index]['_out']['content'] = parsed_content
             else:
                 # Update is already sanitized at the beginning of the method
-                item['messages'].append(update)
+                entries.append(update)
             
-            #current_app.logger.debug(f'Prepared data for chat update: {item}')
+            #current_app.logger.debug(f'Prepared data for session update: {item}')
             #print(f'Store modified item:{item}')
-            response = self.CHM.update_chat(item)
+            response = self.SSM.update_session(item)
             print(response) 
             return response
         
         except Exception as e:
             current_app.logger.error(f"Error in update_turn: {str(e)}")
+            current_app.logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "message": f"Error updating message: {str(e)}",
@@ -348,7 +325,7 @@ class ChatController:
     
     def list_workspaces(self,portfolio,org,entity_type,entity_id,thread_id):
               
-        index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*"
+        index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*"
         query = f"{entity_id}/{thread_id}"
         
         
@@ -356,14 +333,14 @@ class ChatController:
         limit = 50
         sort = 'asc'
         
-        response = self.CHM.query_chat(index,query,limit,sort=sort)
+        response = self.SSM.query_session(index,query,limit,sort=sort)
         
         return response
     
     
     def get_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id):
         
-        index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*" 
+        index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*" 
         query = f"{entity_id}/{thread_id}"
         
         #print(f'get_workspace > INDEX:{index} , QUERY:{query}, TURN_ID:{workspace_id}') 
@@ -378,13 +355,13 @@ class ChatController:
     
     
     def create_workspace(self,portfolio,org,entity_type,entity_id,thread_id,payload):
-        print('CHC:create_workspace')
+        print('SSC:create_workspace')
         try:
             
             if not all([entity_type, entity_id, thread_id]):
                 raise ValueError("Missing required parameters")
 
-            index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*"
+            index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*"
             time = str(datetime.now().timestamp()) 
             secondary = f"{entity_id}/{thread_id}/{time}"
             
@@ -447,9 +424,9 @@ class ChatController:
                 '_id': str(uuid.uuid4())
             }
             
-            current_app.logger.debug(f'Prepared data for chat creation: {data}')
+            current_app.logger.debug(f'Prepared data for session creation: {data}')
             
-            response = self.CHM.create_chat(data)
+            response = self.SSM.create_session(data)
             return response
             
         except Exception as e:
@@ -464,7 +441,7 @@ class ChatController:
     def update_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id,payload):
         # Sanitize payload early to prevent serialization errors in logging
         payload = self._convert_floats_to_strings(payload)
-        #print(f'CHC:update_workspace {entity_type}/{thread_id}/{workspace_id}')
+        #print(f'SSC:update_workspace {entity_type}/{thread_id}/{workspace_id}')
         
         try:
         
@@ -512,7 +489,7 @@ class ChatController:
                 #print('Something has changed. Updating the workspace')
                 #current_app.logger.debug(f'Prepared data for workspace update: {item}')
                 print(item)
-                response = self.CHM.update_chat(item)
+                response = self.SSM.update_session(item)
                 print('Workspace has been updated.')
                 #print(response)
                 return response

@@ -3,6 +3,7 @@ import importlib
 import os
 import sys
 import gc
+import traceback
 
 class SchdLoader:
     
@@ -214,15 +215,37 @@ class SchdLoader:
                 
                 
             
-            if 'success' in result and not result['success']:
+            if result is None:
+                err = (
+                    f"Handler '{class_name}' run() returned None; expected a dict "
+                    "(e.g. {{'success': True, 'output': ...}})."
+                )
+                print(err)
+                return {
+                    'success': False,
+                    'action': func_name,
+                    'error': err,
+                    'output': err,
+                    'status': 500,
+                }
+
+            if isinstance(result, dict) and 'success' in result and not result['success']:
                 
                 return {'success':False,'action':func_name,'output':result,'status':400} 
             
             return {'success':True,'action':func_name,'output':result,'status':200}
         
         except Exception as e:
+            tb = traceback.format_exc()
             print(f'Error @load_and_run: {str(e)}')
-            return {'success':False,'action':func_name,'input':module_name,'output':f'Error @load_and_run: {str(e)}'}
+            print(tb)
+            return {
+                'success': False,
+                'action': func_name,
+                'input': module_name,
+                'output': f'Error @load_and_run: {str(e)}',
+                'exception_type': type(e).__name__,
+            }
 
 
 

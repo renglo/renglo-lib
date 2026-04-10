@@ -388,7 +388,18 @@ class DataController:
         version = 'last'
 
         blueprint = self.BPC.get_blueprint('irma',ring,version)
-        
+
+        if not isinstance(blueprint, dict) or blueprint.get('success') is False or 'fields' not in blueprint:
+            missing = (
+                blueprint.get('message', 'unknown')
+                if isinstance(blueprint, dict)
+                else 'not a blueprint document'
+            )
+            raise ValueError(
+                f"Blueprint for ring '{ring}' not found or invalid ({missing}). "
+                f"Expected irn:blueprint:irma:{ring} with a 'fields' array in {self.config.get('DYNAMODB_BLUEPRINT_TABLE', 'blueprints table')}."
+            )
+
         item_values = {}
         #rich_values = {}
         #history_values = {}
@@ -555,6 +566,16 @@ class DataController:
         version = 'last'
 
         blueprint = self.BPC.get_blueprint('irma',ring,version)
+        if not isinstance(blueprint, dict) or blueprint.get('success') is False or 'fields' not in blueprint:
+            missing = (
+                blueprint.get('message', 'unknown')
+                if isinstance(blueprint, dict)
+                else 'not a blueprint document'
+            )
+            raise ValueError(
+                f"Blueprint for ring '{ring}' not found or invalid ({missing}). "
+                f"Expected irn:blueprint:irma:{ring} with a 'fields' array."
+            )
         fields = blueprint['fields']
 
         #3. Convert incoming request payload to JSON
