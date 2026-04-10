@@ -1865,8 +1865,9 @@ class AuthController:
 
         #4. Send email to invite recipient
 
+        invite_sender = (self.config.get('SES_INVITE_SENDER') or '').strip() or 'noreply@travelwithnoma.com'
         response_4 = self.AUM.send_email(
-            sender="human@helloirma.com",
+            sender=invite_sender,
             recipient=kwargs['email'],
             subject='You have been invited to team '+bridge['portfoliodoc']['name']+'/'+ bridge['teamdoc']['name'],
             body_text=
