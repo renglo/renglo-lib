@@ -19,44 +19,37 @@ class DocsModel:
  
     
     def a_b_post(self,portfolio, org, ring, raw_doc, type, name):
-        
         if not name:
             name = str(uuid.uuid4())
-        
+
         s3_client = boto3.client('s3')
-        bucket_name = current_app.config['S3_BUCKET_NAME']  
+        bucket_name = current_app.config['S3_BUCKET_NAME']
         filename = f'{name}.{self.valid_types[type]}'
         file_path = f'_docs/{portfolio}/{org}/{ring}/{filename}'
-        
-        # Determine the content type based on the file type
+
         content_type = {
             'image/jpeg': 'image/jpeg',
             'image/png': 'image/png',
             'image/svg+xml': 'image/svg+xml',
             'application/pdf': 'application/pdf',
-            'application/json':'application/json',
+            'application/json': 'application/json',
             'text/plain': 'text/plain',
             'text/csv': 'text/csv'
-        }.get(type, 'application/octet-stream')  # Default to application/octet-stream if not found
+        }.get(type, 'application/octet-stream')
 
-        # Upload to S3 with the specified content type
-        response = s3_client.put_object(
-            Bucket=bucket_name,
-            Key=file_path,
-            Body=raw_doc,
-            ContentType=content_type  # Set the content type here
-        )
-        
-        if response['ResponseMetadata']['HTTPStatusCode'] == 200:
-        
-            result = {}
-            result['success'] = True
-            result['path'] = file_path 
-            result['id'] = name
-            
-            return result
-    
-        return {'success': False}
+        try:
+            response = s3_client.put_object(
+                Bucket=bucket_name,
+                Key=file_path,
+                Body=raw_doc,
+                ContentType=content_type
+            )
+            if response['ResponseMetadata']['HTTPStatusCode'] == 200:
+                return {'success': True, 'path': file_path, 'id': name}
+            return {'success': False}
+        except Exception as e:
+            current_app.logger.error(f"Error uploading file {file_path}: {str(e)}")
+            return {'success': False}
     
     
     def a_b_c_get(self, portfolio, org, ring, filename):
@@ -79,6 +72,7 @@ class DocsModel:
         }
         
         try:
+            print(f's3: Getting Object:{file_path}')
             document = s3_client.get_object(Bucket=bucket_name, Key=file_path)
             content_type = document['ContentType']  # Get the content type from the response
             
@@ -97,7 +91,7 @@ class DocsModel:
             return {'success': True, 'content': response}  # Return success and content
         
         except s3_client.exceptions.NoSuchKey:
-            current_app.logger.error(f"File not found: {file_path}")
+            #current_app.logger.error(f"File not found: {file_path}")
             return {'success': False, 'error': 'File not found'}  # Return error object
         except Exception as e:
             current_app.logger.error(f"Error retrieving file: {str(e)}")
