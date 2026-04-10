@@ -588,11 +588,12 @@ class DataController:
         putNeeded = False
 
         for field in fields:
-            self.logger.debug('>>:'+field['name']) 
-            if payload.get(field['name']): 
-                self.logger.debug('Found:'+field['name']) 
+            self.logger.debug('>>:'+field['name'])
+            # Use key membership, not truthiness: [] and 0 are valid updates (e.g. clear flights).
+            if field['name'] in payload:
+                self.logger.debug('Found:'+field['name'])
                 # Attribute exists in the blueprint
-                new_raw = payload.get(field['name'])
+                new_raw = payload[field['name']]
 
                
                 if field['type'] == 'object':
