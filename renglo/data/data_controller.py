@@ -29,7 +29,6 @@ def convert_js_to_json(js_string):
     if not isinstance(js_string, str):
         return js_string
 
-    #print(f"Converting JS to JSON - Input: {js_string}") #legacy print
 
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
@@ -51,7 +50,6 @@ def convert_js_to_json(js_string):
     replacement = r'"\1":'
     js_string = re.sub(pattern, replacement, js_string)
 
-    #print(f"Converting JS to JSON - Output: {js_string}") #legacy print
 
     return js_string
 
@@ -62,7 +60,6 @@ def convert_js_to_json_advanced(js_string):
     if not isinstance(js_string, str):
         return js_string
 
-    #print(f"Advanced JS to JSON - Input: {js_string}") #legacy print
 
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
@@ -81,7 +78,6 @@ def convert_js_to_json_advanced(js_string):
     # Step 3: Handle property names after array elements
     js_string = re.sub(r'([\]}])\s*,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1,"\2":', js_string)
 
-    #print(f"Advanced JS to JSON - Output: {js_string}") #legacy print
 
     return js_string
 
@@ -92,7 +88,6 @@ def convert_js_to_json_robust(js_string):
     if not isinstance(js_string, str):
         return js_string
 
-    #print(f"Robust JS to JSON - Input: {js_string}") #legacy print
 
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
@@ -124,7 +119,6 @@ def convert_js_to_json_robust(js_string):
     js_string = re.sub(r'}\s*\]', '}]', js_string)
     js_string = re.sub(r'}\s*,', '},', js_string)
 
-    #print(f"Robust JS to JSON - Output: {js_string}") #legacy print
 
     return js_string
 
@@ -135,7 +129,6 @@ def convert_js_to_json_simple(js_string):
     if not isinstance(js_string, str):
         return js_string
 
-    #print(f"Simple JS to JSON - Input: {js_string}") #legacy print
 
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
@@ -153,7 +146,6 @@ def convert_js_to_json_simple(js_string):
     # Step 3: Clean up excessive whitespace but preserve formatting
     js_string = re.sub(r'\s+', ' ', js_string)
 
-    #print(f"Simple JS to JSON - Output: {js_string}") #legacy print
 
     return js_string
 
@@ -520,7 +512,6 @@ class DataController:
           - Update document in DB
 
         '''
-        #print(f'Running construct_put_item for {portfolio}/{org}/{ring}/{idx}. Payload {payload}') #Verboso
 
         #1. Pull the document that we need to update
         updated_item = self.DAM.get_a_b_c(portfolio,org,ring,idx)
@@ -554,77 +545,54 @@ class DataController:
 
                     # Check if new_raw is already a dict
                     if isinstance(new_raw, dict):
-                        #print('Already a dict, using as is') #legacy print
                         updated_item['attributes'][field['name']] = new_raw
                         putNeeded = True
                     else:
                         try:
-                            #print('Loading json ') #legacy print
                             updated_item['attributes'][field['name']] = json.loads(new_raw.strip())
                             putNeeded = True
                         except:
-                            #print('Could not convert to object. Loading as String ') #legacy print
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
 
                 elif field['type'] == 'array':
-                    #print('Field declared as array(list) ') #legacy print
 
                     # Check if new_raw is already a list
                     if isinstance(new_raw, list):
-                        #print('Already a list, using as is') #legacy print
                         updated_item['attributes'][field['name']] = new_raw
                         putNeeded = True
                     else:
                         try:
-                            #print('Load json array ') #legacy print
                             updated_item['attributes'][field['name']] = json.loads(new_raw.strip())
                             putNeeded = True
                         except json.JSONDecodeError as e:
-                            #print('Load json > JSONDecodeError > Try converting JS syntax') #legacy print
-                            #print(f'Error details: {str(e)}') #legacy print
                             # Try converting JavaScript syntax to JSON
                             try:
                                 converted_json = convert_js_to_json(new_raw.strip())
                                 updated_item['attributes'][field['name']] = json.loads(converted_json)
                                 putNeeded = True
-                                #print('Successfully converted JS syntax to JSON') #legacy print
                             except Exception as conversion_error:
-                                #print('JS conversion failed, trying advanced converter') #legacy print
-                                #print(f'Conversion error: {str(conversion_error)}') #legacy print
                                 # Try the advanced converter
                                 try:
                                     converted_json = convert_js_to_json_advanced(new_raw.strip())
                                     updated_item['attributes'][field['name']] = json.loads(converted_json)
                                     putNeeded = True
-                                    #print('Successfully converted JS syntax to JSON (advanced)') #legacy print
                                 except Exception as advanced_error:
-                                    #print('Advanced conversion failed, trying robust converter') #legacy print
-                                    #print(f'dvanced error: {str(advanced_error)}') #legacy print
                                     # Try the robust converter
                                     try:
                                         converted_json = convert_js_to_json_robust(new_raw.strip())
                                         updated_item['attributes'][field['name']] = json.loads(converted_json)
                                         putNeeded = True
-                                        #print('Successfully converted JS syntax to JSON (robust)') #legacy print
                                     except Exception as robust_error:
-                                        #print('Robust conversion failed, trying simple converter') #legacy print
-                                        #print(f'Robust error: {str(robust_error)}') #legacy print
                                         # Try the simple converter
                                         try:
                                             converted_json = convert_js_to_json_simple(new_raw.strip())
                                             updated_item['attributes'][field['name']] = json.loads(converted_json)
                                             putNeeded = True
-                                            #print('Successfully converted JS syntax to JSON (simple)') #legacy print
                                         except Exception as simple_error:
-                                            #print('Simple conversion failed, falling back to string') #legacy print
-                                            #print(f'Simple error: {str(simple_error)}') #legacy print
                                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                                             putNeeded = True
                         except Exception as e:
-                            #print('Load json > Except > Load String ') #legacy print
-                            #print(f'Error details: {str(e)}') #legacy print
-                            #print(f'Error type: {type(e).__name__}') #legacy print
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
 

@@ -101,7 +101,6 @@ def load_config():
         for obs_key in ('LOG_LEVEL', 'DEBUG_JSON', 'DEBUG_DIR'):
             if hasattr(env_config, obs_key):
                 os.environ.setdefault(obs_key, str(getattr(env_config, obs_key)))
-        #print(f"Config loaded from file: {loaded_from}") #legacy print
     else:
         print("Config file not found, using environment variables", file=sys.stderr)
 

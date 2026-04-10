@@ -189,7 +189,6 @@ class SchdController:
 
         action = 'direct_run'
 
-        #print(f'Calling handler:{handler}, payload:{payload}') #Verboso
 
         response = {'success':False,'output':[]}
 
@@ -228,10 +227,8 @@ class SchdController:
         # We are commenting it as this is no longer a hard requirement.
         if extension != '_action':
             blueprint = self.BPC.get_blueprint('irma',handler_name,'last')
-            #print('Blueprint:',blueprint) #legacy print
 
             if 'fields' not in blueprint:
-                #print(blueprint) #legacy print
                 result.append({'success':False,'action':action,'input':payload,'error':f'Error with the blueprint:{handler_name}'})
                 return result, 400
         '''
@@ -252,7 +249,6 @@ class SchdController:
     def handler_call(self,portfolio,org,extension,handler,payload):
         action = 'handler_call'
 
-        #print(f'Calling handler:{handler}, payload:{payload}') #Verboso
 
         try:
             _logger_schd.info("calling handler %s", handler)
@@ -368,7 +364,6 @@ class SchdController:
     def handler_check(self,portfolio,org,extension,handler,payload):
         action = 'handler_check'
 
-        #print(f'Calling handler check:{handler}, payload:{payload}') #Verboso
 
         try:
             _logger_schd.info("checking handler %s", handler)

@@ -220,7 +220,6 @@ class ChatModel:
 
     def create_chat(self,data):
 
-        #print(f'create_chat > input:{data}') #legacy print
 
         try:
             # Sanitize data before storing

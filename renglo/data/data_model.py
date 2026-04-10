@@ -49,8 +49,6 @@ class DataModel:
 
         # Sort key (SK) prefix for querying documents based on org, ring, and a generated prefix
         prefix_doc_index = f'{org}:{ring}'  # This is the prefix we will use in begins_with for SK
-        #print('portfolio_index:',portfolio_index) #legacy print
-        #print('prefix_doc_index:',prefix_doc_index) #legacy print
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
@@ -58,7 +56,6 @@ class DataModel:
                 'KeyConditionExpression': Key('portfolio_index').eq(portfolio_index) & Key('doc_index').begins_with(prefix_doc_index),
                 'Limit': limit
             }
-            #print('query_params:',query_params) #legacy print
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
             if lastkey:
                 query_params['ExclusiveStartKey'] = {
@@ -350,9 +347,6 @@ class DataModel:
                 'Limit': query['limit'],
                 "ScanIndexForward": False if query['sort'] == 'asc' else True
             }
-            #print(f'portfolio_index >>> {portfolio_index}') #legacy print
-            #print(f'path_index >>> {path_index}') #legacy print
-            #print(f'QUERY PARAMS >>> {query_params}') #legacy print
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
             if query['lastkey']:
                 query_params['ExclusiveStartKey'] = query['lastkey']

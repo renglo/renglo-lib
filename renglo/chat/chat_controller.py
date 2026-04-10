@@ -37,7 +37,6 @@ class ChatController:
             self.apigw_client = None
 
         try:
-            #print(f'Sending Error Message to:{connection_id}') #legacy print
 
             # WebSocket
             self.apigw_client.post_to_connection(
@@ -45,7 +44,6 @@ class ChatController:
                 Data=error
             )
 
-            #print(f'Error Message has been sent: {error}') #legacy print
             return True
 
         except self.apigw_client.exceptions.GoneException:
@@ -160,7 +158,6 @@ class ChatController:
         # Because we don't have 'time' we need to get all the turns, iterate through
         # that list until we find the one that has the 'turn_id' and then return that.
 
-        #print(f'get_turn > INDEX:{index} , QUERY:{query}, TURN_ID:{turn_id}') #Verboso
 
         list_of_turns = self.list_turns(portfolio,org,entity_type,entity_id,thread_id)
 
@@ -171,7 +168,6 @@ class ChatController:
         return {'success':False,'output':'Turn not found'}
 
     def create_turn(self,portfolio,org,entity_type, entity_id, thread_id, payload):
-        #print('CHC:create_turn') #legacy print
         try:
             if not all([entity_type, entity_id, thread_id, payload]):
                 raise ValueError("Missing required parameters")
@@ -189,7 +185,6 @@ class ChatController:
                 missing_fields = [field for field in required_fields if field not in payload]
                 raise ValueError(f"Missing required payload fields: {missing_fields}")
 
-            #print('All fields required: OK') #legacy print
 
             messages = []
             if 'messages' in payload and isinstance(payload['messages'], list):
@@ -242,7 +237,6 @@ class ChatController:
     def update_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id, update, call_id=False):
         # Sanitize update early to prevent serialization errors in logging
         update = self._convert_floats_to_strings(update)
-        #print(f'CHC:update_turn {entity_type}/{thread_id}/{turn_id}::{call_id}') #Verboso
         try:
             data = self.get_turn(portfolio,org,entity_type, entity_id, thread_id, turn_id)
 
@@ -259,12 +253,8 @@ class ChatController:
                 item['messages'] = []
 
             if call_id:
-                #print('Call id found:') #legacy print
-                #print(item['messages']) #Verboso
                 for i in item['messages']:
                     if 'tool_call_id' in i['_out'] and i['_out']['tool_call_id'] == call_id:
-                        #print(f'Found the message with matching id:{i}') #legacy print
-                        #print(f'Replacing with new doc:{update}') #Verboso
                         # Find the index of the item in the list
                         index = item['messages'].index(i)
                         # Parse JSON string to Python object and replace content
@@ -293,7 +283,6 @@ class ChatController:
                             if '_next' in update:
                                 item['messages'][index]['_next'] = update['_next']
 
-                            #print(item['messages'][index]) #Verboso
 
                         except json.JSONDecodeError as e:
                             _logger_workspace.error("json_parse_error | %s", e)

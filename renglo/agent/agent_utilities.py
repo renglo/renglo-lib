@@ -719,8 +719,6 @@ class AgentUtilities:
 
                         step['action_log'].append(log)
 
-                        #print(f'Log to add to action_log:{log}') #legacy print
-                        #print(f'Updated workspace after adding item to action_log:{workspace}')
 
              # 3. Update document in DB
 
@@ -1349,7 +1347,6 @@ class AgentUtilities:
         Returns:
             list: The processed message list
         """
-        #print(f'Raw message_list: {message_list}') #Verboso
 
         # Find the indices of the last x tool messages
         tool_indices = []
@@ -1362,7 +1359,6 @@ class AgentUtilities:
         # Clear content from all tool messages except the last x ones
         for i, message in enumerate(message_list):
             if message.get('role') == 'tool' and i not in tool_indices:
-                #print(f'Found a tool message: {message}') #Verboso
                 # Actually clear the content (set to empty string)
                 message['content'] = ""
             else:
@@ -1595,7 +1591,6 @@ class AgentUtilities:
 
         action = 'interpret'
         self.print_chat('Interpreting message...', 'transient')
-        #print('interpret') #legacy print
 
         try:
             # We get the message history directly from the source of truth to avoid missing tool id calls.
@@ -1620,7 +1615,6 @@ class AgentUtilities:
 
             # Action
             current_action = workspace.get('state', {}).get('action', '') if workspace else ''
-            #print(f'Current Action:{current_action}') #legacy print
 
             action_instructions = ''
             action_tools = ''
@@ -1637,7 +1631,6 @@ class AgentUtilities:
             belief_str = 'Current beliefs: ' + self.string_from_object(current_beliefs)
             if workspace and workspace.get('intent'):
                 belief_str += ' Current intent: ' + self.string_from_object(workspace['intent'])
-            #print(f'Current Belief:{belief_str}') #legacy print
 
             #belief_history = workspace.get('state', {}).get('history', []) if workspace else []
             #cleaned_belief_history = self.sanitize(belief_history) if belief_history else []
@@ -1645,7 +1638,6 @@ class AgentUtilities:
 
             # Desire
             current_desire = workspace.get('state', {}).get('desire', '') if workspace else ''
-            #print(f'Current Desire:{current_desire}') #legacy print
 
             # Meta Instructions
             meta_instructions = {}
@@ -1702,7 +1694,6 @@ class AgentUtilities:
             else:
                 available_tools_raw = list_tools
 
-                #print(f'List Tools:{available_tools_raw}') #legacy print
 
                 available_tools = []
                 for t in available_tools_raw:
@@ -1828,14 +1819,11 @@ class AgentUtilities:
                 params = json.loads(params)
             tid = plan['tool_calls'][0]['id']
 
-            #print(f'tid:{tid}') #legacy print
 
             if not tool_name:
                 raise ValueError("❌ No tool name provided in tool selection")
 
-            #print(f"Selected tool: {tool_name}") #legacy print
             self.print_chat(f'Calling tool {tool_name} with parameters {params} ', 'transient')
-            #print(f"Parameters: {params}") #legacy print
 
             # Check if handler exists
             if tool_name not in list_handlers:
@@ -1873,10 +1861,8 @@ class AgentUtilities:
 
             response = self.SHC.handler_call(portfolio,org,parts[0],parts[1],params)
 
-            #print(f'Handler response:{response}') #Verboso
             response_clean = {k: v for k, v in response.items() if k not in ['stack', 'output']}
             response_clean['output_size'] = len(str(response.get('output', '')))
-            #print(f'Handler response (no stack/output):{response_clean}') #legacy print
 
             if not response['success']:
                 return {'success':False,'action':action,'input':params,'output':response}
@@ -1907,12 +1893,10 @@ class AgentUtilities:
             else:
                 self.save_chat(tool_out)
 
-            #print(f'flag3') #legacy print
 
             # Results coming from the handler
             self._update_context(execute_intention_results=tool_out)
 
-            #print(f'flag4') #legacy print
 
             # Save handler result to workspace
 
@@ -1927,7 +1911,6 @@ class AgentUtilities:
             value = {'input': tool_input_obj, 'output': clean_output}
             self.mutate_workspace({'cache': {index:value}})
 
-            #print(f'flag5') #legacy print
 
             _logger_workspace.debug("act_tool_execution_complete | tool=%s", tool_name)
 
