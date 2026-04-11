@@ -40,6 +40,7 @@ class LLMOpenAI:
         }
         
         try:
+            print(f"[API] calling=openai_chat_completion | model={params.get('model')}")
         
             # Add optional parameters if they exist
             if 'tools' in prompt:
@@ -50,7 +51,8 @@ class LLMOpenAI:
             #print(f'AS IS LLM INPUT:{params}')
                 
             response = self.AI_1.chat.completions.create(**params)
-            
+            print("[API] response=openai_chat_completion | status=200")
+
             #print(f'AS IS LLM RESPONSE:{response}')
             
             return response.choices[0].message

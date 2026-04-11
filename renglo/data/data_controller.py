@@ -14,14 +14,12 @@ from renglo.search.search_index_service import SearchIndexService
 from renglo.logger import get_logger
 from renglo.logger import get_logger
 
-
 # Add this custom JSON encoder class at the top level of your file
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Decimal):
             return str(obj)
         return super(DecimalEncoder, self).default(obj)
-
 
 def convert_js_to_json(js_string):
     """
@@ -30,33 +28,30 @@ def convert_js_to_json(js_string):
     """
     if not isinstance(js_string, str):
         return js_string
-    
-    print(f"Converting JS to JSON - Input: {js_string}")
-    
+
+
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
-    
+
     # More robust regex to handle nested objects and arrays
     # This pattern matches property names that aren't already quoted
     # and handles various whitespace scenarios
     import re
-    
+
     # First, let's handle the most common case: simple property names
     # This regex looks for word characters that are followed by a colon
     # but not preceded by a quote
     pattern = r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:'
     replacement = r'\1"\2":'
     js_string = re.sub(pattern, replacement, js_string)
-    
+
     # Handle property names at the start of the string (for root objects)
     pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:'
     replacement = r'"\1":'
     js_string = re.sub(pattern, replacement, js_string)
-    
-    print(f"Converting JS to JSON - Output: {js_string}")
-    
-    return js_string
 
+
+    return js_string
 
 def convert_js_to_json_advanced(js_string):
     """
@@ -64,30 +59,27 @@ def convert_js_to_json_advanced(js_string):
     """
     if not isinstance(js_string, str):
         return js_string
-    
-    print(f"Advanced JS to JSON - Input: {js_string}")
-    
+
+
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
-    
+
     import re
-    
+
     # Handle property names in various contexts
     # This is a more comprehensive approach
-    
+
     # Step 1: Handle property names after opening braces and commas
     js_string = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', js_string)
-    
+
     # Step 2: Handle property names at the very beginning (for root objects)
     js_string = re.sub(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', js_string)
-    
+
     # Step 3: Handle property names after array elements
     js_string = re.sub(r'([\]}])\s*,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1,"\2":', js_string)
-    
-    print(f"Advanced JS to JSON - Output: {js_string}")
-    
-    return js_string
 
+
+    return js_string
 
 def convert_js_to_json_robust(js_string):
     """
@@ -95,43 +87,40 @@ def convert_js_to_json_robust(js_string):
     """
     if not isinstance(js_string, str):
         return js_string
-    
-    print(f"Robust JS to JSON - Input: {js_string}")
-    
+
+
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
-    
+
     import re
-    
+
     # Step 1: Handle property names in various contexts
     js_string = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', js_string)
     js_string = re.sub(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', js_string)
     js_string = re.sub(r'([\]}])\s*,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1,"\2":', js_string)
-    
+
     # Step 2: Clean up whitespace and formatting
     # Remove trailing commas before closing braces/brackets
     js_string = re.sub(r',(\s*[}\]])', r'\1', js_string)
-    
+
     # Clean up excessive whitespace and newlines, but preserve time formats
     js_string = re.sub(r'\s+', ' ', js_string)
-    
+
     # Clean up commas and colons, but be careful with time strings
     # Don't add spaces around colons in time strings (HH:MM:SS or HH:MM)
     js_string = re.sub(r'\s*,\s*', ', ', js_string)
-    
+
     # Only add spaces around colons that are property separators, not time separators
     # This regex looks for colons that are followed by a space or closing brace/bracket
     js_string = re.sub(r'\s*:\s*(?=[^"]*["\d])', ': ', js_string)
-    
+
     # Step 3: Ensure proper array/object formatting
     js_string = re.sub(r'\[\s*{', '[{', js_string)
     js_string = re.sub(r'}\s*\]', '}]', js_string)
     js_string = re.sub(r'}\s*,', '},', js_string)
-    
-    print(f"Robust JS to JSON - Output: {js_string}")
-    
-    return js_string
 
+
+    return js_string
 
 def convert_js_to_json_simple(js_string):
     """
@@ -139,29 +128,26 @@ def convert_js_to_json_simple(js_string):
     """
     if not isinstance(js_string, str):
         return js_string
-    
-    print(f"Simple JS to JSON - Input: {js_string}")
-    
+
+
     # Replace single quotes with double quotes
     js_string = js_string.replace("'", '"')
-    
+
     import re
-    
+
     # Step 1: Handle property names - only target property names, not values
     # Look for word characters followed by colon that are not inside quotes
     js_string = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', js_string)
     js_string = re.sub(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', js_string)
-    
+
     # Step 2: Remove trailing commas
     js_string = re.sub(r',(\s*[}\]])', r'\1', js_string)
-    
+
     # Step 3: Clean up excessive whitespace but preserve formatting
     js_string = re.sub(r'\s+', ' ', js_string)
-    
-    print(f"Simple JS to JSON - Output: {js_string}")
-    
-    return js_string
 
+
+    return js_string
 
 class DataController:
 
@@ -172,11 +158,11 @@ class DataController:
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         self.search_index = SearchIndexService(config=self.config)
-        
-            
-        
+
+
+
     def refresh_s3_cache(self,portfolio, org, ring, sort=None):
-    
+
         s3_client = boto3.client('s3')
         bucket_name = self.config.get('S3_BUCKET_NAME')
         if not bucket_name:
@@ -189,37 +175,35 @@ class DataController:
         limit = 249
         iterations = 0
         lastkey = None
-        
+
         file_path = f'data/{portfolio}/{org}/{ring}'
-        
+
         while True:
             iterations += 1
             self.logger.debug("Iteration:" + str(iterations))
-            
+
             partial_response = self.get_a_b(portfolio, org, ring, limit, lastkey, sort)
             response.extend(partial_response['items'])
             lastkey = partial_response.get('last_id')
-            
+
             if lastkey is None or iterations >= max_iterations:
                 break
-        
+
         result = {
             "items": response,
             "last_id": None,
             "success": True
         }
-        
+
         # Upload to S3
         s3_client.put_object(
             Bucket=bucket_name,
             Key=file_path,
             Body=json.dumps(result, cls=DecimalEncoder)
         )
-        
+
         return result, 201
-    
-    
-    
+
     def sanitize(self,obj):
         '''
         Avoids Floats being sent to DynamoDB
@@ -239,9 +223,7 @@ class DataController:
             return obj
         else:
             return obj
-        
-            
-    
+
     def generate_index_string_x(self,blueprint,item_values):
         # Check if blueprint has an "indexes" key
         indexes = blueprint.get('indexes')
@@ -277,7 +259,7 @@ class DataController:
                 # Log an error and exit gracefully
                 print(f"Error: Field '{field_name}' not found in item_values.")
                 return False
-            
+
             index_value = item_values[field_name]
             index_string += str(index_value) + ":"
 
@@ -288,7 +270,7 @@ class DataController:
         index_string += f":{blueprint.get('name')}"
 
         # Check if there's a "time" key in the indexes dictionary
-        
+
         time_fields = indexes.get('time', [])
         if isinstance(time_fields, list):
             safe_values = []
@@ -320,8 +302,7 @@ class DataController:
                 index_string += f".{timestamp_string}"
 
         return index_string
-    
-   
+
     def generate_index_string(self,blueprint,org,item_values):
         # Check if blueprint has an "indexes" key
         indexes = blueprint.get('indexes')
@@ -342,8 +323,8 @@ class DataController:
                 return False
 
         # Start building the index string with the constant prefix
-        index_string = "irn:h_index:"   
-        index_string += f"{org}:"  
+        index_string = "irn:h_index:"
+        index_string += f"{org}:"
         index_string += f"{blueprint.get('name')}:"
 
         # Iterate through the path list and construct the index string
@@ -354,7 +335,7 @@ class DataController:
                 # Log an error and exit gracefully
                 print(f"Error: Field '{field_name}' not found in item_values.")
                 return False
-            
+
             index_value = item_values[field_name]
             index_string += str(index_value) + ":"
 
@@ -362,14 +343,13 @@ class DataController:
         index_string = index_string.rstrip(":")
 
         return index_string
-    
 
     def construct_post_item(self,portfolio,org,ring,payload):
         '''
         Creates a new item following the blueprint fields and data submitted via the request.
 
         @IN:
-          
+
           portfolio = (string)
           org = (string)
           ring= (string)
@@ -406,26 +386,23 @@ class DataController:
         #flag_values = {}
         fields = blueprint['fields']
 
-        
         self.logger.debug("post_a_b raw arguments from the Form fields:"+str(payload))
 
-
         for field in fields:
-       
+
             #DATA
 
             self.logger.debug(field['name'])
 
             #Verify submitted field exists in the blueprint
             new_raw = ''
-            if payload.get(field['name']):  
+            if payload.get(field['name']):
                 new_raw = payload.get(field['name'])
-                self.logger.debug('Using: '+str(field['name'])+':'+str(new_raw))        
+                self.logger.debug('Using: '+str(field['name'])+':'+str(new_raw))
             else:
                 self.logger.debug('Inserting default value for field '+str(field['name'])+': '+str(field['default']))
                 # Instead of skipping we put the field's default value
                 new_raw = field['default']
-                
 
             if field['type'] == 'object':
                 try:
@@ -438,8 +415,7 @@ class DataController:
                         item_values[field['name']] = {}
                     else:
                         item_values[field['name']] = str(new_raw).strip()
-                    
-            
+
             elif field['type'] == 'array':
                 try:
                     if isinstance(new_raw, list):
@@ -455,8 +431,7 @@ class DataController:
                         item_values[field['name']] = []
                     else:
                         item_values[field['name']] = str(new_raw).strip()
-                    
-                    
+
             elif field['type'] == 'timestamp':
                 new_raw = new_raw.strip()
                 try:
@@ -480,22 +455,20 @@ class DataController:
                         item_values[field['name']] = int(date_value.timestamp() * 1000)  # Convert to milliseconds
                     except ValueError:
                         item_values[field['name']] = None  # Handle invalid date format
-            
+
             elif field['type'] == 'string':
                 if new_raw:
                     item_values[field['name']] = str(new_raw).strip()
                 else:
                     item_values[field['name']] = ''
-                
+
             else:
                 if new_raw:
                     item_values[field['name']] = str(new_raw).strip()
                 else:
                     item_values[field['name']] = None
-                    
-                    
-            item_values[field['name']] = self.sanitize(item_values[field['name']])
 
+            item_values[field['name']] = self.sanitize(item_values[field['name']])
 
         item = {}
 
@@ -511,22 +484,18 @@ class DataController:
 
         if 'singleton' in blueprint and blueprint['singleton'] is True:
             item['_id'] = "00000000-0000-0000-0000-000000000000"
-        else:   
+        else:
             item['_id'] = str(uuid.uuid4())
-            
-        item['attributes'] = item_values  
-        
-        
-        index_string = self.generate_index_string(blueprint,org,item_values)    
+
+        item['attributes'] = item_values
+
+        index_string = self.generate_index_string(blueprint,org,item_values)
         if index_string:
             item['path_index'] = index_string
         elif 'path_index' in item:
             del item['path_index']
-        
 
         return item
-
-
 
     def construct_put_item(self,portfolio,org,ring,idx,payload):
         '''
@@ -537,7 +506,6 @@ class DataController:
         @NOTES:
           - "request.url" are the arguments that come via url
           - "request.form" are the arguments that come via form
-
 
         @IN:
           request.url = {(string):(string),}
@@ -555,14 +523,13 @@ class DataController:
           - Update document in DB
 
         '''
-        print(f'Running construct_put_item for {portfolio}/{org}/{ring}/{idx}. Payload {payload}')
 
         #1. Pull the document that we need to update
-        updated_item = self.DAM.get_a_b_c(portfolio,org,ring,idx) 
+        updated_item = self.DAM.get_a_b_c(portfolio,org,ring,idx)
         #self.logger.debug('Item from DB:'+str(updated_item))
 
         #2. Pull the Blueprint listed in that document
-  
+
         version = 'last'
 
         blueprint = self.BPC.get_blueprint('irma',ring,version)
@@ -579,103 +546,80 @@ class DataController:
         fields = blueprint['fields']
 
         #3. Convert incoming request payload to JSON
-   
+
         #self.logger.debug('CPI Payload:'+str(payload))
         #print(f"CPI TYPE:{type(payload).__name__}")
-        #self.logger.debug(blueprint['fields']) 
+        #self.logger.debug(blueprint['fields'])
 
         #4. Check that the payload follows the Blueprint
         putNeeded = False
 
         for field in fields:
-            self.logger.debug('>>:'+field['name']) 
-            if payload.get(field['name']): 
-                self.logger.debug('Found:'+field['name']) 
+            self.logger.debug('>>:'+field['name'])
+            # Use key membership, not truthiness: [] and 0 are valid updates (e.g. clear flights).
+            if field['name'] in payload:
+                self.logger.debug('Found:'+field['name'])
                 # Attribute exists in the blueprint
-                new_raw = payload.get(field['name'])
+                new_raw = payload[field['name']]
 
-               
                 if field['type'] == 'object':
                    #print(f'Field declared as object: {field["name"]}')
-                    
+
                     # Check if new_raw is already a dict
                     if isinstance(new_raw, dict):
-                        print('Already a dict, using as is')
                         updated_item['attributes'][field['name']] = new_raw
                         putNeeded = True
                     else:
                         try:
-                            print('Loading json ')
                             updated_item['attributes'][field['name']] = json.loads(new_raw.strip())
                             putNeeded = True
                         except:
-                            print('Could not convert to object. Loading as String ')
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
-                
+
                 elif field['type'] == 'array':
-                    print('Field declared as array(list) ')
-                    
+
                     # Check if new_raw is already a list
                     if isinstance(new_raw, list):
-                        print('Already a list, using as is')
                         updated_item['attributes'][field['name']] = new_raw
                         putNeeded = True
                     else:
                         try:
-                            print('Load json array ')
-                            updated_item['attributes'][field['name']] = json.loads(new_raw.strip())  
+                            updated_item['attributes'][field['name']] = json.loads(new_raw.strip())
                             putNeeded = True
                         except json.JSONDecodeError as e:
-                            print('Load json > JSONDecodeError > Try converting JS syntax')
-                            print(f'Error details: {str(e)}')
                             # Try converting JavaScript syntax to JSON
                             try:
                                 converted_json = convert_js_to_json(new_raw.strip())
                                 updated_item['attributes'][field['name']] = json.loads(converted_json)
                                 putNeeded = True
-                                print('Successfully converted JS syntax to JSON')
                             except Exception as conversion_error:
-                                print('JS conversion failed, trying advanced converter')
-                                print(f'Conversion error: {str(conversion_error)}')
                                 # Try the advanced converter
                                 try:
                                     converted_json = convert_js_to_json_advanced(new_raw.strip())
                                     updated_item['attributes'][field['name']] = json.loads(converted_json)
                                     putNeeded = True
-                                    print('Successfully converted JS syntax to JSON (advanced)')
                                 except Exception as advanced_error:
-                                    print('Advanced conversion failed, trying robust converter')
-                                    print(f'dvanced error: {str(advanced_error)}')
                                     # Try the robust converter
                                     try:
                                         converted_json = convert_js_to_json_robust(new_raw.strip())
                                         updated_item['attributes'][field['name']] = json.loads(converted_json)
                                         putNeeded = True
-                                        print('Successfully converted JS syntax to JSON (robust)')
                                     except Exception as robust_error:
-                                        print('Robust conversion failed, trying simple converter')
-                                        print(f'Robust error: {str(robust_error)}')
                                         # Try the simple converter
                                         try:
                                             converted_json = convert_js_to_json_simple(new_raw.strip())
                                             updated_item['attributes'][field['name']] = json.loads(converted_json)
                                             putNeeded = True
-                                            print('Successfully converted JS syntax to JSON (simple)')
                                         except Exception as simple_error:
-                                            print('Simple conversion failed, falling back to string')
-                                            print(f'Simple error: {str(simple_error)}')
                                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                                             putNeeded = True
                         except Exception as e:
-                            print('Load json > Except > Load String ')
-                            print(f'Error details: {str(e)}')
-                            print(f'Error type: {type(e).__name__}')
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
-                
+
                 else:
-                    
+
                     '''
                         len>0  |  field['required']  | AND   |  (len > 0) OR (AND)
                         ---------------------------------------------
@@ -691,7 +635,7 @@ class DataController:
 
                     if len(str(new_raw)) > 0 or (len(str(new_raw)) and field['required']):
 
-                        self.logger.debug('Field OK:'+field['name']) 
+                        self.logger.debug('Field OK:'+field['name'])
                         #Attribute complies with "Required" prerequisite
 
                         #5.Update attributes based on what has been sent in the request
@@ -701,13 +645,12 @@ class DataController:
                         #break
 
                     else:
-                        self.logger.debug('Attribute is required:'+field['name']) 
+                        self.logger.debug('Attribute is required:'+field['name'])
                         return {'error':'Attribute is required'}
-                  
+
         if not putNeeded:
             return {'error':'Attributes not recognized'}
-        
-        
+
         # DEPRECATED (Update the index string.)
         # YOU CAN'T UPDATE THE LSI
         '''
@@ -723,22 +666,22 @@ class DataController:
         #updated_item['modified'] = datetime.now().isoformat()
         #print('CPI > OUTPUT:')
         #print(updated_item)
-        
+
         updated_item = self.sanitize(updated_item)
 
         return updated_item
-    
+
     #DEPRECATED
     def get_a_index(self,portfolio,prefix_path):
-        
+
         items = []
-        
+
         result = self.DAM.get_a_index(portfolio,prefix_path)
         self.logger.debug('get_a_index results:' + json.dumps(result))  # Convert result to string
-        
+
         if 'error' in result:
             self.logger.error(result['error'])
-            
+
             result['success'] = False
             result['message'] = 'Items could not be retrieved (@get_a_index)'
             result['error'] = result['error']
@@ -752,7 +695,7 @@ class DataController:
             '''
             i += 1
             if lastkey and i==1:
-                #If lastkey was sent, ignore first item 
+                #If lastkey was sent, ignore first item
                 #as it was the last item in the last page
                 continue
             '''
@@ -765,7 +708,7 @@ class DataController:
                 item['_modified'] = row['modified']
             else:
                 item['_modified'] = ''
-                
+
             if 'path_index' in row:
                 item['_index'] = row['path_index']
             else:
@@ -774,7 +717,7 @@ class DataController:
             if item:
                 items.append(item)
 
-        '''       
+        '''
         if len(items)>1 and sort:
 
             self.sort = sort
@@ -784,19 +727,18 @@ class DataController:
 
         #return items,result['lastkey']
         return items
-    
-    
+
     #DEPRECATED
     def get_a_b_index(self,portfolio,prefix_path):
-        
+
         items = []
-        
+
         result = self.DAM.get_a_b_index(portfolio,prefix_path)
         self.logger.debug('get_a_b_index results:' + json.dumps(result))  # Convert result to string
-        
+
         if 'error' in result:
             self.logger.error(result['error'])
-            
+
             result['success'] = False
             result['message'] = 'Items could not be retrieved (@get_a_b_index)'
             result['error'] = result['error']
@@ -810,7 +752,7 @@ class DataController:
             '''
             i += 1
             if lastkey and i==1:
-                #If lastkey was sent, ignore first item 
+                #If lastkey was sent, ignore first item
                 #as it was the last item in the last page
                 continue
             '''
@@ -823,7 +765,7 @@ class DataController:
                 item['_modified'] = row['modified']
             else:
                 item['_modified'] = ''
-                
+
             if 'path_index' in row:
                 item['_index'] = row['path_index']
             else:
@@ -832,7 +774,7 @@ class DataController:
             if item:
                 items.append(item)
 
-        '''       
+        '''
         if len(items)>1 and sort:
 
             self.sort = sort
@@ -842,10 +784,9 @@ class DataController:
 
         #return items,result['lastkey']
         return items
-        
-        
+
     def get_a_b_query(self,query):
-        
+
         '''
         Incoming query object must have the following shape
             {
@@ -864,49 +805,47 @@ class DataController:
             'sort': <asc|desc>
             }
         '''
-        
-        
+
         #prefix = f'irn:h_index:{org}:{ring}:{index_tail}'
-        
+
         if 'operator' not in query or not query['operator']:
             return {'success':False,'message':'No query'}
-            
+
         operator = query['operator']
         #portfolio_index = f'irn:data:{query["portfolio"]}'
-           
-        # SWITCH   
-        # The index begins with ...         
+
+        # SWITCH
+        # The index begins with ...
         if operator=='begins_with':
-            
+
             response = self.DAM.get_a_b_beginswith(query)
-            
+
         # The index is a timestamp, return results in chronological order
         if operator=='chrono':
-            
+
             response = self.DAM.get_a_b_beginswith(query)
-        
+
         # The index is numeric, return anything greater than ...
         if operator=='greater_than':
-            
+
             response = self.DAM.get_a_b_greaterthan(query)
-        
+
         # The index is numeric, return anything less than ...
         if operator=='less_than':
-            
+
             response = self.DAM.get_a_b_lessthan(query)
-        
+
         # The index is equal to ...
         if operator=='equal_to':
-            
+
             response = self.DAM.get_a_b_equalto(query)
-            
-            
+
         items = []
         #response = self.DAM.get_a_b(portfolio,org,ring,limit=limit,lastkey=lastkey)
         result = {}
         if 'error' in response:
             self.logger.error(response['error'])
-            
+
             result['success'] = False
             result['message'] = 'Items could not be retrieved(@get_a_b_query)'
             result['error'] = response['error']
@@ -917,12 +856,12 @@ class DataController:
         for row in response['items']:
 
             i += 1
-               
+
             if query['lastkey'] and i==1:
-                #If lastkey was sent, ignore first item 
+                #If lastkey was sent, ignore first item
                 #as it was the last item in the last page
                 continue
-            
+
             item = {}
             item = row['attributes']
             item['_id'] = row['_id']
@@ -931,7 +870,7 @@ class DataController:
                 item['_modified'] = row['modified']
             else:
                 item['_modified'] = ''
-                
+
             if 'path_index' in row:
                 item['_index'] = row['path_index']
             else:
@@ -939,20 +878,16 @@ class DataController:
 
             if item:
                 items.append(item)
-                
-        
+
         last_id = response['lastkey']
-                       
-        
+
         result['success'] = True
         result['items'] = items
         result['last_id'] = last_id
-        
+
         self.logger.debug('NUMBER OF ITEMS (QUERY):'+str(i))
-        
+
         return result
-        
-        
 
     def get_a_b(self,portfolio,org,ring,limit=1000,lastkey=None,sort=None):
         '''
@@ -974,17 +909,17 @@ class DataController:
           [{(item)}]
 
         '''
-       
+
         items = []
 
         response = self.DAM.get_a_b(portfolio,org,ring,limit=limit,lastkey=lastkey)
-        
+
         #self.logger.debug(f'RRR2: {result}')
 
         result = {}
         if 'error' in response:
             self.logger.error(response['error'])
-            
+
             result['success'] = False
             result['message'] = 'Items could not be retrieved (@get_a_b)'
             result['error'] = response['error']
@@ -995,12 +930,12 @@ class DataController:
         for row in response['items']:
 
             i += 1
-               
+
             if lastkey and i==1:
-                #If lastkey was sent, ignore first item 
+                #If lastkey was sent, ignore first item
                 #as it was the last item in the last page
                 continue
-            
+
             item = {}
             item = row['attributes']
             item['_id'] = row['_id']
@@ -1009,7 +944,7 @@ class DataController:
                 item['_modified'] = row['modified']
             else:
                 item['_modified'] = ''
-                
+
             if 'path_index' in row:
                 item['_index'] = row['path_index']
             else:
@@ -1017,27 +952,24 @@ class DataController:
 
             if item:
                 items.append(item)
-                
+
         '''result = {
                 'items': items,
                 'lastkey': endkey  # This will be passed as 'lastkey' in the next call if needed
             }'''
-                    
+
         last_id = response['last_id']
-                      
+
         if len(items)>1 and sort:
             items = sorted(items, key=lambda item: item[sort], reverse=True)
-            
-        
+
         result['success'] = True
         result['items'] = items
         result['last_id'] = last_id
-        
-        self.logger.debug('NUMBER OF ITEMS:'+str(i))
-        
-        return result
-    
 
+        self.logger.debug('NUMBER OF ITEMS:'+str(i))
+
+        return result
 
     def post_a_b(self,portfolio,org,ring,payload):
         '''
@@ -1046,7 +978,7 @@ class DataController:
 
         try:
             item = self.construct_post_item(portfolio,org,ring,payload)
-            
+
             self.logger.debug('Prepared Item:'+str(item))
 
             response = self.DAM.post_a_b(portfolio,org,ring,item)
@@ -1067,11 +999,11 @@ class DataController:
                 result['message'] = 'Item could not be saved'
                 result['error'] = response['error']
                 status = 400
-            
+
             self.logger.debug('Returned object:'+str(result))
-            
+
             return result, status
-            
+
         except Exception as e:
             self.logger.error(f'Error in post_a_b: {str(e)}')
             result = {
@@ -1082,19 +1014,17 @@ class DataController:
             status = 500
             return result, status
 
-
-    
     def get_a_b_c(self,portfolio,org,ring,idx):
         '''
         Gets an existing item
-        '''   
+        '''
         self.logger.debug('IDX:'+str(idx))
-        
+
         response = self.DAM.get_a_b_c(portfolio,org,ring,idx)
 
         result = {}
 
-        if 'error' in response:                    
+        if 'error' in response:
             result['success'] = False
             result['message'] = 'Item could not be retrieved'
             result['error'] = response['error']
@@ -1109,37 +1039,32 @@ class DataController:
         else:
             result = response['attributes']
             result['_id'] = response['_id']
-            
+
             if 'modified' in response:
                 result['_modified'] = response['modified']
             else:
                 result['_modified'] = ''
-                
+
             if 'path_index' in response:
                 result['_index'] = response['path_index']
             else:
                 result['_index'] = ''
-            
-            
+
             if 'modified' in response:
                 result['_modified'] = response['modified']
             else:
                 result['_modified'] = ''
-        
-        
 
         self.logger.debug('Returned object:'+str(result))
-        
-        return result
-    
 
+        return result
 
     def put_a_b_c(self,portfolio,org,ring,idx,payload):
         '''
-        Partial updates to an existing document. 
+        Partial updates to an existing document.
         FE only needs to send the field to be updated. No need to send the entire document.
         '''
-        #1. 
+        #1.
 
         result = {}
 
@@ -1153,17 +1078,17 @@ class DataController:
             result['error'] = item['error']
             status = 400
             return result, status
-    
+
         self.logger.debug('Updating Item:'+str(item))
         response = self.DAM.put_a_b_c(portfolio,org,ring,idx,item)
-        
-        #self.logger.debug('Update response:'+str(response))
 
+        #self.logger.debug('Update response:'+str(response))
 
         if 'error' not in response:
             result['success'] = True
             result['message'] = 'Item saved (PUT)'
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
+            print(f"[DOC] save | path={result['path']} | status=success")
             status = 200
             self.logger.debug('Returned object:'+str(result))
             self.search_index.index_document(portfolio, org, ring, item)
@@ -1174,16 +1099,19 @@ class DataController:
             result['success'] = False
             result['message'] = 'Item could not be saved'
             result['error'] = response['error']
+            print(f"[DOC] save | path={portfolio+'/'+org+'/'+ring+'/'+idx} | status=failed") #logging error
             status = 500
             self.logger.debug('Returned object:'+str(result))
 
-            return result, status
+            return result,status
 
-    def delete_a_b_c(self, portfolio, org, ring, idx):
+
+
+    def delete_a_b_c(self,portfolio,org,ring,idx):
         '''
         Delete an existing document.
         '''
-        
+
         self.logger.debug('Item to delete:'+str(idx))
 
         response = self.DAM.delete_a_b_c(portfolio,org,ring,idx)
@@ -1207,10 +1135,4 @@ class DataController:
             status = 500
             self.logger.debug('Returned object:'+str(result))
 
-            return result, status
-        
-        
-
-        
-        
-        
+            return result,status
