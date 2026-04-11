@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import gc
+import traceback
 
 _logger_schd = logging.getLogger("agent.schd")
 
@@ -205,17 +206,40 @@ class SchdLoader:
                     del sys.modules[actual_module_name]
                 gc.collect()
 
+            if result is None:
+                err = (
+                    f"Handler '{class_name}' run() returned None; expected a dict "
+                    "(e.g. {{'success': True, 'output': ...}})."
+                )
+                _logger_schd.error("handler_returned_none | class=%s | %s", class_name, err)
+                return {
+                    'success': False,
+                    'action': func_name,
+                    'error': err,
+                    'output': err,
+                    'status': 500,
+                }
 
+            if isinstance(result, dict) and 'success' in result and not result['success']:
+                return {'success': False, 'action': func_name, 'output': result, 'status': 400}
 
-            if 'success' in result and not result['success']:
-
-                return {'success':False,'action':func_name,'output':result,'status':400}
-
-            return {'success':True,'action':func_name,'output':result,'status':200}
+            return {'success': True, 'action': func_name, 'output': result, 'status': 200}
 
         except Exception as e:
-            _logger_schd.error("load_and_run_failed | module=%s | %s", module_name, e)
-            return {'success':False,'action':func_name,'input':module_name,'output':f'Error @load_and_run: {str(e)}'}
+            tb = traceback.format_exc()
+            _logger_schd.error(
+                "load_and_run_failed | module=%s | %s\n%s",
+                module_name,
+                e,
+                tb,
+            )
+            return {
+                'success': False,
+                'action': func_name,
+                'input': module_name,
+                'output': f'Error @load_and_run: {str(e)}',
+                'exception_type': type(e).__name__,
+            }
 
 
 

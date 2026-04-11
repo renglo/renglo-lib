@@ -369,6 +369,17 @@ class DataController:
 
         blueprint = self.BPC.get_blueprint('irma',ring,version)
 
+        if not isinstance(blueprint, dict) or blueprint.get('success') is False or 'fields' not in blueprint:
+            missing = (
+                blueprint.get('message', 'unknown')
+                if isinstance(blueprint, dict)
+                else 'not a blueprint document'
+            )
+            raise ValueError(
+                f"Blueprint for ring '{ring}' not found or invalid ({missing}). "
+                f"Expected irn:blueprint:irma:{ring} with a 'fields' array in {self.config.get('DYNAMODB_BLUEPRINT_TABLE', 'blueprints table')}."
+            )
+
         item_values = {}
         #rich_values = {}
         #history_values = {}
@@ -522,6 +533,16 @@ class DataController:
         version = 'last'
 
         blueprint = self.BPC.get_blueprint('irma',ring,version)
+        if not isinstance(blueprint, dict) or blueprint.get('success') is False or 'fields' not in blueprint:
+            missing = (
+                blueprint.get('message', 'unknown')
+                if isinstance(blueprint, dict)
+                else 'not a blueprint document'
+            )
+            raise ValueError(
+                f"Blueprint for ring '{ring}' not found or invalid ({missing}). "
+                f"Expected irn:blueprint:irma:{ring} with a 'fields' array."
+            )
         fields = blueprint['fields']
 
         #3. Convert incoming request payload to JSON
@@ -535,10 +556,11 @@ class DataController:
 
         for field in fields:
             self.logger.debug('>>:'+field['name'])
+            # Use key membership, not truthiness: [] and 0 are valid updates (e.g. clear flights).
             if field['name'] in payload:
                 self.logger.debug('Found:'+field['name'])
                 # Attribute exists in the blueprint
-                new_raw = payload.get(field['name'])
+                new_raw = payload[field['name']]
 
                 if field['type'] == 'object':
                    #print(f'Field declared as object: {field["name"]}')

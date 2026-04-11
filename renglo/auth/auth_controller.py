@@ -1567,6 +1567,49 @@ class AuthController:
         else:
             transaction.append(response_1)
 
+        # Optional: auto-install default tools/workflows for the new org.
+        # Best-effort and should not block org creation.
+        try:
+            from noma.handlers.noma_onboardings import NomaOnboardings  # type: ignore
+
+            portfolio_id = kwargs.get("portfolio_id")
+            user_id = kwargs.get("user_id") or self.get_current_user()
+            org_id = response_1.get("document", {}).get("_id")
+
+            team_id = kwargs.get("team_id")
+            if not team_id and portfolio_id and user_id:
+                team_id = self._pick_user_team_in_portfolio(
+                    user_id=user_id, portfolio_id=portfolio_id
+                )
+
+            if portfolio_id and org_id and team_id:
+                onboarding = NomaOnboardings()
+                onboarding_payload = {
+                    "portfolio": portfolio_id,
+                    "team": team_id,
+                    "org": org_id,
+                    # Optional field used by downstream config creation.
+                    "name": kwargs.get("name", "org"),
+                }
+                onboarding_result = onboarding.run(onboarding_payload)
+                transaction.append(
+                    {
+                        "success": bool(onboarding_result.get("success")),
+                        "message": "Installed default tools for org"
+                        if onboarding_result.get("success")
+                        else "Failed installing default tools for org",
+                        "document": onboarding_result,
+                        "status": 200 if onboarding_result.get("success") else 500,
+                        "action": "install_default_tools",
+                    }
+                )
+            else:
+                self.logger.debug(
+                    "Skipping default tool install (missing portfolio/org/team)"
+                )
+        except Exception as e:
+            self.logger.exception(f"Default tool install failed: {e}")
+
 
 
 
@@ -1581,6 +1624,29 @@ class AuthController:
         self.logger.debug(result)            
         return result
 
+
+    def _pick_user_team_in_portfolio(self, user_id: str, portfolio_id: str):
+        """
+        Best-effort selection of a team id for a given user within a portfolio.
+        Used to wire up default tools/relations when a client creates a new org
+        without specifying a team.
+        """
+        try:
+            index = 'irn:rel:user:team:' + user_id + ':*'
+            rels_user_teams = self.AUM.list_rel(index)
+            items = (rels_user_teams or {}).get("document", {}).get("items", []) or []
+            for item in items:
+                team_id = item.get("rel")
+                if not team_id:
+                    continue
+                rel = self.get_rel(
+                    "team:portfolio", team_id=team_id, portfolio_id=portfolio_id
+                )
+                if rel and rel.get("success"):
+                    return team_id
+        except Exception:
+            self.logger.exception("Failed picking user team for portfolio")
+        return None
 
 
 
@@ -1840,8 +1906,9 @@ class AuthController:
 
         #4. Send email to invite recipient
 
+        invite_sender = (self.config.get('SES_INVITE_SENDER') or '').strip() or 'noreply@travelwithnoma.com'
         response_4 = self.AUM.send_email(
-            sender="human@helloirma.com",
+            sender=invite_sender,
             recipient=kwargs['email'],
             subject='You have been invited to team '+bridge['portfoliodoc']['name']+'/'+ bridge['teamdoc']['name'],
             body_text=
