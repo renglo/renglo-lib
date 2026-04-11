@@ -13,7 +13,7 @@ class DataModel:
 
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
-        
+
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
 
@@ -22,37 +22,33 @@ class DataModel:
         if not table_name:
             raise ValueError("DYNAMODB_RINGDATA_TABLE configuration is required but not found")
         self.data_table = self.dynamodb.Table(table_name)
-        self.DYNAMODB_RINGDATA_TABLE = table_name  
-            
-    
-   
+        self.DYNAMODB_RINGDATA_TABLE = table_name
+
+
+
     def post_a_b(self,portfolio,org,ring,item):
 
-       
-        
+
+
         item['portfolio_index'] = 'irn:data:'+portfolio
         item['doc_index'] = org+':'+ring+':'+item['_id'] # _id was generated in the controller
-        
+
         try:
             self.data_table.put_item(Item=item)
             #self.increase_item_count(handle,ring)  #TO-DO: Implement increase_item_count!
             return {"message": "Item created", "document": item}
         except ClientError as e:
             return {"error": e.response['Error']['Message']}
-        
 
-      
-    
+
+
+
     def get_a_b(self, portfolio, org, ring, limit=10000, lastkey=None):
         # Construct the partition key and sort key prefix
         portfolio_index = f'irn:data:{portfolio}'  # This will be used as the partition key (PK)
-        
+
         # Sort key (SK) prefix for querying documents based on org, ring, and a generated prefix
         prefix_doc_index = f'{org}:{ring}'  # This is the prefix we will use in begins_with for SK
-        
-        #print('portfolio_index:',portfolio_index)
-        #print('prefix_doc_index:',prefix_doc_index)
-                
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
@@ -60,23 +56,20 @@ class DataModel:
                 'KeyConditionExpression': Key('portfolio_index').eq(portfolio_index) & Key('doc_index').begins_with(prefix_doc_index),
                 'Limit': limit
             }
-            
-            #print('Data Model > query_params:',query_params)
-
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
-            if lastkey:                  
+            if lastkey:
                 query_params['ExclusiveStartKey'] = {
                         'doc_index': f'{org}:{ring}:{lastkey}',
                         'portfolio_index': f'irn:data:{portfolio}'
                     }
- 
+
             # Query DynamoDB to get items with matching PK and SK prefix
             response = self.data_table.query(**query_params)
-            
+
             # Extract items and pagination key
             items = response.get('Items', [])
             endkey = response.get('LastEvaluatedKey')  # Pagination key for next query
-            
+
             # Build the result
             result ={}
             result['items'] = items
@@ -88,17 +81,17 @@ class DataModel:
             return result
 
         except (BotoCoreError, ClientError) as e:
-            return {"error": str(e)}   
-        
-        
-        
+            return {"error": str(e)}
+
+
+
     def get_a_b_batch(self, portfolio, org, ring, limit=10000, lastkey=None):
         # Construct the partition key and sort key prefix
         portfolio_index = f'irn:data:{portfolio}'  # This will be used as the partition key (PK)
-        
+
         # Sort key (SK) prefix for querying documents based on org, ring, and a generated prefix
         prefix_doc_index = f'{org}:{ring}'  # This is the prefix we will use in begins_with for SK
-                
+
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
@@ -108,19 +101,19 @@ class DataModel:
             }
 
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
-            if lastkey:                  
+            if lastkey:
                 query_params['ExclusiveStartKey'] = {
                         'doc_index': f'{org}:{ring}:{lastkey}',
                         'portfolio_index': f'irn:data:{portfolio}'
                     }
- 
+
             # Query DynamoDB to get items with matching PK and SK prefix
             response = self.data_table.query(**query_params)
-            
+
             # Extract items and pagination key
             items = response.get('Items', [])
             endkey = response.get('LastEvaluatedKey')  # Pagination key for next query
-            
+
             # Build the result
             result ={}
             result['items'] = items
@@ -132,19 +125,19 @@ class DataModel:
             return result
 
         except (BotoCoreError, ClientError) as e:
-            return {"error": str(e)}   
-        
-        
-    
+            return {"error": str(e)}
 
-        
-        
+
+
+
+
+
     #Deprecated
     def get_a_index(self, portfolio, prefix_path, lastkey=None):
         # Construct the partition key and sort key prefix
         portfolio_index = f'irn:data:{portfolio}'  # This will be used as the partition key (PK)
         path_index = f'{prefix_path}'
-        
+
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
@@ -159,7 +152,7 @@ class DataModel:
 
             # Query DynamoDB to get items with matching PK and SK prefix
             response = self.data_table.query(**query_params)
-            
+
             # Extract items and pagination key
             items = response.get('Items', [])
             endkey = response.get('LastEvaluatedKey')  # Pagination key for next query
@@ -173,14 +166,14 @@ class DataModel:
             return result
 
         except (BotoCoreError, ClientError) as e:
-            return {"error": str(e)}   
-        
+            return {"error": str(e)}
+
     #Deprecated
     def get_a_b_index(self, portfolio, prefix_path, lastkey=None):
         # Construct the partition key and sort key prefix
         portfolio_index = f'irn:data:{portfolio}'  # This will be used as the partition key (PK)
         path_index = f'{prefix_path}'
-        
+
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
@@ -195,7 +188,7 @@ class DataModel:
 
             # Query DynamoDB to get items with matching PK and SK prefix
             response = self.data_table.query(**query_params)
-            
+
             # Extract items and pagination key
             items = response.get('Items', [])
             endkey = response.get('LastEvaluatedKey')  # Pagination key for next query
@@ -209,20 +202,20 @@ class DataModel:
             return result
 
         except (BotoCoreError, ClientError) as e:
-            return {"error": str(e)}   
-        
-        
+            return {"error": str(e)}
+
+
 
     def get_a_b_c(self,portfolio,org,ring,idx):
 
         #irn = 'irn:data:'+portfolio+':'+org+':'+ring+':*'
         portfolio_index = 'irn:data:'+portfolio
-        doc_index = org+':'+ring+':'+idx # _id was generated in the controller      
-        
-  
+        doc_index = org+':'+ring+':'+idx # _id was generated in the controller
+
+
         try:
-            
-            response = self.data_table.get_item(Key={'portfolio_index': portfolio_index, 'doc_index': doc_index})        
+
+            response = self.data_table.get_item(Key={'portfolio_index': portfolio_index, 'doc_index': doc_index})
             item = response.get('Item')
 
             if item:
@@ -231,18 +224,18 @@ class DataModel:
                 return {"error": "Document not found"}
         except ClientError as e:
             return {"error": e.response['Error']['Message']}
-        
-        
-    
-        
+
+
+
+
     def put_a_b_c(self, portfolio, org, ring, idx, item):
         # Construct the new primary key (partition key) and sort key
-                                                                                                                                             
+
         # Set the partition and sort keys in the item
         portfolio_index = 'irn:data:'+portfolio
         doc_index = org+':'+ring+':'+item['_id']
-        
-        
+
+
         new_item = item.get('attributes', {})  # Retrieve the new attributes to update
 
         if not all([portfolio_index, doc_index, new_item]):
@@ -291,33 +284,33 @@ class DataModel:
             )
 
             return {'message': 'Item updated', 'response': str(response_2['Attributes'])}
-        
+
         except ClientError as e:
             return {'error': str(e)}
-                                                                                                                                        
 
-   
+
+
     def delete_a_b_c(self,portfolio,org,ring,idx):
 
         #irn = 'irn:data:'+portfolio+':'+org+':'+ring+':*'
         portfolio_index = 'irn:data:'+portfolio
-        doc_index = org+':'+ring+':'+idx # _id was generated in the controller      
-        
+        doc_index = org+':'+ring+':'+idx # _id was generated in the controller
 
-        try: 
+
+        try:
             response = self.data_table.delete_item(Key={'portfolio_index': portfolio_index, 'doc_index': doc_index})
             return {'message':'Item deleted', 'response':str(response)}
         except ClientError as e:
             return {'error': str(e)}
-        
-        
-    
+
+
+
     #INDEX QUERIES
-    
+
     def get_a_b_beginswith(self,query):
-        
+
         '''
-        Incoming object instance  
+        Incoming object instance
             {
             'portfolio':<portfolio_id>,
             'org':<org_id>,
@@ -334,8 +327,8 @@ class DataModel:
             'sort': <asc|desc>
             }
         '''
-        
-        
+
+
         portfolio_index = f'irn:data:{query["portfolio"]}'  # This will be used as the partition key (PK)
         path_index_head = f'irn:h_index:{query["org"]}:{query["ring"]}'
         if 'value' not in query or not query['value']:
@@ -343,8 +336,8 @@ class DataModel:
         else:
             path_index_tail = f':{query["value"]}'
         path_index = path_index_head + path_index_tail
-        
-        
+
+
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
@@ -354,18 +347,13 @@ class DataModel:
                 'Limit': query['limit'],
                 "ScanIndexForward": False if query['sort'] == 'asc' else True
             }
-            
-            print(f'portfolio_index >>> {portfolio_index}')
-            print(f'path_index >>> {path_index}')
-            print(f'QUERY PARAMS >>> {query_params}')
-
             # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
             if query['lastkey']:
-                query_params['ExclusiveStartKey'] = query['lastkey'] 
+                query_params['ExclusiveStartKey'] = query['lastkey']
 
             # Query DynamoDB to get items with matching PK and SK prefix
             response = self.data_table.query(**query_params)
-            
+
             # Extract items and pagination key
             items = response.get('Items', [])
             endkey = response.get('LastEvaluatedKey')  # Pagination key for next query
@@ -379,20 +367,17 @@ class DataModel:
             return result
 
         except (BotoCoreError, ClientError) as e:
-            return {"error": str(e)}   
-    
-    
+            return {"error": str(e)}
+
+
     def get_a_b_greaterthan(self,portfolio_index,path_index):
-        
+
         return {'message': 'This feature is not implemented yet'}
-    
+
     def get_a_b_lessthan(self,portfolio_index,path_index):
-        
+
         return {'message': 'This feature is not implemented yet'}
-    
+
     def get_a_b_equalto(self,portfolio_index,path_index):
-        
+
         return {'message': 'This feature is not implemented yet'}
-    
-    
-    

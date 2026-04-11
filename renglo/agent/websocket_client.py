@@ -50,7 +50,6 @@ class WebSocketClient:
             # Remove trailing slash and /ws if present
             self.local_ws_url = self.local_ws_url.rstrip('/').replace('/ws', '')
         else:
-            print('Initializing AWS API Gateway Websocket service')
             # AWS API Gateway
             self.is_local = False
             try:

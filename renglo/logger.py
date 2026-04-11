@@ -7,10 +7,12 @@ This allows renglo-lib to work in both Flask contexts and standalone (e.g., Lamb
 """
 
 import logging
+import os
 import sys
 
 # Create a default logger for when Flask is not available
 _default_logger = None
+_agent_logging_configured = False
 
 
 def _get_default_logger():
@@ -28,24 +30,42 @@ def _get_default_logger():
     return _default_logger
 
 
+def _configure_agent_logging():
+    """Configure the agent.* logger namespace once, reading LOG_LEVEL from env."""
+    global _agent_logging_configured
+    if _agent_logging_configured:
+        return
+    _agent_logging_configured = True
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    agent_logger = logging.getLogger("agent")
+    if not agent_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter('%(levelname)s [%(name)s] %(message)s'))
+        agent_logger.addHandler(handler)
+    agent_logger.setLevel(level)
+    agent_logger.propagate = False
+
+
 def get_logger():
     """
     Get a logger that works with or without Flask.
-    
+
     Returns:
         Logger instance that supports debug(), info(), warning(), error() methods.
         If Flask's current_app is available, uses current_app.logger.
         Otherwise, uses Python's standard logging.
-    
+
     Usage:
         from renglo.logger import get_logger
-        
+
         logger = get_logger()
         logger.debug("Debug message")
         logger.info("Info message")
         logger.warning("Warning message")
         logger.error("Error message")
     """
+    _configure_agent_logging()
     try:
         # Try to get Flask's current_app
         from flask import has_request_context, current_app
@@ -54,6 +74,6 @@ def get_logger():
     except (ImportError, RuntimeError):
         # Flask not available or not in request context
         pass
-    
+
     # Fall back to standard logging
     return _get_default_logger()
