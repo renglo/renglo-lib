@@ -4,8 +4,24 @@ WebSocket client wrapper that supports both AWS API Gateway and local dev WebSoc
 import json
 import boto3
 import requests
-from typing import Dict, Any, Optional
 from decimal import Decimal
+from typing import Any, Dict
+
+
+def _outbound_local_http_url(websocket_url: str) -> str:
+    """ws(s) → http(s), trim, and map bind-only hosts (0.0.0.0, [::]) to localhost for outbound HTTP."""
+    u = (websocket_url or "").strip()
+    if u.startswith("ws://"):
+        u = "http://" + u[5:]
+    elif u.startswith("wss://"):
+        u = "https://" + u[6:]
+    elif not u.startswith(("http://", "https://")):
+        u = "http://" + u
+    u = u.rstrip("/").replace("/ws", "")
+    # Copy-paste from server logs; Windows cannot use 0.0.0.0 / [::] as HTTP client target.
+    u = u.replace("://0.0.0.0", "://localhost", 1)
+    u = u.replace("://[::]", "://localhost", 1)
+    return u
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -21,6 +37,9 @@ class WebSocketClient:
     WebSocket client that abstracts away the differences between:
     - AWS API Gateway WebSocket Management API (production)
     - Local dev WebSocket service (development)
+
+    Local URLs are normalized for outbound HTTP the same way on Linux, macOS, and Windows
+    (bind-only hosts like 0.0.0.0 / :: become localhost).
     """
     
     def __init__(self, websocket_url: str):
@@ -28,8 +47,9 @@ class WebSocketClient:
         Initialize WebSocket client.
         
         Args:
-            websocket_url: WebSocket connection URL. If it contains 'localhost' or '127.0.0.1',
-                          it will use the local dev service, otherwise AWS API Gateway.
+            websocket_url: WebSocket or HTTP URL. If it looks like local dev (localhost,
+                127.0.0.1, 0.0.0.0, ::, ws://…), POST is used against the dev bridge; otherwise
+                AWS API Gateway management API is used.
         """
         self.websocket_url = websocket_url
         self.is_local = False
@@ -39,16 +59,22 @@ class WebSocketClient:
         if not websocket_url:
             return
         
-        # Check if using local dev WebSocket service
-        if 'localhost' in websocket_url or '127.0.0.1' in websocket_url or '0.0.0.0' in websocket_url:
+        # Local dev: explicit loopback, any-interface bind, or ws(s) scheme
+        w = websocket_url.strip().lower()
+        looks_local = (
+            "localhost" in w
+            or "127.0.0.1" in w
+            or "0.0.0.0" in w
+            or "[::]" in w
+            or "[::1]" in w
+            or "://::" in w
+            or w.startswith("ws://")
+            or w.startswith("wss://")
+        )
+        if looks_local:
             print('Initializing local Websocket service')
             self.is_local = True
-            # Convert ws:// to http:// for local service
-            self.local_ws_url = websocket_url.replace('ws://', 'http://').replace('wss://', 'https://')
-            if not self.local_ws_url.startswith('http'):
-                self.local_ws_url = f"http://{self.local_ws_url}"
-            # Remove trailing slash and /ws if present
-            self.local_ws_url = self.local_ws_url.rstrip('/').replace('/ws', '')
+            self.local_ws_url = _outbound_local_http_url(websocket_url)
         else:
             # AWS API Gateway
             self.is_local = False
