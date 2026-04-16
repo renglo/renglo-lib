@@ -318,7 +318,8 @@ class AgentUtilities:
                 
             elif 'tool_call_id' in output and 'role' in output and output['role'] == 'tool':
                 # This is a response from the tool
-                print(f'Including Tool Response in the chat: {output}')
+                print(f'Including Tool Response in the chat:')
+                #print(output)
                 print(f'Tool is returning interface:{interface}')
                 # This is the tool response
                 message_type = 'tool_rs'
@@ -612,7 +613,8 @@ class AgentUtilities:
                             workspace['state']['history'].append(history_event)
                                 
                 if key == 'cache':
-                    print(f'Updating workspace cache: {output}')
+                    print(f'Updating workspace cache ...')
+                    #print(f'{output}')
                     if 'cache' not in workspace: 
                         workspace['cache'] = {}
                     if isinstance(output, dict):
@@ -659,7 +661,7 @@ class AgentUtilities:
                         if plan_id not in workspace['state_machine']:
                             # It won't override entire state machine if it already exists.
                             workspace['state_machine'][plan_id] = self.sanitize(output)
-                    print(workspace)
+                    #print(workspace)
                     
                 if key == 'step_state':
                     
@@ -1371,7 +1373,7 @@ class AgentUtilities:
         Returns:
             list: The processed message list
         """
-        print(f'Raw message_list: {message_list}')
+        #print(f'Raw message_list: {message_list}')
         
         # Find the indices of the last x tool messages
         tool_indices = []
@@ -1384,6 +1386,7 @@ class AgentUtilities:
         # Clear content from all tool messages except the last x ones
         for i, message in enumerate(message_list):
             if message.get('role') == 'tool' and i not in tool_indices:
+                print(f'Found a tool message: {message}')
                 print(f'Found a tool message: {message}')
                 # Actually clear the content (set to empty string)
                 message['content'] = ""
@@ -1402,7 +1405,7 @@ class AgentUtilities:
                     sanitized_content = self.sanitize(message.get('content', ''))
                     message['content'] = str(sanitized_content)
                 
-        print(f'Cleared tool message content: {message_list}')
+        #print(f'Cleared tool message content: {message_list}')
         
         return message_list
     
@@ -1728,7 +1731,7 @@ class AgentUtilities:
             else:         
                 available_tools_raw = list_tools
                 
-                print(f'List Tools:{available_tools_raw}')
+                #print(f'List Tools:{available_tools_raw}')
                 
                 available_tools = [] 
                 for t in available_tools_raw:

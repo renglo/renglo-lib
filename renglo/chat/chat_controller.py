@@ -80,19 +80,26 @@ class ChatController:
         #TO-DO : Check is this user has access to this tool before returning threads.
           
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
+        # Prefix query: legacy rows used entity_index == entity_id; new rows use
+        # entity_index == "{entity_id}/{thread_id}" so multiple threads can coexist.
         secondary = f"{entity_id}"
 
-        
-        # entity_id = ''  //This will return ALL the threads
-        # entity_id = <entity_id_prefix>  //This will return everything that matches the prefix
-        # entity_id = <entity_id_full> // This will return the exact match (one result)
-        #>>>>
-        
-        limit = 10
+        # Page size per DynamoDB Query request; query_chat paginates until all keys are read.
+        limit = 1000
         sort = 'desc'
-        
-        response = self.CHM.list_chat(index,secondary,limit,sort=sort)
-        
+
+        response = self.CHM.query_chat(index, secondary, limit, sort=sort)
+        if response.get('success') and response.get('items'):
+            items = response['items']
+
+            def _thread_time(it):
+                try:
+                    return float(it.get('time') or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            response['items'] = sorted(items, key=_thread_time, reverse=True)
+
         return response
      
     def query_threads(self,portfolio,org,entity_type,query):
@@ -116,7 +123,9 @@ class ChatController:
         
 
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
-        secondary = f"{entity_id}"
+        thread_id = str(uuid.uuid4())
+        # Unique sort key per thread so list_threads (begins_with entity_id) returns all threads.
+        secondary = f"{entity_id}/{thread_id}"
 
         
         if public_user:
@@ -133,7 +142,7 @@ class ChatController:
             'entity_index' : secondary, 
             'language' : 'EN',
             'index' : index,
-            '_id':str(uuid.uuid4()),        
+            '_id': thread_id,
         }
         
         response = self.CHM.create_chat(data)
@@ -286,7 +295,7 @@ class ChatController:
                 for i in item['messages']:
                     if 'tool_call_id' in i['_out'] and i['_out']['tool_call_id'] == call_id:
                         print(f'Found the message with matching id:{i}')
-                        print(f'Replacing with new doc:{update}') 
+                        #print(f'Replacing with new doc:{update}') 
                         # Find the index of the item in the list
                         index = item['messages'].index(i)
                         # Parse JSON string to Python object and replace content

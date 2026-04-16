@@ -261,7 +261,7 @@ class SessionController:
                 for i in entries:
                     if 'tool_call_id' in i['_out'] and i['_out']['tool_call_id'] == call_id:
                         print(f'Found the message with matching id:{i}')
-                        print(f'Replacing with new doc:{update}') 
+                        #print(f'Replacing with new doc:{update}') 
                         # Find the index of the item in the list
                         index = entries.index(i)
                         # Parse JSON string to Python object and replace content

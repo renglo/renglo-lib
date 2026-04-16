@@ -55,7 +55,13 @@ class ChatModel:
         all_items = []
 
         try:
-            while True:
+            # DynamoDB Limit is per request, not total; paginate with LastEvaluatedKey. Cap per page (API max 1000).
+            page_limit = max(1, min(int(limit), 1000))
+            exclusive_start_key = lastkey
+            max_pages = 500
+            page = 0
+            while page < max_pages:
+                page += 1
                 # Build the query parameters with KeyConditionExpression
 
                 if entity_index_prefix:
@@ -63,7 +69,7 @@ class ChatModel:
                     query_params = {
                         'TableName': self.DYNAMODB_CHAT_TABLE,
                         'KeyConditionExpression': Key('index').eq(index) & Key('entity_index').begins_with(entity_index_prefix),
-                        'Limit': limit,
+                        'Limit': page_limit,
                         "ScanIndexForward": True if sort == 'asc' else False
                     }
                                      
@@ -72,15 +78,14 @@ class ChatModel:
                     query_params = {
                         'TableName': self.DYNAMODB_CHAT_TABLE,
                         'KeyConditionExpression': Key('index').eq(index),  # Only query by index
-                        'Limit': limit,
+                        'Limit': page_limit,
                         "ScanIndexForward": True if sort == 'asc' else False
                     }
                 
        
 
-                # Add the ExclusiveStartKey to the query parameters if provided (for pagination)
-                if lastkey:
-                    query_params['ExclusiveStartKey'] = lastkey
+                if exclusive_start_key:
+                    query_params['ExclusiveStartKey'] = exclusive_start_key
 
                 
                 response = self.chat_table.query(**query_params)
@@ -90,11 +95,9 @@ class ChatModel:
                 items = response.get('Items', [])
                 all_items.extend(items)  # Add current page items to the complete list
                 
-                # Get the pagination key for next query
-                lastkey = response.get('LastEvaluatedKey')
+                exclusive_start_key = response.get('LastEvaluatedKey')
                 
-                # If there's no more pages, break the loop
-                if not lastkey:
+                if not exclusive_start_key:
                     break
 
             # Build the result with all items
