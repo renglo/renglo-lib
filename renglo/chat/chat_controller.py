@@ -451,6 +451,7 @@ class ChatController:
                 'type': type,
                 'config' : config,
                 'cache':cache,
+                'documents': {},
                 'index': index,
                 'entity_index':secondary,
                 '_id': str(uuid.uuid4())
@@ -516,7 +517,14 @@ class ChatController:
             if 'intent' in payload:
                 item['intent'] = payload['intent']
                 changed = True
-                
+
+            if 'documents' in payload and isinstance(payload['documents'], dict):
+                if 'documents' not in item or not isinstance(item.get('documents'), dict):
+                    item['documents'] = {}
+                for k, v in payload['documents'].items():
+                    item['documents'][k] = v
+                changed = True
+
             if changed:
                 #print('Something has changed. Updating the workspace')
                 #current_app.logger.debug(f'Prepared data for workspace update: {item}')
