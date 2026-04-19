@@ -662,6 +662,14 @@ class AgentUtilities:
                             # It won't override entire state machine if it already exists.
                             workspace['state_machine'][plan_id] = self.sanitize(output)
                     #print(workspace)
+
+                if key == 'replace_state_machine':
+                    # Overwrite state for an existing plan_id
+                    if isinstance(output, dict) and output.get('plan_id'):
+                        plan_id = output['plan_id']
+                        if 'state_machine' not in workspace:
+                            workspace['state_machine'] = {}
+                        workspace['state_machine'][plan_id] = self.sanitize(output)
                     
                 if key == 'step_state':
                     
