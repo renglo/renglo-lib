@@ -484,6 +484,11 @@ class SessionController:
             if 'intent' in payload:
                 item['intent'] = payload['intent']
                 changed = True
+
+            # Claw triage: WorkstreamRegistry persists multi-step tool state (see extensions/claw/.../workstreams.py)
+            if 'workstreams' in payload:
+                item['workstreams'] = payload['workstreams']
+                changed = True
                 
             if changed:
                 #print('Something has changed. Updating the workspace')
