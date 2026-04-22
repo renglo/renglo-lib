@@ -2,6 +2,7 @@ from flask import  jsonify, current_app, make_response
 
 import boto3
 import uuid
+from datetime import datetime
 
 class DocsModel:
 
@@ -80,6 +81,98 @@ class DocsModel:
             if content_type == 'binary/octet-stream':
                 file_extension = filename.split('.')[-1].lower()  # Get the file extension
                 content_type = content_type_mapping.get(file_extension, 'application/octet-stream')  # Default to application/octet-stream if not found
+            
+            current_app.logger.info(f"Content Type: {content_type}")
+            content = document['Body'].read()  # Read the content as binary
+            
+            # Create a response object
+            response = make_response(content)
+            response.headers.set('Content-Type', content_type)  # Set the correct content type
+            
+            return {'success': True, 'content': response}  # Return success and content
+        
+        except s3_client.exceptions.NoSuchKey:
+            #current_app.logger.error(f"File not found: {file_path}")
+            return {'success': False, 'error': 'File not found'}  # Return error object
+        except Exception as e:
+            current_app.logger.error(f"Error retrieving file: {str(e)}")
+            return {'success': False, 'error': 'Error retrieving file'}  # Return error object
+        
+        
+        
+        
+    def tmp_post(self,portfolio, org, entity, raw_doc):
+        
+        # Create key from a concatenation of date and sufix 
+        date = datetime.now().strftime("%Y-%m-%d")
+        object_id = str(uuid.uuid4())
+
+        s3_client = boto3.client('s3')
+        bucket_name = current_app.config['S3_BUCKET_NAME']
+        file_path = f'_tmp/{portfolio}/{org}/{entity}/{date}/{object_id}'
+        
+        print(f'@tmp_post: Saving to {file_path} : {raw_doc}')
+
+        # tmp uploads are JSON (validated in DocsController.tmp_post); do not use
+        # undefined `type` here — that accidentally resolved to builtin `type`.
+        content_type = 'application/json'
+
+        try:
+            response = s3_client.put_object(
+                Bucket=bucket_name,
+                Key=file_path,
+                Body=raw_doc,
+                ContentType=content_type
+            )
+            if response['ResponseMetadata']['HTTPStatusCode'] == 200:
+                return {
+                    'success': True,
+                    'path': file_path,
+                    'key': f'{portfolio}/{org}/{entity}/{date}/{object_id}',
+                }
+            return {'success': False}
+        except Exception as e:
+            current_app.logger.error(f"Error uploading file {file_path}: {str(e)}")
+            return {'success': False}
+        
+        
+        
+        
+    def tmp_get(self, portfolio, org, entity, date, object_id):
+        
+        file_path = f'_tmp/{portfolio}/{org}/{entity}/{date}/{object_id}'
+    
+        s3_client = boto3.client('s3')
+        bucket_name = current_app.config['S3_BUCKET_NAME']  
+        
+        # Define a mapping of file extensions to content types
+        content_type_mapping = {
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'svg': 'image/svg+xml',
+            'pdf': 'application/pdf',
+            'txt': 'text/plain',
+            'csv': 'text/csv',
+            'json': 'application/json'
+        }
+        
+        try:
+            print(f's3: Getting Object:{file_path}')
+            document = s3_client.get_object(Bucket=bucket_name, Key=file_path)
+            content_type = document['ContentType']  # Get the content type from the response
+            
+            # Check if content type is binary/octet-stream and set it based on extension or path
+            if content_type == 'binary/octet-stream':
+                last = file_path.rsplit('/', 1)[-1]
+                if '.' in last:
+                    file_extension = last.rsplit('.', 1)[-1].lower()
+                    content_type = content_type_mapping.get(
+                        file_extension, 'application/octet-stream'
+                    )
+                else:
+                    # tmp objects are stored without extension; treat as JSON
+                    content_type = 'application/json'
             
             current_app.logger.info(f"Content Type: {content_type}")
             content = document['Body'].read()  # Read the content as binary

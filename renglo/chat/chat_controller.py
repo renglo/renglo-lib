@@ -1,13 +1,17 @@
 # chat_controller.py
-from flask import current_app
-from renglo.chat.chat_model import ChatModel
-from flask_cognito import current_cognito_jwt
-from datetime import datetime
-from ..common import *
-import uuid
+import copy
 import json
+import traceback
+import uuid
 import boto3
 from decimal import Decimal
+
+from flask import current_app
+from flask_cognito import current_cognito_jwt
+from datetime import datetime
+from renglo.docs.docs_controller import DocsController
+from renglo.chat.chat_model import ChatModel
+from ..common import *
 
 
 class ChatController:
@@ -154,25 +158,225 @@ class ChatController:
     # TURNS
     # There is a document per turn in the database
     # Every turn document contains a list of messages that belong to that turn
-    
-    def list_turns(self,portfolio,org,entity_type,entity_id,thread_id):
-              
+
+    @staticmethod
+    def _event_type_name(ev):
+        if not isinstance(ev, dict):
+            return None
+        return ev.get("type") or ev.get("_type")
+
+    @staticmethod
+    def _tmp_key_five_tuple(key):
+        """S3 tmp key: portfolio / org / entity (e.g. noma) / YYYY-MM-DD / object_id (5 path segments)."""
+        if not key or not isinstance(key, str):
+            return None
+        parts = [p for p in key.strip().strip("/").split("/") if p]
+        if len(parts) < 5:
+            return None
+        return tuple(parts[:5])
+
+    def _tmp_get_json(self, dcc: DocsController, key: str):
+        t = self._tmp_key_five_tuple(key)
+        if not t:
+            return None
+        portfolio, org, entity, date_str, object_id = t
+        r = dcc.tmp_get(portfolio, org, entity, date_str, object_id)
+        if not r or not r.get("success") or "content" not in r:
+            return None
+        body = r["content"]
+        try:
+            if hasattr(body, "get_data"):
+                raw = body.get_data()
+                if isinstance(raw, (bytes, bytearray)):
+                    text = raw.decode("utf-8", errors="replace")
+                else:
+                    text = str(raw)
+            else:
+                return None
+            return json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            current_app.logger.warning("tmp_get JSON parse failed for key %s: %s", key, e)
+            return None
+
+    def _first_tmp_artifact_from_tool_result(self, event):
+        if self._event_type_name(event) != "tool_result":
+            return None
+        out = event.get("out") or event.get("_out")
+        if not isinstance(out, dict):
+            return None
+        content = out.get("content")
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None
+        if not isinstance(content, dict):
+            return None
+        res = content.get("result")
+        if res is None:
+            return None
+        rows = res if isinstance(res, list) else [res]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            iface = str(row.get("interface") or row.get("_interface") or "flights")
+            nxt = row.get("_next")
+            r_out = row.get("out") or row.get("_out")
+            if not isinstance(r_out, dict):
+                continue
+            tool_call_id = r_out.get("tool_call_id") or ""
+            inner = r_out.get("content")
+            if inner is None:
+                continue
+            if isinstance(inner, str):
+                try:
+                    inner = json.loads(inner)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+            parts = inner if isinstance(inner, list) else [inner]
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                art = part.get("artifact")
+                if not isinstance(art, dict):
+                    continue
+                if art.get("type") is not None and art.get("type") != "tmp_artifact":
+                    continue
+                tkey = art.get("key")
+                if tkey:
+                    return (iface, nxt, tool_call_id, tkey)
+        return None
+
+    def _first_tmp_artifact_from_top_level_tool_rs(self, event):
+        """Top-level ``tool_rs`` with tmp_artifact in ``_out.content`` (not under tool_result)."""
+        if self._event_type_name(event) != "tool_rs":
+            return None
+        iface = str(event.get("interface") or event.get("_interface") or "flights")
+        nxt = event.get("_next")
+        out = event.get("out") or event.get("_out")
+        if not isinstance(out, dict):
+            return None
+        tool_call_id = out.get("tool_call_id") or ""
+        content = out.get("content")
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None
+        if content is None:
+            return None
+        parts = content if isinstance(content, list) else [content]
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            art = part.get("artifact")
+            if not isinstance(art, dict):
+                continue
+            if art.get("type") is not None and art.get("type") != "tmp_artifact":
+                continue
+            tkey = art.get("key")
+            if tkey:
+                return (iface, nxt, tool_call_id, tkey)
+        return None
+
+    @staticmethod
+    def _new_tool_rs_event(
+        interface: str,
+        next_ptr,
+        tool_call_id,
+        document,
+    ) -> dict:
+        if isinstance(document, dict):
+            content = [document]
+        elif isinstance(document, list):
+            content = document
+        else:
+            content = [document]
+        out_block = {
+            "content": content,
+            "role": "tool",
+            "tool_call_id": str(tool_call_id) if tool_call_id is not None else "",
+        }
+        new_event: dict = {
+            "type": "tool_rs",
+            "_type": "tool_rs",
+            "interface": interface,
+            "_interface": interface,
+            "out": out_block,
+            "_out": out_block,
+        }
+        if next_ptr is not None and next_ptr != "":
+            new_event["_next"] = next_ptr
+        return new_event
+
+    def _replace_with_resolved_if_tmp_artifact(self, event, dcc: DocsController):
+        spec = self._first_tmp_artifact_from_tool_result(event)
+        if not spec:
+            spec = self._first_tmp_artifact_from_top_level_tool_rs(event)
+        if not spec:
+            return None
+        interface, nxt, tool_call_id, akey = spec
+        document = self._tmp_get_json(dcc, akey)
+        if document is None:
+            return None
+        return self._new_tool_rs_event(interface, nxt, tool_call_id, document)
+
+    def _event_list_for_last_turn(self, last: dict):
+        if isinstance(last.get("events"), list):
+            return last["events"]
+        if isinstance(last.get("messages"), list):
+            return last["messages"]
+        return []
+
+    def _resolve_last_turn_tmp_artifacts(self, response: dict) -> None:
+        items = response.get("items")
+        if not items or not isinstance(items, list):
+            return
+        last = items[-1]
+        if not isinstance(last, dict):
+            return
+        evl = self._event_list_for_last_turn(last)
+        if not evl or not isinstance(evl, list):
+            return
+        dcc = DocsController(config=self.config)
+        for i, event in enumerate(evl):
+            if not isinstance(event, dict):
+                continue
+            t = self._event_type_name(event)
+            if t not in ("tool_result", "tool_rs"):
+                continue
+            replacement = self._replace_with_resolved_if_tmp_artifact(event, dcc)
+            if replacement is not None:
+                evl[i] = replacement
+
+    def list_turns(
+        self, portfolio, org, entity_type, entity_id, thread_id, resolve=False
+    ):
+        """List turns. ``resolve`` is only for HTTP message APIs that inline tmp
+        documents into ``tool_rs`` for the client. Agents, triage, and any code
+        that needs the stored chain of thought (raw ``tmp_artifact`` pointers)
+        must call with ``resolve=False`` (the default)."""
 
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
 
         query = f"{entity_id}/{thread_id}"
-        
-        
+
         limit = 50
         sort = 'asc'
-        
-        #print(f'List Turns params >> {index} , {query}')
-        #response = self.CHM.list_chat(index,secondary,limit,sort=sort)
-        response = self.CHM.query_chat(index,query,limit,sort=sort)
-        
-        #print(f'List Turns>> {response}')
-        
-        return response
+
+        response = self.CHM.query_chat(index, query, limit, sort=sort)
+
+        if not resolve or not response.get("success"):
+            return response
+
+        try:
+            out = copy.deepcopy(response)
+            self._resolve_last_turn_tmp_artifacts(out)
+            return out
+        except Exception as e:
+            current_app.logger.error("list_turns resolve tmp_artifacts: %s", e, exc_info=True)
+            traceback.print_exc()
+            return response
     
     
     def get_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id):

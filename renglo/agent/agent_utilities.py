@@ -116,7 +116,8 @@ class AgentUtilities:
                 self.org,
                 self.entity_type,
                 self.entity_id,
-                self.thread
+                self.thread,
+                False,
             )
              
             if 'success' not in response:
