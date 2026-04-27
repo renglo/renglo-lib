@@ -133,8 +133,20 @@ class ChatController:
     # There is a document per turn in the database
     # Every turn document contains a list of messages that belong to that turn
 
-    def list_turns(self,portfolio,org,entity_type,entity_id,thread_id):
+    def list_turns(
+        self,
+        portfolio,
+        org,
+        entity_type,
+        entity_id,
+        thread_id,
+        _resolve: bool = True,
+    ):
+        """
+        List chat turns (message groups) for a thread.
 
+        _resolve: when True (HTTP route), reserved for future UI inlining; optional for agent callers.
+        """
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
 
         query = f"{entity_id}/{thread_id}"

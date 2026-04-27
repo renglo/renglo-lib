@@ -72,10 +72,14 @@ class AuthController:
     def _user_id_from_claims(claims):
         if not claims:
             return None
+        if "sub" in claims:
+            return create_md5_hash(claims["sub"], 9)
         if "cognito:username" in claims:
             return create_md5_hash(claims["cognito:username"], 9)
         if "username" in claims:
             return create_md5_hash(claims["username"], 9)
+        if "email" in claims:
+            return create_md5_hash(claims["email"], 9)
         return None
 
     def get_current_user(self, jwt_claims=None):
@@ -1305,7 +1309,9 @@ class AuthController:
         
   
         if not response_1['success']:
-            response_1['message'] = 'Could not create the Portfolio Entity'                
+            detail = (response_1.get('message') or '').strip()
+            base = 'Could not create the Portfolio Entity'
+            response_1['message'] = f"{base}: {detail}" if detail else base
             return response_1
         else:
             transaction.append(response_1)
