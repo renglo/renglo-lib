@@ -114,7 +114,8 @@ class AgentUtilities:
                 self.org,
                 self.entity_type,
                 self.entity_id,
-                self.thread
+                self.thread,
+                False,
             )
 
             if 'success' not in response:
@@ -654,6 +655,14 @@ class AgentUtilities:
                         if plan_id not in workspace['state_machine']:
                             # It won't override entire state machine if it already exists.
                             workspace['state_machine'][plan_id] = self.sanitize(output)
+
+                if key == 'replace_state_machine':
+                    # Overwrite state for an existing plan_id
+                    if isinstance(output, dict) and output.get('plan_id'):
+                        plan_id = output['plan_id']
+                        if 'state_machine' not in workspace:
+                            workspace['state_machine'] = {}
+                        workspace['state_machine'][plan_id] = self.sanitize(output)
 
                 if key == 'step_state':
 
@@ -1373,7 +1382,6 @@ class AgentUtilities:
         Returns:
             list: The processed message list
         """
-
         # Find the indices of the last x tool messages
         tool_indices = []
         for i in range(len(message_list) - 1, -1, -1):
