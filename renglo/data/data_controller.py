@@ -11,6 +11,7 @@ from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
 from renglo.search.search_index_service import SearchIndexService
+from renglo.graph.graph_controller import GraphController
 from renglo.logger import get_logger
 from renglo.logger import get_logger
 
@@ -172,6 +173,9 @@ class DataController:
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         self.search_index = SearchIndexService(config=self.config)
+        self.GRC = None
+        if self.config.get('DYNAMODB_GRAPH_TABLE'):
+            self.GRC = GraphController(config=self.config)
         
             
         
@@ -1061,6 +1065,16 @@ class DataController:
                 result['item'] = item
                 status = 200
                 self.search_index.index_document(portfolio, org, ring, item)
+                if self.GRC:
+                    result['graph'] = self.GRC.sync_document_graph_edges(
+                        portfolio,
+                        org,
+                        ring,
+                        item['_id'],
+                        item.get('attributes', {}),
+                    )
+                else:
+                    result['graph'] = {'success': True, 'skipped': True, 'reason': 'Graph controller not configured'}
 
             else:
                 result['success'] = False
@@ -1167,6 +1181,16 @@ class DataController:
             status = 200
             self.logger.debug('Returned object:'+str(result))
             self.search_index.index_document(portfolio, org, ring, item)
+            if self.GRC:
+                result['graph'] = self.GRC.sync_document_graph_edges(
+                    portfolio,
+                    org,
+                    ring,
+                    idx,
+                    item.get('attributes', {}),
+                )
+            else:
+                result['graph'] = {'success': True, 'skipped': True, 'reason': 'Graph controller not configured'}
 
             return result, status
 
@@ -1186,6 +1210,11 @@ class DataController:
         
         self.logger.debug('Item to delete:'+str(idx))
 
+        doc_before_delete = self.get_a_b_c(portfolio, org, ring, idx)
+        graph_attrs = {}
+        if isinstance(doc_before_delete, dict) and doc_before_delete.get('success') is not False:
+            graph_attrs = doc_before_delete
+
         response = self.DAM.delete_a_b_c(portfolio,org,ring,idx)
 
         result = {}
@@ -1197,6 +1226,16 @@ class DataController:
             status = 200
             self.logger.debug('Returned object:'+str(result))
             self.search_index.delete_document(portfolio, org, ring, idx)
+            if self.GRC:
+                result['graph'] = self.GRC.remove_document_graph_edges(
+                    portfolio,
+                    org,
+                    ring,
+                    idx,
+                    graph_attrs,
+                )
+            else:
+                result['graph'] = {'success': True, 'skipped': True, 'reason': 'Graph controller not configured'}
 
             return result, status
 
@@ -1208,6 +1247,7 @@ class DataController:
             self.logger.debug('Returned object:'+str(result))
 
             return result, status
+
         
         
 

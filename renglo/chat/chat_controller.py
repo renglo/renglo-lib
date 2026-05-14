@@ -298,11 +298,8 @@ class ChatController:
             "tool_call_id": str(tool_call_id) if tool_call_id is not None else "",
         }
         new_event: dict = {
-            "type": "tool_rs",
             "_type": "tool_rs",
-            "interface": interface,
             "_interface": interface,
-            "out": out_block,
             "_out": out_block,
         }
         if next_ptr is not None and next_ptr != "":

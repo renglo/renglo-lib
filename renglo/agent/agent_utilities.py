@@ -23,6 +23,36 @@ class DecimalEncoder(json.JSONEncoder):
 
 
 class AgentUtilities:
+    _MUTATE_WORKSPACE_HANDLED_KEYS = {
+        'belief',
+        'desire',
+        'intent',
+        'belief_history',
+        'cache',
+        'is_active',
+        'action',
+        'follow_up',
+        'slots',
+        'plan',
+        'change_review',
+        'plan_commit_pending',
+        'agent_quotes_protocol_state',
+        'new_state_machine',
+        'replace_state_machine',
+        'step_state',
+        'plan_state',
+        'action_log',
+    }
+    _MUTATE_WORKSPACE_RESERVED_KEYS = {
+        '_id',
+        'portfolio',
+        'org',
+        'entity_type',
+        'entity_id',
+        'thread',
+        'state',
+    }
+
     def __init__(self, 
                  config, 
                  portfolio, 
@@ -578,6 +608,15 @@ class AgentUtilities:
                 
             # 2. Store the output in the workspace
             for key, output in changes.items():
+                safe_key = str(key).strip()
+                if not safe_key:
+                    continue
+                if safe_key not in self._MUTATE_WORKSPACE_HANDLED_KEYS:
+                    if safe_key in self._MUTATE_WORKSPACE_RESERVED_KEYS:
+                        safe_key = f'custom_{safe_key}'
+                    workspace[safe_key] = self._neutralize_workspace_value(output)
+                    continue
+
                 if key == 'belief':
                     # output = {"date":"345"}
                     if isinstance(output, dict):
@@ -620,8 +659,11 @@ class AgentUtilities:
                         workspace['cache'] = {}
                     if isinstance(output, dict):
                         for k, v in output.items():
-                            # Sanitize nested values to ensure no Decimals slip through
-                            workspace['cache'][k] = self.sanitize(v)
+                            if v is None:
+                                workspace['cache'].pop(k, None)
+                            else:
+                                # Sanitize nested values to ensure no Decimals slip through
+                                workspace['cache'][k] = self.sanitize(v)
                     elif isinstance(output, list):
                         # For lists, sanitize each element and store as 'results'
                         workspace['cache']['results'] = self.sanitize(output)
@@ -651,6 +693,28 @@ class AgentUtilities:
                             workspace['plan'] = {}
                         # Sanitize nested plan data to ensure no Decimals slip through
                         workspace['plan'][plan_id] = self.sanitize(output)
+
+                if key == 'change_review':
+                    if output is None or output is False:
+                        workspace.pop('change_review', None)
+                    elif isinstance(output, dict):
+                        workspace['change_review'] = self.sanitize(output)
+
+                if key == 'plan_commit_pending':
+                    if output is False or output is None:
+                        workspace.pop('plan_commit_pending', None)
+                    elif isinstance(output, bool) and output is True:
+                        workspace['plan_commit_pending'] = True
+
+                if key == 'agent_quotes_protocol_state':
+                    if output is None or output is False:
+                        workspace.pop('agent_quotes_protocol_state', None)
+                    elif isinstance(output, str):
+                        s = output.strip()
+                        if s:
+                            workspace['agent_quotes_protocol_state'] = self.sanitize(s)
+                        else:
+                            workspace.pop('agent_quotes_protocol_state', None)
                         
                 if key == 'new_state_machine':
                     print('Initializing state machine')
@@ -768,6 +832,23 @@ class AgentUtilities:
         except Exception as e:
             print(f'Error updating workspace: {str(e)}')
             return False
+
+    def _neutralize_workspace_value(self, value: Any, max_chars: int = 4000) -> str:
+        """
+        Convert arbitrary values into bounded plain text for unknown workspace keys.
+        """
+        try:
+            sanitized = self.sanitize(value)
+            text = json.dumps(
+                sanitized, ensure_ascii=True, separators=(',', ':'), default=str
+            )
+        except Exception:
+            text = str(value)
+        text = re.sub(r'[\x00-\x1f\x7f]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        if len(text) > max_chars:
+            text = text[: max_chars - 14] + '...[truncated]'
+        return text
 
     def llm(self, prompt):
         """
@@ -1395,8 +1476,7 @@ class AgentUtilities:
         # Clear content from all tool messages except the last x ones
         for i, message in enumerate(message_list):
             if message.get('role') == 'tool' and i not in tool_indices:
-                print(f'Found a tool message: {message}')
-                print(f'Found a tool message: {message}')
+                print(f'Found a tool message')
                 # Actually clear the content (set to empty string)
                 message['content'] = ""
             else:
