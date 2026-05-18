@@ -6,11 +6,11 @@ import boto3
 import traceback
 from decimal import Decimal
 
-from flask import current_app
-from flask_cognito import current_cognito_jwt
 from datetime import datetime
 from renglo.docs.docs_controller import DocsController
 from renglo.session.session_model import SessionModel
+from renglo.logger import get_logger
+from renglo.runtime import get_current_jwt_claims
 from ..common import *
 
 
@@ -26,22 +26,30 @@ class SessionController:
             ip: IP address (optional)
         """
         self.config = config or {}
+        self.logger = get_logger()
+        self._invocation_jwt_claims = None
         self.SSM = SessionModel(config=self.config, tid=tid, ip=ip)
         
         
         
+    def set_invocation_jwt_claims(self, jwt_claims):
+        self._invocation_jwt_claims = jwt_claims
+
     def get_current_user(self):
         
-        current_app.logger.debug(f'Getting user')
+        self.logger.debug(f'Getting user')
 
-        if "cognito:username" in current_cognito_jwt:
+        claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
+        if "cognito:username" in claims:
             # IdToken was used
-            user_id = create_md5_hash(current_cognito_jwt["cognito:username"],9)
-        else:
+            user_id = create_md5_hash(claims["cognito:username"],9)
+        elif "username" in claims:
             # AccessToken was used
-            user_id = create_md5_hash(current_cognito_jwt["username"],9)
+            user_id = create_md5_hash(claims["username"],9)
+        else:
+            user_id = create_md5_hash("anonymous", 9)
             
-        current_app.logger.debug(f'User Id:{user_id}')
+        self.logger.debug(f'User Id:{user_id}')
 
         return user_id
         
@@ -162,11 +170,15 @@ class SessionController:
                     text = raw.decode("utf-8", errors="replace")
                 else:
                     text = str(raw)
+            elif isinstance(body, (bytes, bytearray)):
+                text = body.decode("utf-8", errors="replace")
+            elif isinstance(body, str):
+                text = body
             else:
                 return None
             return json.loads(text)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            current_app.logger.warning("tmp_get JSON parse failed for key %s: %s", key, e)
+            self.logger.warning("tmp_get JSON parse failed for key %s: %s", key, e)
             return None
 
     def _first_tmp_artifact_from_tool_result(self, event) -> tuple | None:
@@ -368,7 +380,7 @@ class SessionController:
             self._resolve_last_turn_tmp_artifacts(out)
             return out
         except Exception as e:
-            current_app.logger.error("list_turns resolve tmp_artifacts: %s", e, exc_info=True)
+            self.logger.error("list_turns resolve tmp_artifacts: %s", e, exc_info=True)
             traceback.print_exc()
             return response
     
@@ -404,8 +416,8 @@ class SessionController:
             secondary = f"{entity_id}/{thread_id}/{time}"
             
             
-            current_app.logger.debug(f'create_turn > input > {index}/{secondary}')
-            current_app.logger.debug(f'payload: {payload}')
+            self.logger.debug(f'create_turn > input > {index}/{secondary}')
+            self.logger.debug(f'payload: {payload}')
             
             # Validate required payload fields
             required_fields = ['context']
@@ -435,13 +447,13 @@ class SessionController:
                 '_id': str(uuid.uuid4()) # This is the turn ID 
             }
             
-            current_app.logger.debug(f'Prepared data for session creation: {data}')
+            self.logger.debug(f'Prepared data for session creation: {data}')
             
             response = self.SSM.create_session(data)
             return response
             
         except Exception as e:
-            current_app.logger.error(f"Error in create_turn: {str(e)}")
+            self.logger.error(f"Error in create_turn: {str(e)}")
             return {
                 "success": False,
                 "message": f"Error creating turn: {str(e)}",
@@ -541,8 +553,8 @@ class SessionController:
             return response
         
         except Exception as e:
-            current_app.logger.error(f"Error in update_turn: {str(e)}")
-            current_app.logger.error(traceback.format_exc())
+            self.logger.error(f"Error in update_turn: {str(e)}")
+            self.logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "message": f"Error updating message: {str(e)}",
@@ -596,8 +608,8 @@ class SessionController:
             secondary = f"{entity_id}/{thread_id}/{time}"
             
             
-            current_app.logger.debug(f'create_workspace > input > {index}/{secondary}')
-            current_app.logger.debug(f'payload: {payload}')
+            self.logger.debug(f'create_workspace > input > {index}/{secondary}')
+            self.logger.debug(f'payload: {payload}')
             
             # Validate required payload fields
             '''required_fields = ['context']
@@ -654,13 +666,13 @@ class SessionController:
                 '_id': str(uuid.uuid4())
             }
             
-            current_app.logger.debug(f'Prepared data for session creation: {data}')
+            self.logger.debug(f'Prepared data for session creation: {data}')
             
             response = self.SSM.create_session(data)
             return response
             
         except Exception as e:
-            current_app.logger.error(f"Error in create_workspace: {str(e)}")
+            self.logger.error(f"Error in create_workspace: {str(e)}")
             return {
                 "success": False,
                 "message": f"Error creating workspace: {str(e)}",
@@ -732,7 +744,7 @@ class SessionController:
                 print('No changes detected in workspace.')
         
         except Exception as e:
-            current_app.logger.error(f"Error in update_workspace: {str(e)}")
+            self.logger.error(f"Error in update_workspace: {str(e)}")
             return {
                 "success": False,
                 "message": f"Error updating workspace: {str(e)}",

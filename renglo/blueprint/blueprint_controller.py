@@ -1,31 +1,45 @@
-from flask import redirect,url_for, jsonify, current_app, session, request
 import urllib.parse
 import requests
-import boto3
-from botocore.exceptions import ClientError
 from datetime import datetime
 import uuid
-from decimal import Decimal
+import re
 from renglo.blueprint.blueprint_model import BlueprintModel
 from renglo.auth.auth_controller import AuthController
+from renglo.logger import get_logger
+from renglo.runtime import get_request_args, get_request_json, get_session_value
 
 
 class BlueprintController:
 
-    def __init__(self, config=None, tid=False, ip=False):
+    def __init__(
+        self,
+        config=None,
+        tid=False,
+        ip=False,
+        *,
+        dynamodb_resource=None,
+        region_name=None,
+    ):
         self.config = config or {}
-        self.BPM = BlueprintModel(config=self.config)
+        self.logger = get_logger()
+        self.BPM = BlueprintModel(
+            config=self.config,
+            dynamodb_resource=dynamodb_resource,
+            region_name=region_name,
+        )
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         
 
-    def create_blueprint(self,data):
+    def create_blueprint(self, data, user_handle=None):
 
         data['_id'] = str(uuid.uuid4())
         data['added'] = datetime.now().isoformat()
         # It should only allow the creator's handle. Override
-        data['handle'] = session["current_user"]
+        data['handle'] = user_handle or get_session_value("current_user")
+        if not data['handle']:
+            return {'success': False, 'message': 'Missing current user handle', 'status': 400}
 
-        data['irn'] = 'blueprint:' + data['handle'] +':'+ data['name']
+        data['irn'] = 'irn:blueprint:' + data['handle'] +':'+ data['name']
         if 'version' not in data:
             data['version'] = "1.0.0"
 
@@ -37,8 +51,8 @@ class BlueprintController:
         return self.BPM.get_blueprint(handle,name,v)
 
 
-    def update_blueprint(self,handle,name):
-        data = request.json
+    def update_blueprint(self, handle, name, data=None):
+        data = data if isinstance(data, dict) else get_request_json({})
         data['handle'] = handle
         data['name'] = name
     
@@ -151,50 +165,20 @@ class BlueprintController:
             return {'error':True,'message':'Could not find blueprint_origin:'+ blueprint_origin}
         
 
-    def extract_arguments(self):
-
-        #return BPC.branch_blueprint(handle,name,v)
-        result = {}
-
-        handle = session["current_user"]
-
-        # Get all query parameters
-        args = request.args
-
-        # Deserialize query parameters
-        deserialized_data = {}
-        for key in args.keys():
-            values = args.getlist(key)
-            # If there's only one value, store it as a single value, otherwise store the list
-            if len(values) == 1:
-                deserialized_data[key] = values[0]
-            else:
-                deserialized_data[key] = values
-
-        if 'name' in deserialized_data:
-            name = deserialized_data["name"]
-        else:
-            return jsonify(message="Incomplete data:name")
-        
-        if 'blueprint' in deserialized_data:
-            blueprint = deserialized_data["blueprint"]
-        else:
-            return jsonify(message="Incomplete data:blueprint")
-        
-        if 'version' in deserialized_data:
-            version = deserialized_data["version"]
-        else:
-            return jsonify(message="Incomplete data:version")
-        
-        if 'tags' in deserialized_data:
-            tags = deserialized_data["tags"]
-        else:
-            tags = []
-         
-        result = {'handle':'x','name':'y','blueprint':blueprint,'version':version,'tags':tags}
-        #return result
-        #return handle,name,blueprint,version,tags
-        
+    def extract_arguments(self, query_params=None):
+        data = query_params if isinstance(query_params, dict) else get_request_args()
+        required = ('name', 'blueprint', 'version')
+        for key in required:
+            if key not in data:
+                return {'success': False, 'message': f'Incomplete data:{key}', 'status': 400}
+        return {
+            'success': True,
+            'handle': get_session_value("current_user"),
+            'name': data['name'],
+            'blueprint': data['blueprint'],
+            'version': data['version'],
+            'tags': data.get('tags', []),
+        }
 
 
     def branch_blueprint(self):
@@ -203,33 +187,24 @@ class BlueprintController:
     
 
 
-    def clone_blueprint(self):
+    def clone_blueprint(self, user_handle=None, query_params=None):
 
 
-        handle = session["current_user"]
+        handle = user_handle or get_session_value("current_user")
+        if not handle:
+            return {'error': True, 'message': 'Missing current user handle'}
 
-        # Get all query parameters
-        args = request.args
-
-        # Deserialize query parameters
-        deserialized_data = {}
-        for key in args.keys():
-            values = args.getlist(key)
-            # If there's only one value, store it as a single value, otherwise store the list
-            if len(values) == 1:
-                deserialized_data[key] = values[0]
-            else:
-                deserialized_data[key] = values
+        deserialized_data = query_params if isinstance(query_params, dict) else get_request_args()
 
         if 'name' in deserialized_data:
             name = deserialized_data["name"]
         else:
-            return jsonify(message="Incomplete data:name")
+            return {"error": True, "message": "Incomplete data:name"}
         
         if 'blueprint' in deserialized_data:
             blueprint = deserialized_data["blueprint"]
         else:
-            return jsonify(message="Incomplete data:blueprint")
+            return {"error": True, "message": "Incomplete data:blueprint"}
         
         '''
         if 'version' in deserialized_data:
@@ -244,13 +219,14 @@ class BlueprintController:
             tags = []
 
 
-        current_app.logger.info('Cloning a Blueprint')
+        self.logger.info('Cloning a Blueprint')
         data = self.extract_blueprint_data(blueprint)
 
         data['handle'] = handle
         data['name'] = name
         data['label'] = name
-        data['uri'] = current_app.config['BASE_URL']+"/_blueprint"+"/"+handle+"/"+name+"/"+data['version']
+        base_url = self.config.get('BASE_URL', '')
+        data['uri'] = base_url+"/_blueprint"+"/"+handle+"/"+name+"/"+data['version']
 
        
         #return data
@@ -265,7 +241,7 @@ class BlueprintController:
         #Store it in the Blueprint Table
         data['_id'] = str(uuid.uuid4())
         data['added'] = datetime.now().isoformat()
-        data['irn'] = 'blueprint:' + handle +':'+ name
+        data['irn'] = 'irn:blueprint:' + handle +':'+ name
         if 'version' not in data:
             data['version'] = "1.0.0"
 

@@ -1,6 +1,4 @@
 #auth_controller.py
-from flask import Flask, request, redirect, session, url_for,Blueprint, jsonify
-
 import boto3
 import copy
 import json
@@ -13,6 +11,7 @@ from renglo.auth.auth_model import AuthModel
 import re
 import time
 from validate_email import validate_email
+from renglo.runtime import get_current_jwt_claims
 
 
 class AuthController:
@@ -53,7 +52,7 @@ class AuthController:
             s3_client.put_object(Bucket=bucket_name, Key=file_path, Body=json.dumps(response['document']))
         except Exception as e:
             self.logger.error(f"Failed to upload to S3: {str(e)}")
-            return jsonify({"success": False, "message": "Failed to upload to S3", "status": 500}), 500
+            return {"success": False, "message": "Failed to upload to S3", "status": 500}, 500
         
         return response
         
@@ -84,8 +83,7 @@ class AuthController:
         1. jwt_claims argument (if provided)
         2. _invocation_user_id (set by set_invocation_user for Lambda/Docker)
         3. _invocation_jwt_claims (set from payload)
-        4. Flask request: g.current_user_id (set by API when using cognito_auth_required)
-        5. Optional: flask_cognito current_cognito_jwt (lazy import, when running in Flask app context)
+        4. Runtime adapter claims (if available)
         """
         if jwt_claims is not None:
             uid = self._user_id_from_claims(jwt_claims)
@@ -97,18 +95,10 @@ class AuthController:
             uid = self._user_id_from_claims(self._invocation_jwt_claims)
             if uid is not None:
                 return uid
-        try:
-            from flask import g
-            uid = getattr(g, "current_user_id", None)
-            if uid is not None:
-                return uid
-        except Exception:
-            pass
-        try:
-            from flask_cognito import current_cognito_jwt
-            return self._user_id_from_claims(dict(current_cognito_jwt) if current_cognito_jwt else None)
-        except Exception:
-            pass
+        claims = get_current_jwt_claims()
+        uid = self._user_id_from_claims(claims)
+        if uid is not None:
+            return uid
         return None
 
 

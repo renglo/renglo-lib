@@ -1,16 +1,13 @@
-from flask import redirect,url_for, jsonify, current_app, session, request
-
 import boto3
 from botocore.exceptions import ClientError
-from datetime import datetime
-import uuid
-from decimal import Decimal
+from renglo.logger import get_logger
 
 
 class StateModel:
 
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
+        self.logger = get_logger()
         self.dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Adjust region if needed
         table_name = self.config.get('DYNAMODB_BLUEPRINT_TABLE', 'default_blueprint_table')
         self.state_table = self.dynamodb.Table(table_name)
@@ -20,7 +17,7 @@ class StateModel:
 
         irn = 'irn:state:irma:'+ name
 
-        current_app.logger.debug('Get State '+irn+' v:'+v)
+        self.logger.debug('Get State '+irn+' v:'+v)
         
 
         try:

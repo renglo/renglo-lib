@@ -1,9 +1,8 @@
 """
-Logging utility for renglo-lib that works with or without Flask.
+Logging utility for renglo-lib.
 
-This module provides a logger that automatically detects if Flask's current_app
-is available and uses it, otherwise falls back to Python's standard logging.
-This allows renglo-lib to work in both Flask contexts and standalone (e.g., Lambda handlers).
+The library always uses stdlib logging so importing it does not require Flask.
+Applications can still route logs through their own handlers/formatters.
 """
 
 import logging
@@ -30,12 +29,11 @@ def _get_default_logger():
 
 def get_logger():
     """
-    Get a logger that works with or without Flask.
+    Get a logger that works without framework dependencies.
     
     Returns:
         Logger instance that supports debug(), info(), warning(), error() methods.
-        If Flask's current_app is available, uses current_app.logger.
-        Otherwise, uses Python's standard logging.
+        Uses Python's standard logging.
     
     Usage:
         from renglo.logger import get_logger
@@ -46,14 +44,4 @@ def get_logger():
         logger.warning("Warning message")
         logger.error("Error message")
     """
-    try:
-        # Try to get Flask's current_app
-        from flask import has_request_context, current_app
-        if has_request_context() and hasattr(current_app, 'logger'):
-            return current_app.logger
-    except (ImportError, RuntimeError):
-        # Flask not available or not in request context
-        pass
-    
-    # Fall back to standard logging
     return _get_default_logger()

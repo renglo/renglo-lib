@@ -50,7 +50,7 @@ class GraphEdge:
         )
 
     @property
-    def lsi1sk(self) -> str:
+    def backward_label(self) -> str:
         return GraphModel.make_reverse_sk(
             self.edge_type,
             self.to_node_id,
@@ -100,7 +100,7 @@ class GraphModel:
         *,
         region_name: Optional[str] = None,
         dynamodb_resource: Optional[Any] = None,
-        reverse_index_name: str = "LSI1",
+        reverse_index_name: str = "backward_label",
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config or {}
@@ -121,9 +121,9 @@ class GraphModel:
 
     @staticmethod
     def make_pk(portfolio: str, org: str) -> str:
-        GraphModel._require_safe_key_part("portfolio", portfolio)
-        GraphModel._require_safe_key_part("org", org)
-        return f"{portfolio}#{org}"
+        GraphModel._require_safe_graph_index_part("portfolio", portfolio)
+        GraphModel._require_safe_graph_index_part("org", org)
+        return f"irn:edge:{portfolio}:{org}"
 
     @staticmethod
     def make_node_id(ring: str, node_id: str) -> str:
@@ -140,6 +140,15 @@ class GraphModel:
         return f"{ring}/{node_id}"
 
     @staticmethod
+    def split_node_id(node_id: str) -> Tuple[str, str]:
+        if not isinstance(node_id, str):
+            raise ValueError("node_id must be a string")
+        parts = node_id.split("/", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(f"Invalid node_id format: {node_id!r}")
+        return parts[0], parts[1]
+
+    @staticmethod
     def make_forward_sk(edge_type: str, from_node_id: str, to_node_id: str) -> str:
         GraphModel._require_safe_key_part("edge_type", edge_type)
         GraphModel._require_safe_key_part("from_node_id", from_node_id)
@@ -147,11 +156,21 @@ class GraphModel:
         return f"{edge_type}#{from_node_id}#{to_node_id}"
 
     @staticmethod
-    def make_reverse_sk(edge_type: str, to_node_id: str, from_node_id: str) -> str:
+    def make_reverse_edge_type(edge_type: str) -> str:
         GraphModel._require_safe_key_part("edge_type", edge_type)
+        parts = edge_type.split(":")
+        # Canonical implicit type: <from_blueprint>:<from_field>:<to_blueprint>:<to_field>
+        # Backward wildcard label: <to_blueprint>:<to_field>:*:*
+        if len(parts) != 4:
+            raise ValueError(f"Invalid edge_type format (expected 4 colon-separated parts): {edge_type!r}")
+        return f"{parts[2]}:{parts[3]}:*:*"
+
+    @staticmethod
+    def make_reverse_sk(edge_type: str, to_node_id: str, from_node_id: str) -> str:
+        reverse_edge_type = GraphModel.make_reverse_edge_type(edge_type)
         GraphModel._require_safe_key_part("to_node_id", to_node_id)
         GraphModel._require_safe_key_part("from_node_id", from_node_id)
-        return f"{edge_type}#{to_node_id}#{from_node_id}"
+        return f"{reverse_edge_type}#{to_node_id}#{from_node_id}"
 
     @staticmethod
     def _require_safe_key_part(name: str, value: str) -> None:
@@ -159,6 +178,12 @@ class GraphModel:
             raise ValueError(f"{name} must be a non-empty string")
         if "#" in value:
             raise ValueError(f"{name} cannot contain '#': {value!r}")
+
+    @staticmethod
+    def _require_safe_graph_index_part(name: str, value: str) -> None:
+        GraphModel._require_safe_key_part(name, value)
+        if ":" in value:
+            raise ValueError(f"{name} cannot contain ':': {value!r}")
 
     @staticmethod
     def _now_iso() -> str:
@@ -172,43 +197,53 @@ class GraphModel:
     def _edge_to_item(self, edge: GraphEdge) -> Dict[str, Any]:
         now = self._now_iso()
         item: Dict[str, Any] = {
-            "PK": edge.pk,
-            "SK": edge.sk,
-            "LSI1SK": edge.lsi1sk,
-            "portfolio": edge.portfolio,
-            "org": edge.org,
-            "edge_type": edge.edge_type,
-            "from_node_id": edge.from_node_id,
-            "to_node_id": edge.to_node_id,
+            "graph_index": edge.pk,
+            "forward_label": edge.sk,
+            "backward_label": edge.backward_label,
             "created_at": now,
             "updated_at": now,
         }
         for key, value in edge.properties.items():
-            if key in item or key in {"PK", "SK", "LSI1SK"}:
+            if key in item or key in {"graph_index", "forward_label", "backward_label"}:
                 raise ValueError(f"edge property uses reserved name: {key}")
             item[key] = self._to_dynamo_value(value)
         return item
 
+    @staticmethod
+    def _parse_graph_index(graph_index: str) -> Tuple[str, str]:
+        if not isinstance(graph_index, str) or not graph_index.startswith("irn:edge:"):
+            raise ValueError(f"Invalid graph_index format: {graph_index!r}")
+        parts = graph_index.split(":", 3)
+        if len(parts) != 4:
+            raise ValueError(f"Invalid graph_index format: {graph_index!r}")
+        return parts[2], parts[3]
+
+    @staticmethod
+    def _parse_forward_label(forward_label: str) -> Tuple[str, str, str]:
+        if not isinstance(forward_label, str):
+            raise ValueError(f"Invalid forward_label format: {forward_label!r}")
+        parts = forward_label.split("#", 2)
+        if len(parts) != 3:
+            raise ValueError(f"Invalid forward_label format: {forward_label!r}")
+        return parts[0], parts[1], parts[2]
+
     def _item_to_edge(self, item: Dict[str, Any]) -> GraphEdge:
         reserved = {
-            "PK",
-            "SK",
-            "LSI1SK",
-            "portfolio",
-            "org",
-            "edge_type",
-            "from_node_id",
-            "to_node_id",
+            "graph_index",
+            "forward_label",
+            "backward_label",
             "created_at",
             "updated_at",
         }
         props = {k: v for k, v in item.items() if k not in reserved}
+        portfolio, org = self._parse_graph_index(item["graph_index"])
+        edge_type, from_node_id, to_node_id = self._parse_forward_label(item["forward_label"])
         return GraphEdge(
-            portfolio=item["portfolio"],
-            org=item["org"],
-            edge_type=item["edge_type"],
-            from_node_id=item["from_node_id"],
-            to_node_id=item["to_node_id"],
+            portfolio=portfolio,
+            org=org,
+            edge_type=edge_type,
+            from_node_id=from_node_id,
+            to_node_id=to_node_id,
             properties=props,
         )
 
@@ -240,7 +275,7 @@ class GraphModel:
         Idempotently insert/update an edge.
 
         Calling this multiple times for the same edge creates one edge only because
-        PK+SK is deterministic.
+        graph_index+forward_label is deterministic.
         """
         edge = GraphEdge(
             portfolio=portfolio,
@@ -258,7 +293,7 @@ class GraphModel:
         expr_values: Dict[str, Any] = {}
 
         for key, value in item.items():
-            if key in {"PK", "SK", "created_at"}:
+            if key in {"graph_index", "forward_label", "created_at"}:
                 continue
             name_key = f"#{key}"
             value_key = f":{key}"
@@ -275,7 +310,7 @@ class GraphModel:
         )
 
         self.table.update_item(
-            Key={"PK": edge.pk, "SK": edge.sk},
+            Key={"graph_index": edge.pk, "forward_label": edge.sk},
             UpdateExpression=update_expression,
             ExpressionAttributeNames=expr_names,
             ExpressionAttributeValues=expr_values,
@@ -298,7 +333,7 @@ class GraphModel:
         pk = self.make_pk(portfolio, org)
         sk = self.make_forward_sk(edge_type, from_node_id, to_node_id)
         response = self.table.delete_item(
-            Key={"PK": pk, "SK": sk},
+            Key={"graph_index": pk, "forward_label": sk},
             ReturnValues="ALL_OLD",
         )
         return "Attributes" in response
@@ -313,7 +348,7 @@ class GraphModel:
     ) -> Optional[GraphEdge]:
         pk = self.make_pk(portfolio, org)
         sk = self.make_forward_sk(edge_type, from_node_id, to_node_id)
-        response = self.table.get_item(Key={"PK": pk, "SK": sk})
+        response = self.table.get_item(Key={"graph_index": pk, "forward_label": sk})
         item = response.get("Item")
         return self._item_to_edge(item) if item else None
 
@@ -368,11 +403,58 @@ class GraphModel:
         limit: int = 100,
         exclusive_start_key: Optional[Dict[str, Any]] = None,
     ) -> PageResult:
-        """Find all edges of one type pointing into a node using the reverse LSI."""
+        """
+        Find all edges of one type pointing into a node using the reverse LSI.
+
+        Since backward_label uses wildcard source slots, query by destination node
+        prefix and filter by exact edge_type.
+        """
+        reverse_edge_type = self.make_reverse_edge_type(edge_type)
+        begins_with_value = f"{reverse_edge_type}#{to_node_id}#"
+        matched: List[GraphEdge] = []
+        cursor = exclusive_start_key
+        last_key: Optional[Dict[str, Any]] = None
+
+        while len(matched) < limit:
+            page = self._query_reverse(
+                portfolio,
+                org,
+                begins_with_value=begins_with_value,
+                limit=limit,
+                exclusive_start_key=cursor,
+            )
+            for edge in page.items:
+                if edge.edge_type == edge_type and edge.to_node_id == to_node_id:
+                    matched.append(edge)
+                    if len(matched) >= limit:
+                        break
+            last_key = page.last_evaluated_key
+            if not last_key or len(matched) >= limit:
+                break
+            cursor = last_key
+
+        return PageResult(items=matched, last_evaluated_key=last_key)
+
+    def list_incoming_edges_any_type(
+        self,
+        portfolio: str,
+        org: str,
+        to_node_id: str,
+        *,
+        limit: int = 100,
+        exclusive_start_key: Optional[Dict[str, Any]] = None,
+    ) -> PageResult:
+        """
+        Discovery fallback: find incoming edges for one node without known edge types.
+
+        Uses wildcard backward_label prefix by exact destination node id.
+        """
+        to_ring, _ = self.split_node_id(to_node_id)
+        begins_with_value = f"{to_ring}:_id:*:*#{to_node_id}#"
         return self._query_reverse(
             portfolio,
             org,
-            begins_with_value=f"{edge_type}#{to_node_id}#",
+            begins_with_value=begins_with_value,
             limit=limit,
             exclusive_start_key=exclusive_start_key,
         )
@@ -398,12 +480,14 @@ class GraphModel:
         limit: int,
         exclusive_start_key: Optional[Dict[str, Any]],
     ) -> PageResult:
-        response = self.table.query(
-            KeyConditionExpression=Key("PK").eq(self.make_pk(portfolio, org))
-            & Key("SK").begins_with(begins_with_value),
-            Limit=limit,
-            ExclusiveStartKey=exclusive_start_key or None,
-        )
+        query_kwargs = {
+            "KeyConditionExpression": Key("graph_index").eq(self.make_pk(portfolio, org))
+            & Key("forward_label").begins_with(begins_with_value),
+            "Limit": limit,
+        }
+        if exclusive_start_key:
+            query_kwargs["ExclusiveStartKey"] = exclusive_start_key
+        response = self.table.query(**query_kwargs)
         return PageResult(
             items=[self._item_to_edge(item) for item in response.get("Items", [])],
             last_evaluated_key=response.get("LastEvaluatedKey"),
@@ -418,13 +502,15 @@ class GraphModel:
         limit: int,
         exclusive_start_key: Optional[Dict[str, Any]],
     ) -> PageResult:
-        response = self.table.query(
-            IndexName=self.reverse_index_name,
-            KeyConditionExpression=Key("PK").eq(self.make_pk(portfolio, org))
-            & Key("LSI1SK").begins_with(begins_with_value),
-            Limit=limit,
-            ExclusiveStartKey=exclusive_start_key or None,
-        )
+        query_kwargs = {
+            "IndexName": self.reverse_index_name,
+            "KeyConditionExpression": Key("graph_index").eq(self.make_pk(portfolio, org))
+            & Key("backward_label").begins_with(begins_with_value),
+            "Limit": limit,
+        }
+        if exclusive_start_key:
+            query_kwargs["ExclusiveStartKey"] = exclusive_start_key
+        response = self.table.query(**query_kwargs)
         return PageResult(
             items=[self._item_to_edge(item) for item in response.get("Items", [])],
             last_evaluated_key=response.get("LastEvaluatedKey"),
@@ -676,7 +762,7 @@ class GraphModel:
         count = 0
         with self.table.batch_writer() as batch:
             for edge in edges:
-                batch.delete_item(Key={"PK": edge.pk, "SK": edge.sk})
+                batch.delete_item(Key={"graph_index": edge.pk, "forward_label": edge.sk})
                 count += 1
         return count
 
