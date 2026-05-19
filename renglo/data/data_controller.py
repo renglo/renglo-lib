@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
-from renglo.search.search_index_service import SearchIndexService
+from renglo.search.search_controller import SearchController
 from renglo.graph.graph_controller import GraphController
 from renglo.logger import get_logger
 from renglo.logger import get_logger
@@ -193,7 +193,7 @@ class DataController:
         self.DAM = DataModel(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
-        self.search_index = SearchIndexService(config=self.config)
+        self.search_controller = SearchController(config=self.config)
         self.graph_db_enabled = self.config.get('GRAPH_DB_ENABLED', True)
         if not isinstance(self.graph_db_enabled, bool):
             raise ValueError("GRAPH_DB_ENABLED must be a boolean (True/False)")
@@ -260,8 +260,8 @@ class DataController:
             # Convert Decimal to int if it's a whole number, otherwise float
             return int(obj) if obj % 1 == 0 else float(obj)
         elif isinstance(obj, float):
-            # Convert float to string
-            return str(obj)
+            # Keep as Decimal for DynamoDB numeric compatibility
+            return Decimal(str(obj))
         elif isinstance(obj, int):
             # Keep integers as is
             return obj
@@ -446,7 +446,7 @@ class DataController:
 
             #Verify submitted field exists in the blueprint
             new_raw = ''
-            if payload.get(field['name']):  
+            if field['name'] in payload:
                 new_raw = payload.get(field['name'])
                 self.logger.debug('Using: '+str(field['name'])+':'+str(new_raw))        
             else:
@@ -514,6 +514,21 @@ class DataController:
                     item_values[field['name']] = str(new_raw).strip()
                 else:
                     item_values[field['name']] = ''
+            
+            elif field['type'] in ('number', 'integer', 'float'):
+                if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
+                    item_values[field['name']] = None
+                else:
+                    try:
+                        raw_str = str(new_raw).strip()
+                        if field['type'] == 'integer':
+                            item_values[field['name']] = int(float(raw_str))
+                        elif field['type'] == 'float':
+                            item_values[field['name']] = Decimal(raw_str)
+                        else:
+                            item_values[field['name']] = Decimal(raw_str) if '.' in raw_str else int(raw_str)
+                    except Exception:
+                        item_values[field['name']] = None
                 
             else:
                 if new_raw:
@@ -701,6 +716,26 @@ class DataController:
                             print(f'Error type: {type(e).__name__}')
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
+                
+                elif field['type'] in ('number', 'integer', 'float'):
+                    if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
+                        if field.get('required'):
+                            self.logger.debug('Attribute is required:'+field['name'])
+                            return {'error':'Attribute is required'}
+                        updated_item['attributes'][field['name']] = None
+                        putNeeded = True
+                    else:
+                        try:
+                            raw_str = str(new_raw).strip()
+                            if field['type'] == 'integer':
+                                updated_item['attributes'][field['name']] = int(float(raw_str))
+                            elif field['type'] == 'float':
+                                updated_item['attributes'][field['name']] = Decimal(raw_str)
+                            else:
+                                updated_item['attributes'][field['name']] = Decimal(raw_str) if '.' in raw_str else int(raw_str)
+                            putNeeded = True
+                        except Exception:
+                            return {'error':'Invalid number format'}
                 
                 else:
                     
@@ -1092,7 +1127,7 @@ class DataController:
                 result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+item['_id'])
                 result['item'] = item
                 status = 200
-                self.search_index.index_document(portfolio, org, ring, item)
+                self.search_controller.index_document(portfolio, org, ring, item)
                 result['graph'] = self._run_graph_operation(
                     'sync_document_graph_edges (POST)',
                     lambda: self.GRC.sync_document_graph_edges(
@@ -1208,7 +1243,7 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
-            self.search_index.index_document(portfolio, org, ring, item)
+            self.search_controller.index_document(portfolio, org, ring, item)
             result['graph'] = self._run_graph_operation(
                 'sync_document_graph_edges (PUT)',
                 lambda: self.GRC.sync_document_graph_edges(
@@ -1253,7 +1288,7 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
-            self.search_index.delete_document(portfolio, org, ring, idx)
+            self.search_controller.delete_document(portfolio, org, ring, idx)
             result['graph'] = self._run_graph_operation(
                 'remove_document_graph_edges (DELETE)',
                 lambda: self.GRC.remove_document_graph_edges(
