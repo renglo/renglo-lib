@@ -1,6 +1,7 @@
 import json
 import re
 import unicodedata
+import boto3
 from urllib.parse import quote
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -48,6 +49,9 @@ class SearchController:
         self.logger = get_logger()
         self.model: Optional[SearchModel] = None
         self.index_service: Optional[SearchIndexService] = None
+        self.dynamodb_resource = dynamodb_resource
+        self.region_name = region_name
+        self._ring_data_table = None
         self.enabled = bool(self.config.get("DYNAMODB_SEARCH_TABLE"))
         if self.enabled:
             self.model = SearchModel(
@@ -193,11 +197,8 @@ class SearchController:
         rings: Optional[List[str]],
         filters: Optional[Dict[str, Any]],
     ) -> List[str]:
-        explicit = rings or datatypes
-        if explicit:
-            return [str(v).strip() for v in explicit if str(v).strip()]
         if isinstance(filters, dict):
-            ring_filter = filters.get("rings") or filters.get("datatypes") or filters.get("ring")
+            ring_filter = filters.get("rings")
             if isinstance(ring_filter, list):
                 return [str(v).strip() for v in ring_filter if str(v).strip()]
             if isinstance(ring_filter, str) and ring_filter.strip():
@@ -206,6 +207,80 @@ class SearchController:
         if isinstance(config_defaults, list):
             return [str(v).strip() for v in config_defaults if str(v).strip()]
         return []
+
+    def _get_ring_data_table(self):
+        if self._ring_data_table is not None:
+            return self._ring_data_table
+        table_name = self.config.get("DYNAMODB_RINGDATA_TABLE")
+        if not table_name:
+            return None
+        dynamodb = self.dynamodb_resource or boto3.resource(
+            "dynamodb",
+            region_name=self.region_name or self.config.get("AWS_REGION", "us-east-1"),
+        )
+        self._ring_data_table = dynamodb.Table(table_name)
+        return self._ring_data_table
+
+    def _resolve_documents_for_hits(
+        self,
+        portfolio: str,
+        org: str,
+        hits: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not hits:
+            return hits
+
+        table = self._get_ring_data_table()
+        if table is None:
+            self.logger.warning("Search resolve requested but DYNAMODB_RINGDATA_TABLE is not configured")
+            return hits
+
+        keys = []
+        key_to_hits: Dict[str, List[int]] = {}
+        for index, hit in enumerate(hits):
+            ring = str(hit.get("ring", "")).strip()
+            doc_id = str(hit.get("doc_id", "")).strip()
+            if not ring or not doc_id:
+                continue
+            doc_index = f"{org}:{ring}:{doc_id}"
+            key = f"{portfolio}|{doc_index}"
+            if key not in key_to_hits:
+                keys.append({"portfolio_index": f"irn:data:{portfolio}", "doc_index": doc_index})
+                key_to_hits[key] = []
+            key_to_hits[key].append(index)
+
+        if not keys:
+            return hits
+
+        client = table.meta.client
+        table_name = table.name
+        resolved_map: Dict[str, Dict[str, Any]] = {}
+
+        for start in range(0, len(keys), 100):
+            pending_keys = keys[start : start + 100]
+            while pending_keys:
+                response = client.batch_get_item(RequestItems={table_name: {"Keys": pending_keys}})
+                for item in response.get("Responses", {}).get(table_name, []):
+                    doc_index = str(item.get("doc_index", ""))
+                    key = f"{portfolio}|{doc_index}"
+                    resolved_map[key] = {
+                        "_id": item.get("_id"),
+                        "_modified": item.get("modified", ""),
+                        "_index": item.get("path_index", ""),
+                        "attributes": item.get("attributes", {}),
+                        "blueprint": item.get("blueprint"),
+                        "ring": doc_index.split(":")[1] if ":" in doc_index else None,
+                    }
+                pending_keys = response.get("UnprocessedKeys", {}).get(table_name, {}).get("Keys", [])
+
+        resolved_hits: List[Dict[str, Any]] = []
+        for hit in hits:
+            ring = str(hit.get("ring", "")).strip()
+            doc_id = str(hit.get("doc_id", "")).strip()
+            doc_index = f"{org}:{ring}:{doc_id}"
+            key = f"{portfolio}|{doc_index}"
+            resolved_hits.append({**hit, "document": resolved_map.get(key)})
+        return resolved_hits
 
     def _row_score(self, row: Dict[str, Any], token: str, boost_fields: Optional[Dict[str, float]]) -> float:
         field = str(row.get("field", ""))
@@ -328,13 +403,14 @@ class SearchController:
         search_fields: Optional[List[str]] = None,
         boost_fields: Optional[Dict[str, float]] = None,
         rings: Optional[List[str]] = None,
+        resolve_matches: bool = False,
     ) -> Dict[str, Any]:
         if not self.is_enabled():
             return {"success": False, "message": "Search is not configured", "items": [], "total": 0}
         if not portfolio or not org:
             return {"success": False, "message": "portfolio and org are required", "items": [], "total": 0}
         if not isinstance(query, str) or not query.strip():
-            return {"success": True, "items": [], "results": [], "total": 0, "query": query}
+            return {"success": True, "items": [], "total": 0, "query": query}
 
         query_tokens = self._tokenize_text(query)
         query_tokens = [t for t in query_tokens if t not in self.DEFAULT_STOPWORDS and len(t) >= 2]
@@ -344,13 +420,13 @@ class SearchController:
             candidate_tokens.append(exact_query_token)
 
         if not candidate_tokens:
-            return {"success": True, "items": [], "results": [], "total": 0, "query": query}
+            return {"success": True, "items": [], "total": 0, "query": query}
 
         target_rings = self._resolve_target_rings(datatypes, rings, filters)
         if not target_rings:
             return {
                 "success": False,
-                "message": "No target rings provided. Use datatypes/rings or configure SEARCH_DEFAULT_RINGS.",
+                "message": "No target rings provided. Use filters.rings or configure SEARCH_DEFAULT_RINGS.",
                 "items": [],
                 "total": 0,
             }
@@ -414,6 +490,8 @@ class SearchController:
         ranked.sort(key=lambda h: (-float(h["score"]), str(h["doc_id"])))
         total = len(ranked)
         paged = ranked[offset : offset + max(1, min(limit, 100))]
+        if resolve_matches:
+            paged = self._resolve_documents_for_hits(portfolio, org, paged)
 
         return {
             "success": True,
@@ -424,6 +502,6 @@ class SearchController:
             "total": total,
             "offset": offset,
             "limit": limit,
+            "resolved": resolve_matches,
             "items": paged,
-            "results": paged,
         }

@@ -459,6 +459,127 @@ class GraphController:
             next_frontier=frontier if return_frontier_on_stop else None,
         )
 
+    def traverse_dynamic_backward(
+        self,
+        portfolio: str,
+        org: str,
+        start_node_id: str,
+        *,
+        max_depth: int = 3,
+        per_query_limit: int = 100,
+        max_nodes: int = 1_000,
+        max_edges: int = 5_000,
+        max_neighbors_per_node: int = 100,
+        timeout_seconds: float = 10.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        include_duplicate_steps: bool = True,
+        return_frontier_on_stop: bool = False,
+    ) -> TraversalResult:
+        """
+        Backward traversal that discovers incoming edges per node.
+
+        Incoming edge types are declared on source blueprints, not the current
+        node's blueprint, so each hop uses incoming-edge discovery rather than a
+        fixed edge_types list from the start node.
+        """
+        if max_depth < 0:
+            raise ValueError("max_depth must be >= 0")
+
+        started_at = self.clock()
+        visited_nodes: Set[str] = {start_node_id}
+        visited_edges: Set[str] = set()
+        duplicate_visits: Dict[str, int] = {}
+        cycles_detected: List[List[str]] = []
+        steps: List[TraversalStep] = []
+        frontier: List[Tuple[str, int, List[str]]] = [(start_node_id, 0, [start_node_id])]
+        stopped_reason: Optional[str] = None
+
+        def check_cancel_or_timeout() -> None:
+            if cancel_check and cancel_check():
+                raise GraphQueryCancelled("Traversal cancelled")
+            if timeout_seconds is not None and self.clock() - started_at > timeout_seconds:
+                raise GraphQueryTimeout(f"Traversal exceeded {timeout_seconds} seconds")
+
+        while frontier:
+            check_cancel_or_timeout()
+            current_node_id, depth, path = frontier.pop(0)
+            if depth >= max_depth:
+                continue
+
+            neighbors_seen_for_node = 0
+            page_key = None
+            while True:
+                check_cancel_or_timeout()
+                page = self.list_incoming_edges_any_type(
+                    portfolio,
+                    org,
+                    current_node_id,
+                    limit=per_query_limit,
+                    exclusive_start_key=page_key,
+                )
+                for edge in page.items:
+                    check_cancel_or_timeout()
+                    edge_id = edge.sk
+                    if edge_id in visited_edges:
+                        continue
+                    visited_edges.add(edge_id)
+                    next_node_id = edge.from_node_id
+                    next_path = path + [next_node_id]
+
+                    cycle_detected = next_node_id in path
+                    duplicate_visit = next_node_id in visited_nodes
+                    if cycle_detected:
+                        cycles_detected.append(next_path)
+                    if duplicate_visit:
+                        duplicate_visits[next_node_id] = duplicate_visits.get(next_node_id, 0) + 1
+
+                    if include_duplicate_steps or not duplicate_visit:
+                        steps.append(
+                            TraversalStep(
+                                depth=depth + 1,
+                                edge=edge,
+                                path=next_path,
+                                duplicate_visit=duplicate_visit,
+                                cycle_detected=cycle_detected,
+                            )
+                        )
+
+                    if not duplicate_visit and not cycle_detected:
+                        visited_nodes.add(next_node_id)
+                        frontier.append((next_node_id, depth + 1, next_path))
+
+                    neighbors_seen_for_node += 1
+                    if len(visited_nodes) > max_nodes:
+                        stopped_reason = "max_nodes_exceeded"
+                        raise GraphTraversalBudgetExceeded(stopped_reason)
+                    if len(visited_edges) > max_edges:
+                        stopped_reason = "max_edges_exceeded"
+                        raise GraphTraversalBudgetExceeded(stopped_reason)
+                    if neighbors_seen_for_node >= max_neighbors_per_node:
+                        stopped_reason = "max_neighbors_per_node_reached"
+                        break
+
+                if stopped_reason == "max_neighbors_per_node_reached":
+                    break
+                page_key = page.last_evaluated_key
+                if not page_key:
+                    break
+
+            if stopped_reason == "max_neighbors_per_node_reached":
+                break
+
+        return TraversalResult(
+            start_node_id=start_node_id,
+            direction="backward",
+            visited_nodes=visited_nodes,
+            visited_edges=visited_edges,
+            steps=steps,
+            cycles_detected=cycles_detected,
+            duplicate_visits=duplicate_visits,
+            stopped_reason=stopped_reason,
+            next_frontier=frontier if return_frontier_on_stop else None,
+        )
+
     # -----------------------------------------------------------------
     # Graph integration helpers
     # -----------------------------------------------------------------
