@@ -310,6 +310,13 @@ class AgentUtilities:
                 doc = {'_out': self.sanitize(out_val), '_type': message_type, '_interface': interface or 'option', '_next': next}
                 self.update_chat_message_document(doc)
                 self.print_chat(doc, message_type, as_is=True)
+
+            elif msg_type == 'system' and output.get('content'):
+                print('Saving system instruction to message roll')
+                # Internal routing instruction for upstream agents. Persist only (no user broadcast).
+                message_type = 'system'
+                doc = {'_out': self.sanitize(output), '_type': message_type, '_next': next}
+                self.update_chat_message_document(doc)
                  
                 
             elif output.get('tool_calls') and output.get('role') == 'assistant':
