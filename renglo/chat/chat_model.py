@@ -1,12 +1,11 @@
 # chat_model.py
 
-from flask import redirect,url_for, jsonify, current_app, session
-
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import BotoCoreError, ClientError
 from decimal import Decimal
 import json
+from renglo.logger import get_logger
 
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -26,6 +25,7 @@ class ChatModel:
             ip: IP address (optional)
         """
         self.config = config or {}
+        self.logger = get_logger()
         
         self.dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Adjust region if needed
         
@@ -171,7 +171,7 @@ class ChatModel:
         
         result = {}
         
-        current_app.logger.debug(f'get_chat: {index} > {message_id}')
+        self.logger.debug(f'get_chat: {index} > {message_id}')
         
         try:
             # Build the query parameters with KeyConditionExpression
@@ -185,7 +185,7 @@ class ChatModel:
             
 
 
-            current_app.logger.debug(f'Query parameters: {query_params}')
+            self.logger.debug(f'Query parameters: {query_params}')
 
             # Query DynamoDB to get the specific item
             response = self.chat_table.query(**query_params)
@@ -196,7 +196,7 @@ class ChatModel:
             #current_app.logger.debug(f'Extracted items: {items}')
             
             if not items:
-                current_app.logger.debug(f'No items found for index: {index} and message_id: {message_id}')
+                self.logger.debug(f'No items found for index: {index} and message_id: {message_id}')
                 result['success'] = False
                 result['message'] = 'Item not found'
                 return result
@@ -210,7 +210,7 @@ class ChatModel:
             return result
 
         except Exception as e:
-            current_app.logger.error(f"Error in get_chat: {str(e)}")
+            self.logger.error(f"Error in get_chat: {str(e)}")
             result['success'] = False
             result['message'] = 'Item could not be retrieved'
             result['error'] = str(e)
@@ -226,7 +226,7 @@ class ChatModel:
             # Sanitize data before storing
             sanitized_data = self.sanitize(data)
             response = self.chat_table.put_item(Item=sanitized_data)
-            current_app.logger.debug('MODEL: Created chat successfully:'+str(sanitized_data))
+            self.logger.debug('MODEL: Created chat successfully:'+str(sanitized_data))
             return {
                 "success":True, 
                 "message": "Chat created", 
@@ -277,7 +277,7 @@ class ChatModel:
 
         try:
             response = self.chat_table.delete_item(Key=keys)
-            current_app.logger.debug('MODEL: Deleted Chat:' + str(data))
+            self.logger.debug('MODEL: Deleted Chat:' + str(data))
             return {
                 "success":True,
                 "message": "Entity deleted", 

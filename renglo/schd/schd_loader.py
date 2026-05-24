@@ -74,15 +74,6 @@ class SchdLoader:
             # Instantiate the class
             # Check if it needs config (convention: handlers ending in 'onboardings' need config)
             if 'onboarding' in module_name.lower():
-                # Pass config to handlers that need it
-                # Try to get config from Flask if available, otherwise use empty dict
-                config = {}
-                try:
-                    from flask import has_request_context, current_app
-                    if has_request_context() and hasattr(current_app, 'renglo_config'):
-                        config = current_app.renglo_config
-                except (ImportError, RuntimeError):
-                    pass
                 print(f'Creating instance with config')
                 instance = class_()
             else:

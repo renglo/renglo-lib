@@ -4,7 +4,6 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 from datetime import datetime
-from flask import current_app, jsonify
 from renglo.auth.auth_controller import AuthController
 from renglo.blueprint.blueprint_controller import BlueprintController
 
@@ -48,7 +47,7 @@ class DataModel:
         portfolio_index = f'irn:data:{portfolio}'  # This will be used as the partition key (PK)
         
         # Sort key (SK) prefix for querying documents based on org, ring, and a generated prefix
-        prefix_doc_index = f'{org}:{ring}'  # This is the prefix we will use in begins_with for SK
+        prefix_doc_index = f'{org}:{ring}:'  # This is the prefix we will use in begins_with for SK
         
         #print('portfolio_index:',portfolio_index)
         #print('prefix_doc_index:',prefix_doc_index)

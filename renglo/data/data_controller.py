@@ -6,11 +6,12 @@ import re
 import json, collections
 import boto3
 from decimal import Decimal
+from botocore.exceptions import ClientError
 
 from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
-from renglo.search.search_index_service import SearchIndexService
+from renglo.search.search_controller import SearchController
 from renglo.graph.graph_controller import GraphController
 from renglo.logger import get_logger
 from renglo.logger import get_logger
@@ -166,15 +167,38 @@ def convert_js_to_json_simple(js_string):
 
 class DataController:
 
+    def _run_graph_operation(self, op_name, operation):
+        if not self.graph_db_enabled:
+            return {'success': True, 'skipped': True, 'reason': 'Graph DB disabled by GRAPH_DB_ENABLED'}
+        if not self.GRC:
+            return {'success': True, 'skipped': True, 'reason': 'Graph controller not configured'}
+
+        try:
+            return operation()
+        except ClientError as exc:
+            error_code = exc.response.get('Error', {}).get('Code')
+            if error_code == 'ResourceNotFoundException':
+                self.logger.warning(f"Graph operation '{op_name}' skipped: graph table not found. {str(exc)}")
+                return {'success': True, 'skipped': True, 'reason': 'Graph table not found', 'error': str(exc)}
+
+            self.logger.error(f"Graph operation '{op_name}' failed with ClientError: {str(exc)}")
+            return {'success': False, 'skipped': True, 'reason': 'Graph operation failed', 'error': str(exc)}
+        except Exception as exc:
+            self.logger.error(f"Graph operation '{op_name}' failed: {str(exc)}")
+            return {'success': False, 'skipped': True, 'reason': 'Graph operation failed', 'error': str(exc)}
+
     def __init__(self, config=None, tid=None, ip=None):
         self.config = config or {}
         self.logger = get_logger()
         self.DAM = DataModel(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
-        self.search_index = SearchIndexService(config=self.config)
+        self.search_controller = SearchController(config=self.config)
+        self.graph_db_enabled = self.config.get('GRAPH_DB_ENABLED', True)
+        if not isinstance(self.graph_db_enabled, bool):
+            raise ValueError("GRAPH_DB_ENABLED must be a boolean (True/False)")
         self.GRC = None
-        if self.config.get('DYNAMODB_GRAPH_TABLE'):
+        if self.graph_db_enabled and self.config.get('DYNAMODB_GRAPH_TABLE'):
             self.GRC = GraphController(config=self.config)
         
             
@@ -236,8 +260,8 @@ class DataController:
             # Convert Decimal to int if it's a whole number, otherwise float
             return int(obj) if obj % 1 == 0 else float(obj)
         elif isinstance(obj, float):
-            # Convert float to string
-            return str(obj)
+            # Keep as Decimal for DynamoDB numeric compatibility
+            return Decimal(str(obj))
         elif isinstance(obj, int):
             # Keep integers as is
             return obj
@@ -422,7 +446,7 @@ class DataController:
 
             #Verify submitted field exists in the blueprint
             new_raw = ''
-            if payload.get(field['name']):  
+            if field['name'] in payload:
                 new_raw = payload.get(field['name'])
                 self.logger.debug('Using: '+str(field['name'])+':'+str(new_raw))        
             else:
@@ -490,6 +514,21 @@ class DataController:
                     item_values[field['name']] = str(new_raw).strip()
                 else:
                     item_values[field['name']] = ''
+            
+            elif field['type'] in ('number', 'integer', 'float'):
+                if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
+                    item_values[field['name']] = None
+                else:
+                    try:
+                        raw_str = str(new_raw).strip()
+                        if field['type'] == 'integer':
+                            item_values[field['name']] = int(float(raw_str))
+                        elif field['type'] == 'float':
+                            item_values[field['name']] = Decimal(raw_str)
+                        else:
+                            item_values[field['name']] = Decimal(raw_str) if '.' in raw_str else int(raw_str)
+                    except Exception:
+                        item_values[field['name']] = None
                 
             else:
                 if new_raw:
@@ -593,7 +632,7 @@ class DataController:
 
         for field in fields:
             self.logger.debug('>>:'+field['name']) 
-            if payload.get(field['name']): 
+            if field['name'] in payload:
                 self.logger.debug('Found:'+field['name']) 
                 # Attribute exists in the blueprint
                 new_raw = payload.get(field['name'])
@@ -678,6 +717,26 @@ class DataController:
                             updated_item['attributes'][field['name']] = str(new_raw).strip()
                             putNeeded = True
                 
+                elif field['type'] in ('number', 'integer', 'float'):
+                    if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
+                        if field.get('required'):
+                            self.logger.debug('Attribute is required:'+field['name'])
+                            return {'error':'Attribute is required'}
+                        updated_item['attributes'][field['name']] = None
+                        putNeeded = True
+                    else:
+                        try:
+                            raw_str = str(new_raw).strip()
+                            if field['type'] == 'integer':
+                                updated_item['attributes'][field['name']] = int(float(raw_str))
+                            elif field['type'] == 'float':
+                                updated_item['attributes'][field['name']] = Decimal(raw_str)
+                            else:
+                                updated_item['attributes'][field['name']] = Decimal(raw_str) if '.' in raw_str else int(raw_str)
+                            putNeeded = True
+                        except Exception:
+                            return {'error':'Invalid number format'}
+                
                 else:
                     
                     '''
@@ -693,7 +752,7 @@ class DataController:
 
                     '''
 
-                    if len(str(new_raw)) > 0 or (len(str(new_raw)) and field['required']):
+                    if len(str(new_raw)) > 0:
 
                         self.logger.debug('Field OK:'+field['name']) 
                         #Attribute complies with "Required" prerequisite
@@ -705,8 +764,12 @@ class DataController:
                         #break
 
                     else:
-                        self.logger.debug('Attribute is required:'+field['name']) 
-                        return {'error':'Attribute is required'}
+                        if field.get('required'):
+                            self.logger.debug('Attribute is required:'+field['name']) 
+                            return {'error':'Attribute is required'}
+                        # Allow clearing non-required scalar fields.
+                        updated_item['attributes'][field['name']] = ''
+                        putNeeded = True
                   
         if not putNeeded:
             return {'error':'Attributes not recognized'}
@@ -1064,17 +1127,17 @@ class DataController:
                 result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+item['_id'])
                 result['item'] = item
                 status = 200
-                self.search_index.index_document(portfolio, org, ring, item)
-                if self.GRC:
-                    result['graph'] = self.GRC.sync_document_graph_edges(
+                self.search_controller.index_document(portfolio, org, ring, item)
+                result['graph'] = self._run_graph_operation(
+                    'sync_document_graph_edges (POST)',
+                    lambda: self.GRC.sync_document_graph_edges(
                         portfolio,
                         org,
                         ring,
                         item['_id'],
                         item.get('attributes', {}),
-                    )
-                else:
-                    result['graph'] = {'success': True, 'skipped': True, 'reason': 'Graph controller not configured'}
+                    ),
+                )
 
             else:
                 result['success'] = False
@@ -1180,17 +1243,17 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
-            self.search_index.index_document(portfolio, org, ring, item)
-            if self.GRC:
-                result['graph'] = self.GRC.sync_document_graph_edges(
+            self.search_controller.index_document(portfolio, org, ring, item)
+            result['graph'] = self._run_graph_operation(
+                'sync_document_graph_edges (PUT)',
+                lambda: self.GRC.sync_document_graph_edges(
                     portfolio,
                     org,
                     ring,
                     idx,
                     item.get('attributes', {}),
-                )
-            else:
-                result['graph'] = {'success': True, 'skipped': True, 'reason': 'Graph controller not configured'}
+                ),
+            )
 
             return result, status
 
@@ -1225,17 +1288,17 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
-            self.search_index.delete_document(portfolio, org, ring, idx)
-            if self.GRC:
-                result['graph'] = self.GRC.remove_document_graph_edges(
+            self.search_controller.delete_document(portfolio, org, ring, idx)
+            result['graph'] = self._run_graph_operation(
+                'remove_document_graph_edges (DELETE)',
+                lambda: self.GRC.remove_document_graph_edges(
                     portfolio,
                     org,
                     ring,
                     idx,
                     graph_attrs,
-                )
-            else:
-                result['graph'] = {'success': True, 'skipped': True, 'reason': 'Graph controller not configured'}
+                ),
+            )
 
             return result, status
 

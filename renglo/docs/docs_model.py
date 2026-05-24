@@ -1,13 +1,13 @@
-from flask import  jsonify, current_app, make_response
-
 import boto3
 import uuid
 from datetime import datetime
+from renglo.logger import get_logger
 
 class DocsModel:
 
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
+        self.logger = get_logger()
         self.valid_types = {
             'image/jpeg':'jpg', 
             'image/png':'png', 
@@ -19,12 +19,18 @@ class DocsModel:
         }
  
     
+    def _bucket_name(self):
+        bucket_name = self.config.get('S3_BUCKET_NAME')
+        if not bucket_name:
+            raise ValueError("S3_BUCKET_NAME configuration is required")
+        return bucket_name
+
     def a_b_post(self,portfolio, org, ring, raw_doc, type, name):
         if not name:
             name = str(uuid.uuid4())
 
         s3_client = boto3.client('s3')
-        bucket_name = current_app.config['S3_BUCKET_NAME']
+        bucket_name = self._bucket_name()
         filename = f'{name}.{self.valid_types[type]}'
         file_path = f'_docs/{portfolio}/{org}/{ring}/{filename}'
 
@@ -49,7 +55,7 @@ class DocsModel:
                 return {'success': True, 'path': file_path, 'id': name}
             return {'success': False}
         except Exception as e:
-            current_app.logger.error(f"Error uploading file {file_path}: {str(e)}")
+            self.logger.error(f"Error uploading file {file_path}: {str(e)}")
             return {'success': False}
     
     
@@ -58,7 +64,7 @@ class DocsModel:
         file_path = f'_docs/{portfolio}/{org}/{ring}/{filename}'
     
         s3_client = boto3.client('s3')
-        bucket_name = current_app.config['S3_BUCKET_NAME']  
+        bucket_name = self._bucket_name()
         
         # Define a mapping of file extensions to content types
         content_type_mapping = {
@@ -82,20 +88,15 @@ class DocsModel:
                 file_extension = filename.split('.')[-1].lower()  # Get the file extension
                 content_type = content_type_mapping.get(file_extension, 'application/octet-stream')  # Default to application/octet-stream if not found
             
-            current_app.logger.info(f"Content Type: {content_type}")
+            self.logger.info(f"Content Type: {content_type}")
             content = document['Body'].read()  # Read the content as binary
-            
-            # Create a response object
-            response = make_response(content)
-            response.headers.set('Content-Type', content_type)  # Set the correct content type
-            
-            return {'success': True, 'content': response}  # Return success and content
+            return {'success': True, 'content': content, 'content_type': content_type}
         
         except s3_client.exceptions.NoSuchKey:
             #current_app.logger.error(f"File not found: {file_path}")
             return {'success': False, 'error': 'File not found'}  # Return error object
         except Exception as e:
-            current_app.logger.error(f"Error retrieving file: {str(e)}")
+            self.logger.error(f"Error retrieving file: {str(e)}")
             return {'success': False, 'error': 'Error retrieving file'}  # Return error object
         
         
@@ -108,7 +109,7 @@ class DocsModel:
         object_id = str(uuid.uuid4())
 
         s3_client = boto3.client('s3')
-        bucket_name = current_app.config['S3_BUCKET_NAME']
+        bucket_name = self._bucket_name()
         file_path = f'_tmp/{portfolio}/{org}/{entity}/{date}/{object_id}'
         
         print(f'@tmp_post: Saving to {file_path} : {raw_doc}')
@@ -132,7 +133,7 @@ class DocsModel:
                 }
             return {'success': False}
         except Exception as e:
-            current_app.logger.error(f"Error uploading file {file_path}: {str(e)}")
+            self.logger.error(f"Error uploading file {file_path}: {str(e)}")
             return {'success': False}
         
         
@@ -143,7 +144,7 @@ class DocsModel:
         file_path = f'_tmp/{portfolio}/{org}/{entity}/{date}/{object_id}'
     
         s3_client = boto3.client('s3')
-        bucket_name = current_app.config['S3_BUCKET_NAME']  
+        bucket_name = self._bucket_name()
         
         # Define a mapping of file extensions to content types
         content_type_mapping = {
@@ -174,20 +175,15 @@ class DocsModel:
                     # tmp objects are stored without extension; treat as JSON
                     content_type = 'application/json'
             
-            current_app.logger.info(f"Content Type: {content_type}")
+            self.logger.info(f"Content Type: {content_type}")
             content = document['Body'].read()  # Read the content as binary
-            
-            # Create a response object
-            response = make_response(content)
-            response.headers.set('Content-Type', content_type)  # Set the correct content type
-            
-            return {'success': True, 'content': response}  # Return success and content
+            return {'success': True, 'content': content, 'content_type': content_type}
         
         except s3_client.exceptions.NoSuchKey:
             #current_app.logger.error(f"File not found: {file_path}")
             return {'success': False, 'error': 'File not found'}  # Return error object
         except Exception as e:
-            current_app.logger.error(f"Error retrieving file: {str(e)}")
+            self.logger.error(f"Error retrieving file: {str(e)}")
             return {'success': False, 'error': 'Error retrieving file'}  # Return error object
 
         
