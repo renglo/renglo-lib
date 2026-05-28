@@ -392,6 +392,139 @@ class DataController:
         return index_string
     
 
+    def _is_multiple_cardinality(self, field):
+        cardinality = str(field.get('cardinality', 'single')).strip().lower()
+        return cardinality in ('multiple', 'multi')
+
+    def _normalize_multiple_input(self, raw_value, field_type):
+        if raw_value is None:
+            return []
+
+        if isinstance(raw_value, list):
+            if field_type == 'array':
+                if len(raw_value) == 0:
+                    return []
+                # Backward compatible: raw list can be either one array value or list of arrays.
+                if any(isinstance(entry, list) for entry in raw_value):
+                    return raw_value
+                return [raw_value]
+            return raw_value
+
+        if isinstance(raw_value, str):
+            stripped = raw_value.strip()
+            if stripped == '':
+                return []
+            if field_type == 'array':
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list) and (len(parsed) == 0 or any(isinstance(entry, list) for entry in parsed)):
+                        return parsed
+                except Exception:
+                    pass
+
+        return [raw_value]
+
+    def _parse_scalar_field_value(self, field, raw_value, strict_numbers=False):
+        field_type = field.get('type')
+
+        if field_type == 'object':
+            try:
+                if isinstance(raw_value, dict):
+                    return raw_value
+                if raw_value is None:
+                    return {}
+                return json.loads(str(raw_value).strip())
+            except Exception:
+                if raw_value in ('', None):
+                    return {}
+                return str(raw_value).strip()
+
+        if field_type == 'array':
+            try:
+                if isinstance(raw_value, list):
+                    return raw_value
+                if raw_value is None or (isinstance(raw_value, str) and not str(raw_value).strip()):
+                    return []
+                return json.loads(str(raw_value).strip())
+            except json.JSONDecodeError:
+                if raw_value is None or (isinstance(raw_value, str) and not str(raw_value).strip()):
+                    return []
+                try:
+                    converted_json = convert_js_to_json(str(raw_value).strip())
+                    return json.loads(converted_json)
+                except Exception:
+                    try:
+                        converted_json = convert_js_to_json_advanced(str(raw_value).strip())
+                        return json.loads(converted_json)
+                    except Exception:
+                        try:
+                            converted_json = convert_js_to_json_robust(str(raw_value).strip())
+                            return json.loads(converted_json)
+                        except Exception:
+                            try:
+                                converted_json = convert_js_to_json_simple(str(raw_value).strip())
+                                return json.loads(converted_json)
+                            except Exception:
+                                return str(raw_value).strip()
+            except Exception:
+                if raw_value is None or (isinstance(raw_value, str) and not str(raw_value).strip()):
+                    return []
+                return str(raw_value).strip()
+
+        if field_type == 'timestamp':
+            if raw_value is None:
+                return None
+            raw_str = str(raw_value).strip()
+            if raw_str == '':
+                return None
+            try:
+                float_value = float(raw_str)
+                timestamp_value = int(float_value)
+                if timestamp_value >= 0:
+                    if timestamp_value < 1000000000:
+                        timestamp_value *= 1000
+                    return timestamp_value
+                return None
+            except (ValueError, OverflowError):
+                try:
+                    date_value = datetime.strptime(raw_str, '%Y-%m-%d')
+                    return int(date_value.timestamp() * 1000)
+                except ValueError:
+                    return None
+
+        if field_type == 'string':
+            return str(raw_value).strip() if raw_value not in (None, '') else ''
+
+        if field_type in ('number', 'integer', 'float'):
+            if raw_value is None or (isinstance(raw_value, str) and not str(raw_value).strip()):
+                return None
+            try:
+                raw_str = str(raw_value).strip()
+                if field_type == 'integer':
+                    return int(float(raw_str))
+                if field_type == 'float':
+                    return Decimal(raw_str)
+                return Decimal(raw_str) if '.' in raw_str else int(raw_str)
+            except Exception:
+                if strict_numbers:
+                    raise ValueError('Invalid number format')
+                return None
+
+        return str(raw_value).strip() if raw_value not in (None, '') else None
+
+    def _parse_field_value(self, field, raw_value, strict_numbers=False):
+        if self._is_multiple_cardinality(field):
+            normalized_values = self._normalize_multiple_input(raw_value, field.get('type'))
+            parsed_values = [
+                self.sanitize(self._parse_scalar_field_value(field, value, strict_numbers=strict_numbers))
+                for value in normalized_values
+            ]
+            return parsed_values
+
+        return self.sanitize(
+            self._parse_scalar_field_value(field, raw_value, strict_numbers=strict_numbers)
+        )
+
     def construct_post_item(self,portfolio,org,ring,payload):
         '''
         Creates a new item following the blueprint fields and data submitted via the request.
@@ -455,89 +588,7 @@ class DataController:
                 new_raw = field['default']
                 
 
-            if field['type'] == 'object':
-                try:
-                    if isinstance(new_raw, dict):
-                        item_values[field['name']] = new_raw
-                    else:
-                        item_values[field['name']] = json.loads(new_raw.strip())
-                except:
-                    if new_raw == '':
-                        item_values[field['name']] = {}
-                    else:
-                        item_values[field['name']] = str(new_raw).strip()
-                    
-            
-            elif field['type'] == 'array':
-                try:
-                    if isinstance(new_raw, list):
-                        item_values[field['name']] = new_raw
-                    elif new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
-                        item_values[field['name']] = []
-                    else:
-                        item_values[field['name']] = json.loads(str(new_raw).strip())
-                except Exception as e:
-                    print(f'CPI > Blueprint : Type : array > Error details: {str(e)}')
-                    print(f'CPI > Blueprint : Type : array > Error type: {type(e).__name__}')
-                    if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
-                        item_values[field['name']] = []
-                    else:
-                        item_values[field['name']] = str(new_raw).strip()
-                    
-                    
-            elif field['type'] == 'timestamp':
-                new_raw = new_raw.strip()
-                try:
-                    # Check if new_raw can be converted to a float first
-                    float_value = float(new_raw)
-                    # Convert to int and check if it's a valid timestamp
-                    timestamp_value = int(float_value)
-
-                    # Check if it's a valid timestamp (non-negative)
-                    if timestamp_value >= 0:
-                        # If the timestamp is in seconds, convert to milliseconds
-                        if timestamp_value < 1000000000:  # Less than 1 billion means it's in seconds
-                            timestamp_value *= 1000
-                        item_values[field['name']] = timestamp_value  # Assign the valid timestamp
-                    else:
-                        item_values[field['name']] = None  # Handle negative timestamp
-                except (ValueError, OverflowError):
-                    # If not a valid float or int, try to parse it as a date
-                    try:
-                        date_value = datetime.strptime(new_raw, '%Y-%m-%d')  # Adjusted format for "YYYY-MM-DD"
-                        item_values[field['name']] = int(date_value.timestamp() * 1000)  # Convert to milliseconds
-                    except ValueError:
-                        item_values[field['name']] = None  # Handle invalid date format
-            
-            elif field['type'] == 'string':
-                if new_raw:
-                    item_values[field['name']] = str(new_raw).strip()
-                else:
-                    item_values[field['name']] = ''
-            
-            elif field['type'] in ('number', 'integer', 'float'):
-                if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
-                    item_values[field['name']] = None
-                else:
-                    try:
-                        raw_str = str(new_raw).strip()
-                        if field['type'] == 'integer':
-                            item_values[field['name']] = int(float(raw_str))
-                        elif field['type'] == 'float':
-                            item_values[field['name']] = Decimal(raw_str)
-                        else:
-                            item_values[field['name']] = Decimal(raw_str) if '.' in raw_str else int(raw_str)
-                    except Exception:
-                        item_values[field['name']] = None
-                
-            else:
-                if new_raw:
-                    item_values[field['name']] = str(new_raw).strip()
-                else:
-                    item_values[field['name']] = None
-                    
-                    
-            item_values[field['name']] = self.sanitize(item_values[field['name']])
+            item_values[field['name']] = self._parse_field_value(field, new_raw)
 
 
         item = {}
@@ -630,146 +681,52 @@ class DataController:
         #4. Check that the payload follows the Blueprint
         putNeeded = False
 
+        # Normalize legacy scalar values when blueprint now expects cardinality=multiple.
+        attributes = updated_item.get('attributes')
+        if not isinstance(attributes, dict):
+            updated_item['attributes'] = {}
+            attributes = updated_item['attributes']
+
+        for field in fields:
+            if not self._is_multiple_cardinality(field):
+                continue
+            field_name = field.get('name')
+            if field_name not in attributes:
+                continue
+            existing_value = attributes.get(field_name)
+            if existing_value is None or isinstance(existing_value, list):
+                continue
+            attributes[field_name] = [self.sanitize(existing_value)]
+            putNeeded = True
+
         for field in fields:
             self.logger.debug('>>:'+field['name']) 
             if field['name'] in payload:
                 self.logger.debug('Found:'+field['name']) 
                 # Attribute exists in the blueprint
                 new_raw = payload.get(field['name'])
+                is_multiple = self._is_multiple_cardinality(field)
+                normalized_values = self._normalize_multiple_input(new_raw, field.get('type')) if is_multiple else None
 
-               
-                if field['type'] == 'object':
-                   #print(f'Field declared as object: {field["name"]}')
-                    
-                    # Check if new_raw is already a dict
-                    if isinstance(new_raw, dict):
-                        print('Already a dict, using as is')
-                        updated_item['attributes'][field['name']] = new_raw
-                        putNeeded = True
-                    else:
-                        try:
-                            print('Loading json ')
-                            updated_item['attributes'][field['name']] = json.loads(new_raw.strip())
-                            putNeeded = True
-                        except:
-                            print('Could not convert to object. Loading as String ')
-                            updated_item['attributes'][field['name']] = str(new_raw).strip()
-                            putNeeded = True
-                
-                elif field['type'] == 'array':
-                    print('Field declared as array(list) ')
-                    
-                    # Check if new_raw is already a list
-                    if isinstance(new_raw, list):
-                        print('Already a list, using as is')
-                        updated_item['attributes'][field['name']] = new_raw
-                        putNeeded = True
-                    else:
-                        try:
-                            print('Load json array ')
-                            updated_item['attributes'][field['name']] = json.loads(new_raw.strip())  
-                            putNeeded = True
-                        except json.JSONDecodeError as e:
-                            print('Load json > JSONDecodeError > Try converting JS syntax')
-                            print(f'Error details: {str(e)}')
-                            # Try converting JavaScript syntax to JSON
-                            try:
-                                converted_json = convert_js_to_json(new_raw.strip())
-                                updated_item['attributes'][field['name']] = json.loads(converted_json)
-                                putNeeded = True
-                                print('Successfully converted JS syntax to JSON')
-                            except Exception as conversion_error:
-                                print('JS conversion failed, trying advanced converter')
-                                print(f'Conversion error: {str(conversion_error)}')
-                                # Try the advanced converter
-                                try:
-                                    converted_json = convert_js_to_json_advanced(new_raw.strip())
-                                    updated_item['attributes'][field['name']] = json.loads(converted_json)
-                                    putNeeded = True
-                                    print('Successfully converted JS syntax to JSON (advanced)')
-                                except Exception as advanced_error:
-                                    print('Advanced conversion failed, trying robust converter')
-                                    print(f'dvanced error: {str(advanced_error)}')
-                                    # Try the robust converter
-                                    try:
-                                        converted_json = convert_js_to_json_robust(new_raw.strip())
-                                        updated_item['attributes'][field['name']] = json.loads(converted_json)
-                                        putNeeded = True
-                                        print('Successfully converted JS syntax to JSON (robust)')
-                                    except Exception as robust_error:
-                                        print('Robust conversion failed, trying simple converter')
-                                        print(f'Robust error: {str(robust_error)}')
-                                        # Try the simple converter
-                                        try:
-                                            converted_json = convert_js_to_json_simple(new_raw.strip())
-                                            updated_item['attributes'][field['name']] = json.loads(converted_json)
-                                            putNeeded = True
-                                            print('Successfully converted JS syntax to JSON (simple)')
-                                        except Exception as simple_error:
-                                            print('Simple conversion failed, falling back to string')
-                                            print(f'Simple error: {str(simple_error)}')
-                                            updated_item['attributes'][field['name']] = str(new_raw).strip()
-                                            putNeeded = True
-                        except Exception as e:
-                            print('Load json > Except > Load String ')
-                            print(f'Error details: {str(e)}')
-                            print(f'Error type: {type(e).__name__}')
-                            updated_item['attributes'][field['name']] = str(new_raw).strip()
-                            putNeeded = True
-                
-                elif field['type'] in ('number', 'integer', 'float'):
-                    if new_raw is None or (isinstance(new_raw, str) and not str(new_raw).strip()):
-                        if field.get('required'):
+                if field.get('required'):
+                    if is_multiple:
+                        if len(normalized_values) == 0:
                             self.logger.debug('Attribute is required:'+field['name'])
                             return {'error':'Attribute is required'}
-                        updated_item['attributes'][field['name']] = None
-                        putNeeded = True
                     else:
-                        try:
-                            raw_str = str(new_raw).strip()
-                            if field['type'] == 'integer':
-                                updated_item['attributes'][field['name']] = int(float(raw_str))
-                            elif field['type'] == 'float':
-                                updated_item['attributes'][field['name']] = Decimal(raw_str)
-                            else:
-                                updated_item['attributes'][field['name']] = Decimal(raw_str) if '.' in raw_str else int(raw_str)
-                            putNeeded = True
-                        except Exception:
-                            return {'error':'Invalid number format'}
-                
-                else:
-                    
-                    '''
-                        len>0  |  field['required']  | AND   |  (len > 0) OR (AND)
-                        ---------------------------------------------
-                        True   |   False             | False |  True
-                        ---------------------------------------------
-                        True   |   True              | True  |  True
-                        ---------------------------------------------
-                        False  |   False             | True  |  -
-                        ---------------------------------------------
-                        False  |   True              | False |  False
-
-                    '''
-
-                    if len(str(new_raw)) > 0:
-
-                        self.logger.debug('Field OK:'+field['name']) 
-                        #Attribute complies with "Required" prerequisite
-
-                        #5.Update attributes based on what has been sent in the request
-                        updated_item['attributes'][field['name']] = new_raw
-                        putNeeded = True
-
-                        #break
-
-                    else:
-                        if field.get('required'):
-                            self.logger.debug('Attribute is required:'+field['name']) 
+                        if new_raw is None or (isinstance(new_raw, str) and len(new_raw.strip()) == 0):
+                            self.logger.debug('Attribute is required:'+field['name'])
                             return {'error':'Attribute is required'}
-                        # Allow clearing non-required scalar fields.
-                        updated_item['attributes'][field['name']] = ''
-                        putNeeded = True
+
+                try:
+                    updated_item['attributes'][field['name']] = self._parse_field_value(
+                        field,
+                        new_raw,
+                        strict_numbers=True
+                    )
+                    putNeeded = True
+                except ValueError as parse_error:
+                    return {'error': str(parse_error)}
                   
         if not putNeeded:
             return {'error':'Attributes not recognized'}
