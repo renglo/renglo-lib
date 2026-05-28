@@ -172,6 +172,29 @@ class ChatController:
         return ev.get("type") or ev.get("_type")
 
     @staticmethod
+    def _now_iso_timestamp() -> str:
+        return datetime.utcnow().isoformat()
+
+    def _ensure_message_meta(self, message: dict, timestamp: str | None = None) -> dict:
+        """
+        Normalize chat row metadata so each message carries per-message timestamp.
+        Keeps any extra metadata keys already provided by callers.
+        """
+        if not isinstance(message, dict):
+            return message
+
+        msg = self._convert_floats_to_strings(dict(message))
+        meta = msg.get("_meta")
+        if not isinstance(meta, dict):
+            meta = {}
+
+        if not isinstance(meta.get("timestamp"), str) or not meta.get("timestamp"):
+            meta["timestamp"] = timestamp or self._now_iso_timestamp()
+
+        msg["_meta"] = meta
+        return msg
+
+    @staticmethod
     def _tmp_key_five_tuple(key):
         """S3 tmp key: portfolio / org / entity (e.g. noma) / YYYY-MM-DD / object_id (5 path segments)."""
         if not key or not isinstance(key, str):
@@ -430,7 +453,12 @@ class ChatController:
             
             messages = []
             if 'messages' in payload and isinstance(payload['messages'], list):
-                messages = payload['messages']
+                # Stamp per-message metadata at insertion time (chat parity with session rows).
+                turn_ts_iso = self._now_iso_timestamp()
+                messages = [
+                    self._ensure_message_meta(m, timestamp=turn_ts_iso) if isinstance(m, dict) else m
+                    for m in payload['messages']
+                ]
                 
             if payload['context']['public_user']:
                 author_id = payload['context']['public_user']
@@ -534,6 +562,10 @@ class ChatController:
                                 
                             if '_next' in update:
                                 item['messages'][index]['_next'] = update['_next']
+
+                            # Keep message-level metadata and refresh timestamp on replacement.
+                            item['messages'][index] = self._ensure_message_meta(item['messages'][index])
+                            item['messages'][index]['_meta']['timestamp'] = self._now_iso_timestamp()
                                 
                                 
                             print(item['messages'][index])
@@ -546,7 +578,7 @@ class ChatController:
                             item['messages'][index]['_out']['content'] = parsed_content
             else:
                 # Update is already sanitized at the beginning of the method
-                item['messages'].append(update)
+                item['messages'].append(self._ensure_message_meta(update))
             
             #current_app.logger.debug(f'Prepared data for chat update: {item}')
             #print(f'Store modified item:{item}')
