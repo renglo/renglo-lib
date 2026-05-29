@@ -8,10 +8,17 @@ Default behavior:
 
 Usage examples:
   python dev/renglo-lib/renglo/graph/regenerate_edges.py
+  python dev/renglo-lib/renglo/graph/regenerate_edges.py --profile default --region us-east-1
   python dev/renglo-lib/renglo/graph/regenerate_edges.py --portfolio p1 --org o1
+  python dev/renglo-lib/renglo/graph/regenerate_edges.py --portfolio p1 --org o1 --profile default --region us-east-1
   python dev/renglo-lib/renglo/graph/regenerate_edges.py --portfolio p1 --org o1 --ring productora_candidates
+  python dev/renglo-lib/renglo/graph/regenerate_edges.py --portfolio p1 --org o1 --ring productora_candidates --profile default --region us-east-1
   python dev/renglo-lib/renglo/graph/regenerate_edges.py --no-clear
+  python dev/renglo-lib/renglo/graph/regenerate_edges.py --no-clear --profile default --region us-east-1
   python dev/renglo-lib/renglo/graph/regenerate_edges.py --dry-run
+  python dev/renglo-lib/renglo/graph/regenerate_edges.py --dry-run --profile default --region us-east-1
+  python dev/renglo-lib/renglo/graph/regenerate_edges.py --ring-table productora_data --graph-table productora_graph --profile default --region us-east-1
+  python dev/renglo-lib/renglo/graph/regenerate_edges.py --debug-skips --debug-limit 200 --profile default --region us-east-1
 """
 
 from __future__ import annotations
@@ -85,7 +92,7 @@ def _clear_graph_edges(graph_table, portfolio: Optional[str], org: Optional[str]
             while True:
                 query_kwargs = {
                     "KeyConditionExpression": Key("graph_index").eq(graph_index),
-                    "ProjectionExpression": "graph_index, forward_label",
+                    "ProjectionExpression": "graph_index, forward_index",
                 }
                 if last_evaluated_key:
                     query_kwargs["ExclusiveStartKey"] = last_evaluated_key
@@ -94,7 +101,7 @@ def _clear_graph_edges(graph_table, portfolio: Optional[str], org: Optional[str]
                     batch.delete_item(
                         Key={
                             "graph_index": item["graph_index"],
-                            "forward_label": item["forward_label"],
+                            "forward_index": item["forward_index"],
                         }
                     )
                     deleted += 1
@@ -103,11 +110,11 @@ def _clear_graph_edges(graph_table, portfolio: Optional[str], org: Optional[str]
                     break
             return deleted
 
-        for item in _scan_all(graph_table, ["graph_index", "forward_label"]):
+        for item in _scan_all(graph_table, ["graph_index", "forward_index"]):
             batch.delete_item(
                 Key={
                     "graph_index": item["graph_index"],
-                    "forward_label": item["forward_label"],
+                    "forward_index": item["forward_index"],
                 }
             )
             deleted += 1
@@ -206,8 +213,15 @@ def _diagnose_document_edges(
         if field_name_str not in attributes:
             source_missing_attr += 1
             continue
-        to_ids = grc._extract_to_ids(attributes.get(field_name_str))
-        if not to_ids:
+        temp_spec = {
+            "field_name": field_name_str,
+            "edge_type": "diagnostic",
+            "to_ring": parsed.get("to_ring"),
+            "id_token": parsed.get("id_token"),
+            "qualifier_keys": parsed.get("qualifier_keys", []),
+        }
+        declarations = grc._extract_edge_declarations(attributes.get(field_name_str), temp_spec)
+        if not declarations:
             source_empty_value += 1
             continue
         source_with_values += 1

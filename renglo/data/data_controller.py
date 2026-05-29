@@ -396,6 +396,96 @@ class DataController:
         cardinality = str(field.get('cardinality', 'single')).strip().lower()
         return cardinality in ('multiple', 'multi')
 
+    def _is_object_source_definition(self, field):
+        source = field.get('source')
+        if not isinstance(source, dict):
+            return False
+        target = source.get('target')
+        target_key = source.get('target_key')
+        return isinstance(target, str) and target.strip() and isinstance(target_key, str) and target_key.strip()
+
+    def _extract_reference_value(self, item, target_key):
+        if isinstance(item, dict):
+            candidates = [
+                item.get('value'),
+                item.get('id'),
+                item.get('_id'),
+                item.get(target_key),
+            ]
+            target_obj = item.get('target')
+            if isinstance(target_obj, dict):
+                candidates.extend(
+                    [
+                        target_obj.get('id'),
+                        target_obj.get('_id'),
+                        target_obj.get('value'),
+                        target_obj.get(target_key),
+                    ]
+                )
+            for candidate in candidates:
+                if candidate is None or isinstance(candidate, (dict, list)):
+                    continue
+                candidate_str = str(candidate).strip()
+                if candidate_str:
+                    return candidate_str
+            return ''
+
+        if item is None:
+            return ''
+        item_str = str(item).strip()
+        return item_str
+
+    def _normalize_reference_object(self, field, item):
+        source = field.get('source') if isinstance(field, dict) else {}
+        source = source if isinstance(source, dict) else {}
+        target_key = str(source.get('target_key', '_id')).strip() or '_id'
+        qualifier_keys = source.get('qualifiers') if isinstance(source.get('qualifiers'), list) else []
+        qualifier_keys = [str(key).strip() for key in qualifier_keys if str(key).strip()]
+        source_labels_raw = source.get('label')
+        source_labels = (
+            [str(label).strip() for label in source_labels_raw if str(label).strip()]
+            if isinstance(source_labels_raw, list)
+            else (
+                [token.strip() for token in source_labels_raw.split(',') if token and token.strip()]
+                if isinstance(source_labels_raw, str) and source_labels_raw.strip()
+                else []
+            )
+        )
+
+        ref_value = self._extract_reference_value(item, target_key)
+        if not ref_value:
+            return None
+
+        normalized = dict(item) if isinstance(item, dict) else {}
+        normalized['value'] = ref_value
+        if source_labels:
+            normalized.setdefault('label', source_labels[:2])
+
+        incoming_qualifiers = normalized.get('qualifiers')
+        qualifiers = incoming_qualifiers if isinstance(incoming_qualifiers, dict) else {}
+        for qualifier_key in qualifier_keys:
+            qualifiers.setdefault(qualifier_key, '')
+        if qualifiers or qualifier_keys:
+            normalized['qualifiers'] = qualifiers
+
+        return normalized
+
+    def _normalize_source_reference_value(self, field, parsed_value):
+        if not self._is_object_source_definition(field):
+            return parsed_value
+
+        if self._is_multiple_cardinality(field):
+            values = parsed_value if isinstance(parsed_value, list) else [parsed_value]
+            normalized_values = []
+            for value in values:
+                normalized_item = self._normalize_reference_object(field, value)
+                if normalized_item is not None:
+                    normalized_values.append(normalized_item)
+            return normalized_values
+
+        normalized_item = self._normalize_reference_object(field, parsed_value)
+        return normalized_item if normalized_item is not None else {}
+
     def _normalize_multiple_input(self, raw_value, field_type):
         if raw_value is None:
             return []
@@ -513,17 +603,21 @@ class DataController:
         return str(raw_value).strip() if raw_value not in (None, '') else None
 
     def _parse_field_value(self, field, raw_value, strict_numbers=False):
+        parsed_output = None
         if self._is_multiple_cardinality(field):
             normalized_values = self._normalize_multiple_input(raw_value, field.get('type'))
             parsed_values = [
                 self.sanitize(self._parse_scalar_field_value(field, value, strict_numbers=strict_numbers))
                 for value in normalized_values
             ]
-            return parsed_values
+            parsed_output = parsed_values
+        else:
+            parsed_output = self.sanitize(
+                self._parse_scalar_field_value(field, raw_value, strict_numbers=strict_numbers)
+            )
 
-        return self.sanitize(
-            self._parse_scalar_field_value(field, raw_value, strict_numbers=strict_numbers)
-        )
+        parsed_output = self._normalize_source_reference_value(field, parsed_output)
+        return self.sanitize(parsed_output)
 
     def construct_post_item(self,portfolio,org,ring,payload):
         '''

@@ -8,7 +8,7 @@ data/persistence behavior to GraphModel.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from renglo.graph.graph_model import (
     GraphEdge,
@@ -36,7 +36,7 @@ class GraphController:
         *,
         region_name: Optional[str] = None,
         dynamodb_resource: Optional[Any] = None,
-        reverse_index_name: str = "backward_label",
+        reverse_index_name: str = "backward_index",
         clock: Optional[Callable[[], float]] = None,
     ) -> None:
         self.config = config or {}
@@ -595,19 +595,70 @@ class GraphController:
             bpc = self._bpc
         return bpc
 
-    def _parse_edge_source(self, source: str):
-        if not isinstance(source, str):
+    def _parse_edge_source(self, source: Any):
+        # Legacy format: "<target_blueprint>:<target_key>:<preview>"
+        if isinstance(source, str):
+            parts = [p.strip() for p in source.split(":")]
+            if len(parts) != 3:
+                return None
+            to_ring, id_token, label_field = parts
+            if not to_ring or not id_token:
+                return None
+            label_fields = [token.strip() for token in str(label_field).split(",") if token and token.strip()]
+            return {
+                "to_ring": to_ring,
+                "id_token": id_token,
+                "label_fields": label_fields,
+                "edge_type": None,
+                "qualifier_keys": [],
+                "dynamic": False,
+                "source_raw": source,
+            }
+
+        # New format:
+        # {
+        #   "target": "knowledge_concept",
+        #   "target_key": "_id",
+        #   "preview": ["name"],
+        #   "label": ["DELEGATES_TO", "DELEGATED_BY"],
+        #   "qualifiers": ["since", "domain"],
+        #   "dynamic": true
+        # }
+        if not isinstance(source, dict):
             return None
-        parts = [p.strip() for p in source.split(":")]
-        if len(parts) != 3:
+
+        to_ring = source.get("target")
+        id_token = source.get("target_key", "_id")
+        preview = source.get("preview")
+        if not isinstance(to_ring, str) or not to_ring.strip():
             return None
-        to_ring, id_token, label_field = parts
-        if not to_ring or id_token != "_id":
+        if not isinstance(id_token, str) or not id_token.strip():
             return None
+
+        label_fields: List[str] = []
+        if isinstance(preview, list):
+            label_fields = [str(token).strip() for token in preview if str(token).strip()]
+        elif isinstance(preview, str) and preview.strip():
+            label_fields = [token.strip() for token in preview.split(",") if token and token.strip()]
+
+        qualifier_keys = []
+        if isinstance(source.get("qualifiers"), list):
+            qualifier_keys = [str(token).strip() for token in source.get("qualifiers", []) if str(token).strip()]
+
+        label_pair: List[str] = []
+        raw_label = source.get("label")
+        if isinstance(raw_label, list):
+            label_pair = [str(token).strip() for token in raw_label if str(token).strip()]
+        elif isinstance(raw_label, str) and raw_label.strip():
+            label_pair = [token.strip() for token in raw_label.split(",") if token and token.strip()]
+
         return {
-            "to_ring": to_ring,
-            "label_field": label_field,
-            "id_token": id_token,
+            "to_ring": to_ring.strip(),
+            "id_token": id_token.strip(),
+            "label_fields": label_fields,
+            "edge_labels": label_pair[:2],
+            "qualifier_keys": qualifier_keys,
+            "dynamic": bool(source.get("dynamic")),
             "source_raw": source,
         }
 
@@ -661,27 +712,110 @@ class GraphController:
                     "field_name": field_name_value,
                     "edge_type": edge_type,
                     "to_ring": source_parts["to_ring"],
-                    "label_field": source_parts["label_field"],
+                    "id_token": source_parts["id_token"],
+                    "label_fields": source_parts.get("label_fields", []),
+                    "edge_labels": source_parts.get("edge_labels", []),
+                    "qualifier_keys": source_parts.get("qualifier_keys", []),
                     "source": source_parts["source_raw"],
                 }
             )
         return specs
 
-    def _extract_to_ids(self, raw_value):
+    def _merge_edge_properties(self, current_props, next_props):
+        if not isinstance(current_props, dict):
+            return next_props if isinstance(next_props, dict) else None
+        if not isinstance(next_props, dict):
+            return current_props
+        merged = dict(current_props)
+        for key, value in next_props.items():
+            if key == "qualifiers" and isinstance(value, dict):
+                prior = merged.get("qualifiers") if isinstance(merged.get("qualifiers"), dict) else {}
+                merged["qualifiers"] = {**prior, **value}
+            else:
+                merged[key] = value
+        return merged
+
+    def _extract_edge_declarations(self, raw_value, spec):
         values = raw_value if isinstance(raw_value, list) else [raw_value]
-        result = []
+        declarations = []
+
         for value in values:
             if value is None:
                 continue
-            if isinstance(value, dict):
-                candidate = value.get("_id") or value.get("id") or value.get("to_id")
-                if candidate:
-                    result.append(str(candidate))
+
+            value_obj = value if isinstance(value, dict) else {}
+            target_obj = value_obj.get("target") if isinstance(value_obj.get("target"), dict) else {}
+
+            candidate_ids = []
+            id_token = spec.get("id_token")
+            if isinstance(id_token, str) and id_token:
+                candidate_ids.append(target_obj.get(id_token))
+                candidate_ids.append(value_obj.get(id_token))
+            candidate_ids.extend(
+                [
+                    target_obj.get("id"),
+                    target_obj.get("_id"),
+                    target_obj.get("value"),
+                    value_obj.get("_id"),
+                    value_obj.get("id"),
+                    value_obj.get("to_id"),
+                    value_obj.get("value"),
+                    value,
+                ]
+            )
+
+            to_id = None
+            for candidate in candidate_ids:
+                if candidate is None or isinstance(candidate, (dict, list)):
+                    continue
+                candidate_str = str(candidate).strip()
+                if candidate_str:
+                    to_id = candidate_str
+                    break
+            if not to_id:
                 continue
-            value_str = str(value).strip()
-            if value_str:
-                result.append(value_str)
-        return result
+
+            edge_type = spec.get("edge_type")
+            if not isinstance(edge_type, str) or not edge_type.strip():
+                continue
+
+            edge_props = {}
+            qualifiers = {}
+            declared_qualifiers = spec.get("qualifier_keys") or []
+            raw_qualifiers = value_obj.get("qualifiers")
+            if isinstance(raw_qualifiers, dict):
+                if declared_qualifiers:
+                    for qualifier_key in declared_qualifiers:
+                        if qualifier_key in raw_qualifiers:
+                            qualifiers[qualifier_key] = raw_qualifiers[qualifier_key]
+                else:
+                    qualifiers.update(raw_qualifiers)
+
+            if declared_qualifiers:
+                for qualifier_key in declared_qualifiers:
+                    if qualifier_key in value_obj and qualifier_key not in qualifiers:
+                        qualifiers[qualifier_key] = value_obj[qualifier_key]
+
+            spec_edge_labels = spec.get("edge_labels") if isinstance(spec.get("edge_labels"), list) else []
+            raw_value_label = value_obj.get("label")
+            value_edge_labels = []
+            if isinstance(raw_value_label, list):
+                value_edge_labels = [str(token).strip() for token in raw_value_label if str(token).strip()]
+            elif isinstance(raw_value_label, str) and raw_value_label.strip():
+                value_edge_labels = [token.strip() for token in raw_value_label.split(",") if token and token.strip()]
+
+            resolved_edge_labels = value_edge_labels if value_edge_labels else spec_edge_labels
+            forward_edge_label = resolved_edge_labels[0] if len(resolved_edge_labels) > 0 else edge_type.strip()
+            backward_edge_label = resolved_edge_labels[1] if len(resolved_edge_labels) > 1 else edge_type.strip()
+
+            if qualifiers:
+                edge_props["qualifiers"] = qualifiers
+            edge_props["label_forward"] = forward_edge_label
+            edge_props["label_backward"] = backward_edge_label
+
+            declarations.append((edge_type.strip(), to_id, edge_props))
+
+        return declarations
 
     def _build_desired_edges(self, edge_specs, attributes):
         if not isinstance(attributes, dict):
@@ -692,10 +826,11 @@ class GraphController:
             field_name = spec["field_name"]
             if field_name not in attributes:
                 continue
-            to_ids = self._extract_to_ids(attributes.get(field_name))
-            for to_id in to_ids:
+            declarations = self._extract_edge_declarations(attributes.get(field_name), spec)
+            for edge_type, to_id, edge_props in declarations:
                 to_node_id = self.make_node_id(spec["to_ring"], to_id)
-                desired_by_key[(spec["edge_type"], to_node_id)] = None
+                key = (edge_type, to_node_id)
+                desired_by_key[key] = self._merge_edge_properties(desired_by_key.get(key), edge_props)
 
         return [(edge_type, to_node_id, props) for (edge_type, to_node_id), props in desired_by_key.items()]
 
