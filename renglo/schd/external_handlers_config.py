@@ -126,6 +126,33 @@ DEFAULT_CONFIG = {
 }
 
 
+def _function_name_from_lambda_arn(arn: str) -> str:
+    """Extract function name from arn:aws:lambda:...:function:name[:qualifier]."""
+    arn = arn.strip()
+    if ":function:" not in arn:
+        return arn
+    tail = arn.split(":function:", 1)[1]
+    return tail.split(":")[0] if tail else arn
+
+
+def _resolve_handlers_lambda_function_name(extension_name: str) -> str:
+    """
+    Resolve handlers Lambda name for invoke.
+
+    Priority (backend env):
+      1. LAMBDA_EXTERNAL_HANDLERS_ARN
+      2. LAMBDA_HANDLERS_FUNCTION_NAME
+      3. {extension_name}-handlers (legacy convention)
+    """
+    arn = (os.getenv("LAMBDA_EXTERNAL_HANDLERS_ARN") or "").strip()
+    if arn:
+        return _function_name_from_lambda_arn(arn)
+    explicit = (os.getenv("LAMBDA_HANDLERS_FUNCTION_NAME") or "").strip()
+    if explicit:
+        return explicit
+    return f"{extension_name}-handlers"
+
+
 def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
     """
     Load configuration for a specific extension.
@@ -141,7 +168,8 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
     2. Default config
     
     Conventions (if extension is in EXTERNAL_HANDLERS list):
-    - Lambda function name: {extension}-handlers
+    - Lambda function name: LAMBDA_EXTERNAL_HANDLERS_ARN, else LAMBDA_HANDLERS_FUNCTION_NAME,
+      else {extension}-handlers
     - Lambda region: Same as system Lambda (AWS_REGION)
     - Docker image: {extension}-lambda-builder:latest
     - Enabled: true (if in list)
@@ -180,7 +208,7 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
             config = {
                 "has_external_handlers": True,
                 "active": True,
-                "lambda_function_name": os.getenv("LAMBDA_HANDLERS_FUNCTION_NAME", f"{extension_name}-handlers"),  # Convention
+                "lambda_function_name": _resolve_handlers_lambda_function_name(extension_name),
                 "lambda_region": lambda_region,  # Same as system Lambda
                 "docker_image": f"{extension_name}-lambda-builder:latest",  # Convention
                 "extension_name": extension_name
@@ -198,7 +226,10 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
         config = {
             "has_external_handlers": env_enabled == "true",
             "active": os.getenv(f"{env_prefix}ACTIVE", "true").lower() == "true",
-            "lambda_function_name": os.getenv(f"{env_prefix}LAMBDA_FUNCTION", f"{extension_name}-handlers"),
+            "lambda_function_name": (
+                os.getenv(f"{env_prefix}LAMBDA_FUNCTION")
+                or _resolve_handlers_lambda_function_name(extension_name)
+            ),
             "lambda_region": lambda_region,
             "docker_image": os.getenv(f"{env_prefix}DOCKER_IMAGE", f"{extension_name}-lambda-builder:latest"),
             "extension_name": extension_name
