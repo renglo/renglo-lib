@@ -591,7 +591,7 @@ def call_lambda_handler(
         # If we can't check/update env vars, log a warning but continue
         # The Lambda function should already have env vars configured via deployment
         print(f"Warning: Could not check/update Lambda environment variables: {e}", file=sys.stderr)
-        print("Note: Ensure Lambda function has environment variables configured via deployment (zappa_settings.json)", file=sys.stderr)
+        print("Note: Ensure Lambda function has environment variables configured via deployment (deploy_input.json)", file=sys.stderr)
     
     try:
         # Invoke the function

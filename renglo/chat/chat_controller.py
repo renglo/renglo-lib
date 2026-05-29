@@ -10,6 +10,7 @@ import traceback
 import uuid
 from datetime import datetime
 from decimal import Decimal
+import copy
 
 import boto3
 from flask import current_app, has_app_context

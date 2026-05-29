@@ -180,7 +180,7 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
             config = {
                 "has_external_handlers": True,
                 "active": True,
-                "lambda_function_name": f"{extension_name}-handlers",  # Convention
+                "lambda_function_name": os.getenv("LAMBDA_HANDLERS_FUNCTION_NAME", f"{extension_name}-handlers"),  # Convention
                 "lambda_region": lambda_region,  # Same as system Lambda
                 "docker_image": f"{extension_name}-lambda-builder:latest",  # Convention
                 "extension_name": extension_name
