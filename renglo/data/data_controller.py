@@ -583,6 +583,11 @@ class DataController:
                     return None
 
         if field_type == 'string':
+            # For source-governed relationship fields, allow clients to submit
+            # structured objects (value/label/qualifiers). Keep plain string
+            # ids fully backward compatible.
+            if self._is_object_source_definition(field) and isinstance(raw_value, dict):
+                return raw_value
             return str(raw_value).strip() if raw_value not in (None, '') else ''
 
         if field_type in ('number', 'integer', 'float'):
