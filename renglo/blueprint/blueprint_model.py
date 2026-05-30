@@ -39,7 +39,7 @@ class BlueprintModel:
         irn = 'irn:blueprint:' + handle +':'+ name
         legacy_irn = 'blueprint:' + handle +':'+ name
 
-        get_logger().debug('Get Blueprint '+irn+' v:'+v)
+        self.logger.debug('Get Blueprint '+irn+' v:'+v)
         
 
         try:
