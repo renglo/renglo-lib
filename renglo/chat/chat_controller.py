@@ -1,32 +1,18 @@
-# chat_controller.py
+﻿# chat_controller.py
 
 import copy
-
 import json
-
 import traceback
-
 import uuid
-
 from datetime import datetime
-
 from decimal import Decimal
-import copy
-
-
 
 import boto3
-
 from flask import has_app_context
 
-
-
 from renglo.chat.chat_model import ChatModel
-
 from renglo.docs.docs_controller import DocsController
-
 from renglo.logger import get_logger
-
 from renglo.runtime import get_current_jwt_claims
 
 from ..common import *
@@ -918,11 +904,9 @@ class ChatController:
             
 
             
-
             self.logger.debug("create_turn > input > %s/%s", index, secondary)
 
             self.logger.debug("payload: %s", payload)
-
             
 
             # Validate required payload fields
@@ -990,7 +974,6 @@ class ChatController:
             }
 
             
-
             self.logger.debug("Prepared data for chat creation: %s", data)
 
             response = self.CHM.create_chat(data)
@@ -1000,7 +983,6 @@ class ChatController:
         except Exception as e:
 
             self.logger.error("Error in create_turn: %s", str(e))
-
             return {
 
                 "success": False,
@@ -1210,7 +1192,6 @@ class ChatController:
         except Exception as e:
 
             self.logger.error("Error in update_turn: %s", str(e))
-
             return {
 
                 "success": False,
@@ -1316,11 +1297,9 @@ class ChatController:
             
 
             
-
             self.logger.debug("create_workspace > input > %s/%s", index, secondary)
 
             self.logger.debug("payload: %s", payload)
-
             
 
             # Validate required payload fields
@@ -1434,7 +1413,6 @@ class ChatController:
             }
 
             
-
             self.logger.debug("Prepared data for chat creation: %s", data)
 
             response = self.CHM.create_chat(data)
@@ -1444,7 +1422,6 @@ class ChatController:
         except Exception as e:
 
             self.logger.error("Error in create_workspace: %s", str(e))
-
             return {
 
                 "success": False,
@@ -1592,7 +1569,6 @@ class ChatController:
         except Exception as e:
 
             self.logger.error("Error in update_workspace: %s", str(e))
-
             return {
 
                 "success": False,
