@@ -7,6 +7,9 @@ data/persistence behavior to GraphModel.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -680,6 +683,97 @@ class GraphController:
         enabled = blueprint.get("enable_graph", True)
         return bool(enabled)
 
+    @staticmethod
+    def _is_literal_edge_enabled(field: Dict[str, Any]) -> bool:
+        raw = field.get("literal_edge")
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return raw != 0
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return False
+
+    @staticmethod
+    def _to_upper_snake(raw: str) -> str:
+        candidate = re.sub(r"[^A-Za-z0-9]+", "_", str(raw or "").strip())
+        candidate = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", candidate)
+        candidate = re.sub(r"_+", "_", candidate).strip("_")
+        return candidate.upper()
+
+    @staticmethod
+    def _resolve_primary_id_field(blueprint: Dict[str, Any]) -> str:
+        indexes = blueprint.get("indexes") if isinstance(blueprint, dict) else None
+        if isinstance(indexes, dict):
+            path = indexes.get("path")
+            if isinstance(path, list):
+                for entry in path:
+                    entry_str = str(entry).strip()
+                    if entry_str:
+                        return entry_str
+        return "_id"
+
+    @staticmethod
+    def _normalize_literal_scalar(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            # Stable map ordering keeps canonical value deterministic.
+            return {str(k): GraphController._normalize_literal_scalar(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+        if isinstance(value, list):
+            return [GraphController._normalize_literal_scalar(v) for v in value]
+        return str(value).strip()
+
+    @staticmethod
+    def _is_empty_literal_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip() == ""
+        if isinstance(value, (list, dict)):
+            return len(value) == 0
+        return False
+
+    def _literal_value_token(self, value: Any) -> str:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+    def _extract_literal_edge_declarations(self, raw_value: Any, spec: Dict[str, Any]) -> List[Tuple[str, str, Dict[str, Any]]]:
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        declarations: List[Tuple[str, str, Dict[str, Any]]] = []
+        edge_type = str(spec.get("edge_type") or "").strip()
+        label = str(spec.get("literal_edge_label") or edge_type).strip() or edge_type
+        field_name = str(spec.get("field_name") or "").strip()
+        if not edge_type or not field_name:
+            return declarations
+
+        seen_tokens: Set[str] = set()
+        for value in values:
+            normalized = self._normalize_literal_scalar(value)
+            if self._is_empty_literal_value(normalized):
+                continue
+            value_token = self._literal_value_token(normalized)
+            if value_token in seen_tokens:
+                continue
+            seen_tokens.add(value_token)
+            to_node_id = f"_literal/{field_name}/{value_token}"
+            declarations.append(
+                (
+                    edge_type,
+                    to_node_id,
+                    {
+                        "value": normalized,
+                        "label_forward": label,
+                        "qualifiers": {},
+                    },
+                )
+            )
+        return declarations
+
     def _get_edge_specs_from_blueprint(self, blueprint, ring: str):
         if not isinstance(blueprint, dict):
             return []
@@ -687,38 +781,52 @@ class GraphController:
             return []
 
         from_blueprint = blueprint.get("name") if isinstance(blueprint.get("name"), str) else ring
+        primary_id_field = self._resolve_primary_id_field(blueprint)
         specs = []
         for field in blueprint.get("fields", []):
             if not isinstance(field, dict):
                 continue
-            source = field.get("source")
             field_name = field.get("name")
-            if not source or field_name is None:
-                continue
-            source_parts = self._parse_edge_source(source)
-            if not source_parts:
+            if field_name is None:
                 continue
             field_name_value = str(field_name)
-            edge_type = self._implicit_edge_type(
-                from_blueprint,
-                field_name_value,
-                source_parts["to_ring"],
-                source_parts["id_token"],
-            )
-            if not edge_type:
-                continue
-            specs.append(
-                {
-                    "field_name": field_name_value,
-                    "edge_type": edge_type,
-                    "to_ring": source_parts["to_ring"],
-                    "id_token": source_parts["id_token"],
-                    "label_fields": source_parts.get("label_fields", []),
-                    "edge_labels": source_parts.get("edge_labels", []),
-                    "qualifier_keys": source_parts.get("qualifier_keys", []),
-                    "source": source_parts["source_raw"],
-                }
-            )
+            source = field.get("source")
+
+            if source:
+                source_parts = self._parse_edge_source(source)
+                if source_parts:
+                    edge_type = self._implicit_edge_type(
+                        from_blueprint,
+                        field_name_value,
+                        source_parts["to_ring"],
+                        source_parts["id_token"],
+                    )
+                    if edge_type:
+                        specs.append(
+                            {
+                                "kind": "source",
+                                "field_name": field_name_value,
+                                "edge_type": edge_type,
+                                "to_ring": source_parts["to_ring"],
+                                "id_token": source_parts["id_token"],
+                                "label_fields": source_parts.get("label_fields", []),
+                                "edge_labels": source_parts.get("edge_labels", []),
+                                "qualifier_keys": source_parts.get("qualifier_keys", []),
+                                "source": source_parts["source_raw"],
+                            }
+                        )
+
+            if self._is_literal_edge_enabled(field):
+                literal_label = f"HAS_{self._to_upper_snake(field_name_value)}"
+                literal_edge_type = f"{from_blueprint}:{primary_id_field}:_literal:{field_name_value}"
+                specs.append(
+                    {
+                        "kind": "literal",
+                        "field_name": field_name_value,
+                        "edge_type": literal_edge_type,
+                        "literal_edge_label": literal_label,
+                    }
+                )
         return specs
 
     def _merge_edge_properties(self, current_props, next_props):
@@ -826,9 +934,15 @@ class GraphController:
             field_name = spec["field_name"]
             if field_name not in attributes:
                 continue
-            declarations = self._extract_edge_declarations(attributes.get(field_name), spec)
+            if spec.get("kind") == "literal":
+                declarations = self._extract_literal_edge_declarations(attributes.get(field_name), spec)
+            else:
+                declarations = self._extract_edge_declarations(attributes.get(field_name), spec)
             for edge_type, to_id, edge_props in declarations:
-                to_node_id = self.make_node_id(spec["to_ring"], to_id)
+                if spec.get("kind") == "literal":
+                    to_node_id = to_id
+                else:
+                    to_node_id = self.make_node_id(spec["to_ring"], to_id)
                 key = (edge_type, to_node_id)
                 desired_by_key[key] = self._merge_edge_properties(desired_by_key.get(key), edge_props)
 
