@@ -614,6 +614,7 @@ class GraphController:
                 "label_fields": label_fields,
                 "edge_type": None,
                 "qualifier_keys": [],
+                "projection_fields": [],
                 "dynamic": False,
                 "source_raw": source,
             }
@@ -648,6 +649,13 @@ class GraphController:
         if isinstance(source.get("qualifiers"), list):
             qualifier_keys = [str(token).strip() for token in source.get("qualifiers", []) if str(token).strip()]
 
+        projection_fields: List[str] = []
+        raw_projection = source.get("projection")
+        if isinstance(raw_projection, list):
+            projection_fields = [str(token).strip() for token in raw_projection if str(token).strip()]
+        elif isinstance(raw_projection, str) and raw_projection.strip():
+            projection_fields = [token.strip() for token in raw_projection.split(",") if token and token.strip()]
+
         label_pair: List[str] = []
         raw_label = source.get("label")
         if isinstance(raw_label, list):
@@ -661,6 +669,7 @@ class GraphController:
             "label_fields": label_fields,
             "edge_labels": label_pair[:2],
             "qualifier_keys": qualifier_keys,
+            "projection_fields": projection_fields,
             "dynamic": bool(source.get("dynamic")),
             "source_raw": source,
         }
@@ -812,6 +821,7 @@ class GraphController:
                                 "label_fields": source_parts.get("label_fields", []),
                                 "edge_labels": source_parts.get("edge_labels", []),
                                 "qualifier_keys": source_parts.get("qualifier_keys", []),
+                                "projection_fields": source_parts.get("projection_fields", []),
                                 "source": source_parts["source_raw"],
                             }
                         )
@@ -843,7 +853,116 @@ class GraphController:
                 merged[key] = value
         return merged
 
-    def _extract_edge_declarations(self, raw_value, spec):
+    def _get_ring_data_table(self):
+        table = getattr(self, "_ring_data_table", None)
+        if table is not None:
+            return table
+        table_name = str(self.config.get("DYNAMODB_RINGDATA_TABLE", "")).strip()
+        if not table_name:
+            return None
+        self._ring_data_table = self.dynamodb.Table(table_name)
+        return self._ring_data_table
+
+    def _load_node_projection_attributes(
+        self,
+        portfolio: str,
+        org: str,
+        node_id: str,
+        cache: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if node_id in cache:
+            return cache[node_id]
+        if not isinstance(node_id, str) or not node_id or node_id.startswith("_literal/"):
+            cache[node_id] = {}
+            return cache[node_id]
+        try:
+            ring, idx = GraphModel.split_node_id(node_id)
+        except ValueError:
+            cache[node_id] = {}
+            return cache[node_id]
+
+        table = self._get_ring_data_table()
+        if table is None:
+            cache[node_id] = {}
+            return cache[node_id]
+
+        portfolio_index = f"irn:data:{portfolio}"
+        doc_index = f"{org}:{ring}:{idx}"
+        response = table.get_item(
+            Key={
+                "portfolio_index": portfolio_index,
+                "doc_index": doc_index,
+            }
+        )
+        item = response.get("Item")
+        if not isinstance(item, dict):
+            cache[node_id] = {}
+            return cache[node_id]
+
+        attrs = item.get("attributes")
+        extracted: Dict[str, Any] = dict(attrs) if isinstance(attrs, dict) else {}
+        reserved = {
+            "portfolio_index",
+            "doc_index",
+            "path_index",
+            "modified",
+            "added",
+            "attributes",
+        }
+        for key, value in item.items():
+            if key not in reserved and key not in extracted:
+                extracted[key] = value
+
+        cache[node_id] = extracted
+        return extracted
+
+    def _build_edge_projection(
+        self,
+        spec: Dict[str, Any],
+        *,
+        portfolio: str,
+        org: str,
+        to_node_id: str,
+        outgoing_attributes: Dict[str, Any],
+        node_attr_cache: Dict[str, Dict[str, Any]],
+        projection_updated: str,
+    ) -> Optional[Dict[str, Any]]:
+        projection_fields = spec.get("projection_fields")
+        if not isinstance(projection_fields, list) or not projection_fields:
+            return None
+
+        from_attrs = outgoing_attributes if isinstance(outgoing_attributes, dict) else {}
+        to_attrs = self._load_node_projection_attributes(
+            portfolio=portfolio,
+            org=org,
+            node_id=to_node_id,
+            cache=node_attr_cache,
+        )
+
+        projection: Dict[str, Any] = {}
+        for field_name_raw in projection_fields:
+            field_name = str(field_name_raw).strip()
+            if not field_name:
+                continue
+            if field_name in from_attrs:
+                projection[f"from.{field_name}"] = from_attrs.get(field_name)
+            if field_name in to_attrs:
+                projection[f"to.{field_name}"] = to_attrs.get(field_name)
+        projection["_updated"] = projection_updated
+        return projection
+
+    def _extract_edge_declarations(
+        self,
+        raw_value,
+        spec,
+        *,
+        portfolio: str,
+        org: str,
+        from_node_id: str,
+        outgoing_attributes: Dict[str, Any],
+        node_attr_cache: Dict[str, Dict[str, Any]],
+        projection_updated: str,
+    ):
         values = raw_value if isinstance(raw_value, list) else [raw_value]
         declarations = []
 
@@ -921,15 +1040,30 @@ class GraphController:
             edge_props["label_forward"] = forward_edge_label
             edge_props["label_backward"] = backward_edge_label
 
+            to_node_id = self.make_node_id(spec["to_ring"], to_id)
+            projection = self._build_edge_projection(
+                spec,
+                portfolio=portfolio,
+                org=org,
+                to_node_id=to_node_id,
+                outgoing_attributes=outgoing_attributes,
+                node_attr_cache=node_attr_cache,
+                projection_updated=projection_updated,
+            )
+            if projection is not None:
+                edge_props["projection"] = projection
+
             declarations.append((edge_type.strip(), to_id, edge_props))
 
         return declarations
 
-    def _build_desired_edges(self, edge_specs, attributes):
+    def _build_desired_edges(self, portfolio: str, org: str, from_node_id: str, edge_specs, attributes):
         if not isinstance(attributes, dict):
             return []
 
         desired_by_key = {}
+        node_attr_cache: Dict[str, Dict[str, Any]] = {}
+        projection_updated = str(int(self.clock()))
         for spec in edge_specs:
             field_name = spec["field_name"]
             if field_name not in attributes:
@@ -937,7 +1071,16 @@ class GraphController:
             if spec.get("kind") == "literal":
                 declarations = self._extract_literal_edge_declarations(attributes.get(field_name), spec)
             else:
-                declarations = self._extract_edge_declarations(attributes.get(field_name), spec)
+                declarations = self._extract_edge_declarations(
+                    attributes.get(field_name),
+                    spec,
+                    portfolio=portfolio,
+                    org=org,
+                    from_node_id=from_node_id,
+                    outgoing_attributes=attributes,
+                    node_attr_cache=node_attr_cache,
+                    projection_updated=projection_updated,
+                )
             for edge_type, to_id, edge_props in declarations:
                 if spec.get("kind") == "literal":
                     to_node_id = to_id
@@ -977,7 +1120,13 @@ class GraphController:
             'exists_after': exists_after,
         }
 
-    def _get_blueprint_for_ring(self, ring: str, blueprint_handle: Optional[str] = None):
+    def _get_blueprint_for_ring(
+        self,
+        ring: str,
+        blueprint_handle: Optional[str] = None,
+        *,
+        force_refresh: bool = False,
+    ):
         bpc = self._get_blueprint_controller()
         if not bpc:
             return {}
@@ -997,7 +1146,7 @@ class GraphController:
             seen.add(handle)
 
             cache_key = (handle, ring)
-            cached = self._blueprint_cache.get(cache_key)
+            cached = None if force_refresh else self._blueprint_cache.get(cache_key)
             if cached is not None:
                 blueprint = cached
             else:
@@ -1012,15 +1161,21 @@ class GraphController:
         return blueprint if "blueprint" in locals() else {}
 
     def sync_document_graph_edges(self, portfolio, org, ring, idx, attributes, blueprint_handle: Optional[str] = None):
-        blueprint = self._get_blueprint_for_ring(ring, blueprint_handle=blueprint_handle)
+        # Writes should read the latest blueprint shape so newly-declared source
+        # options (e.g. projection) apply without requiring process restart.
+        blueprint = self._get_blueprint_for_ring(
+            ring,
+            blueprint_handle=blueprint_handle,
+            force_refresh=True,
+        )
         edge_specs = self._get_edge_specs_from_blueprint(blueprint, ring)
         if not edge_specs:
             return {'success': True, 'skipped': True, 'reason': 'No valid blueprint source relationships found'}
 
-        desired_edges = self._build_desired_edges(edge_specs, attributes)
+        from_node_id = GraphController.make_node_id(ring, idx)
+        desired_edges = self._build_desired_edges(portfolio, org, from_node_id, edge_specs, attributes)
         managed_edge_types = sorted({spec["edge_type"] for spec in edge_specs})
 
-        from_node_id = GraphController.make_node_id(ring, idx)
         sync_result = self.sync_node_edges(
             portfolio,
             org,
@@ -1044,7 +1199,11 @@ class GraphController:
         }
 
     def remove_document_graph_edges(self, portfolio, org, ring, idx, attributes, blueprint_handle: Optional[str] = None):
-        blueprint = self._get_blueprint_for_ring(ring, blueprint_handle=blueprint_handle)
+        blueprint = self._get_blueprint_for_ring(
+            ring,
+            blueprint_handle=blueprint_handle,
+            force_refresh=True,
+        )
         edge_specs = self._get_edge_specs_from_blueprint(blueprint, ring)
         managed_edge_types = sorted({spec["edge_type"] for spec in edge_specs})
         if not managed_edge_types:

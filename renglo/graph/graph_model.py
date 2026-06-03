@@ -936,16 +936,30 @@ class GraphModel:
                 existing_by_key[(edge.edge_type, edge.to_node_id)] = edge
 
         added_or_updated = 0
+        unchanged = 0
         removed = 0
 
         for (edge_type, to_node_id), properties in desired_by_key.items():
+            existing_edge = existing_by_key.get((edge_type, to_node_id))
+            desired_props = dict(properties or {})
+            if existing_edge is not None:
+                existing_proj = existing_edge.properties.get("projection")
+                desired_proj = desired_props.get("projection")
+                if isinstance(existing_proj, dict) and isinstance(desired_proj, dict):
+                    existing_no_ts = {k: v for k, v in existing_proj.items() if k != "_updated"}
+                    desired_no_ts = {k: v for k, v in desired_proj.items() if k != "_updated"}
+                    if existing_no_ts == desired_no_ts and "_updated" in existing_proj:
+                        desired_props["projection"] = {**desired_proj, "_updated": existing_proj["_updated"]}
+            if existing_edge is not None and existing_edge.properties == desired_props:
+                unchanged += 1
+                continue
             self.put_edge(
                 portfolio,
                 org,
                 edge_type,
                 from_node_id,
                 to_node_id,
-                properties=properties or {},
+                properties=desired_props,
             )
             added_or_updated += 1
 
@@ -956,6 +970,7 @@ class GraphModel:
 
         return {
             "added_or_updated": added_or_updated,
+            "unchanged": unchanged,
             "removed_stale": removed,
             "desired": len(desired_by_key),
             "existing_before": len(existing_by_key),
