@@ -196,7 +196,8 @@ class ChatModel:
             #current_app.logger.debug(f'Extracted items: {items}')
             
             if not items:
-                self.logger.debug(f'No items found for index: {index} and message_id: {message_id}')                result['success'] = False
+                self.logger.debug(f'No items found for index: {index} and message_id: {message_id}')                
+                result['success'] = False
                 result['message'] = 'Item not found'
                 return result
             
