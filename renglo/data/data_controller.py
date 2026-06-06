@@ -401,16 +401,14 @@ class DataController:
         if not isinstance(source, dict):
             return False
         target = source.get('target')
-        target_key = source.get('target_key')
-        return isinstance(target, str) and target.strip() and isinstance(target_key, str) and target_key.strip()
+        return isinstance(target, str) and target.strip()
 
-    def _extract_reference_value(self, item, target_key):
+    def _extract_reference_value(self, item):
         if isinstance(item, dict):
             candidates = [
                 item.get('value'),
                 item.get('id'),
                 item.get('_id'),
-                item.get(target_key),
             ]
             target_obj = item.get('target')
             if isinstance(target_obj, dict):
@@ -419,7 +417,6 @@ class DataController:
                         target_obj.get('id'),
                         target_obj.get('_id'),
                         target_obj.get('value'),
-                        target_obj.get(target_key),
                     ]
                 )
             for candidate in candidates:
@@ -438,7 +435,6 @@ class DataController:
     def _normalize_reference_object(self, field, item):
         source = field.get('source') if isinstance(field, dict) else {}
         source = source if isinstance(source, dict) else {}
-        target_key = str(source.get('target_key', '_id')).strip() or '_id'
         qualifier_keys = source.get('qualifiers') if isinstance(source.get('qualifiers'), list) else []
         qualifier_keys = [str(key).strip() for key in qualifier_keys if str(key).strip()]
         source_labels_raw = source.get('label')
@@ -452,7 +448,7 @@ class DataController:
             )
         )
 
-        ref_value = self._extract_reference_value(item, target_key)
+        ref_value = self._extract_reference_value(item)
         if not ref_value:
             return None
 
