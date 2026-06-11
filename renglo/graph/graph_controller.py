@@ -870,7 +870,12 @@ class GraphController:
     ) -> Dict[str, Any]:
         if node_id in cache:
             return cache[node_id]
-        if not isinstance(node_id, str) or not node_id or node_id.startswith("_literal/"):
+        if (
+            not isinstance(node_id, str)
+            or not node_id
+            or node_id.startswith("_literal/")
+            or node_id.startswith("_dangling/")
+        ):
             cache[node_id] = {}
             return cache[node_id]
         try:
@@ -1005,6 +1010,9 @@ class GraphController:
                 continue
 
             edge_props = {}
+            raw_props = value_obj.get("properties")
+            if isinstance(raw_props, dict):
+                edge_props.update(raw_props)
             qualifiers = {}
             declared_qualifiers = spec.get("qualifier_keys") or []
             raw_qualifiers = value_obj.get("qualifiers")
@@ -1038,7 +1046,10 @@ class GraphController:
             edge_props["label_forward"] = forward_edge_label
             edge_props["label_backward"] = backward_edge_label
 
-            to_node_id = self.make_node_id(spec["to_ring"], to_id)
+            if isinstance(to_id, str) and to_id.startswith("_dangling/"):
+                to_node_id = to_id
+            else:
+                to_node_id = self.make_node_id(spec["to_ring"], to_id)
             projection = self._build_edge_projection(
                 spec,
                 portfolio=portfolio,
@@ -1081,6 +1092,8 @@ class GraphController:
                 )
             for edge_type, to_id, edge_props in declarations:
                 if spec.get("kind") == "literal":
+                    to_node_id = to_id
+                elif isinstance(to_id, str) and to_id.startswith("_dangling/"):
                     to_node_id = to_id
                 else:
                     to_node_id = self.make_node_id(spec["to_ring"], to_id)
