@@ -599,18 +599,20 @@ class GraphController:
         return bpc
 
     def _parse_edge_source(self, source: Any):
-        # Legacy format: "<target_blueprint>:<target_key>:<preview>"
+        # Legacy format is supported:
+        # "<target_blueprint>:<deprecated_target_key>:<preview>"
+        # target key is ignored and always resolved as "_id".
         if isinstance(source, str):
             parts = [p.strip() for p in source.split(":")]
             if len(parts) != 3:
                 return None
-            to_ring, id_token, label_field = parts
-            if not to_ring or not id_token:
+            to_ring, _deprecated_target_key, label_field = parts
+            if not to_ring:
                 return None
             label_fields = [token.strip() for token in str(label_field).split(",") if token and token.strip()]
             return {
                 "to_ring": to_ring,
-                "id_token": id_token,
+                "id_token": "_id",
                 "label_fields": label_fields,
                 "edge_type": None,
                 "qualifier_keys": [],
@@ -619,10 +621,9 @@ class GraphController:
                 "source_raw": source,
             }
 
-        # New format:
+        # Supported format:
         # {
         #   "target": "knowledge_concept",
-        #   "target_key": "_id",
         #   "preview": ["name"],
         #   "label": ["DELEGATES_TO", "DELEGATED_BY"],
         #   "qualifiers": ["since", "domain"],
@@ -632,11 +633,8 @@ class GraphController:
             return None
 
         to_ring = source.get("target")
-        id_token = source.get("target_key", "_id")
         preview = source.get("preview")
         if not isinstance(to_ring, str) or not to_ring.strip():
-            return None
-        if not isinstance(id_token, str) or not id_token.strip():
             return None
 
         label_fields: List[str] = []
@@ -665,7 +663,7 @@ class GraphController:
 
         return {
             "to_ring": to_ring.strip(),
-            "id_token": id_token.strip(),
+            "id_token": "_id",
             "label_fields": label_fields,
             "edge_labels": label_pair[:2],
             "qualifier_keys": qualifier_keys,
@@ -872,7 +870,12 @@ class GraphController:
     ) -> Dict[str, Any]:
         if node_id in cache:
             return cache[node_id]
-        if not isinstance(node_id, str) or not node_id or node_id.startswith("_literal/"):
+        if (
+            not isinstance(node_id, str)
+            or not node_id
+            or node_id.startswith("_literal/")
+            or node_id.startswith("_dangling/")
+        ):
             cache[node_id] = {}
             return cache[node_id]
         try:
@@ -1007,6 +1010,9 @@ class GraphController:
                 continue
 
             edge_props = {}
+            raw_props = value_obj.get("properties")
+            if isinstance(raw_props, dict):
+                edge_props.update(raw_props)
             qualifiers = {}
             declared_qualifiers = spec.get("qualifier_keys") or []
             raw_qualifiers = value_obj.get("qualifiers")
@@ -1040,7 +1046,10 @@ class GraphController:
             edge_props["label_forward"] = forward_edge_label
             edge_props["label_backward"] = backward_edge_label
 
-            to_node_id = self.make_node_id(spec["to_ring"], to_id)
+            if isinstance(to_id, str) and to_id.startswith("_dangling/"):
+                to_node_id = to_id
+            else:
+                to_node_id = self.make_node_id(spec["to_ring"], to_id)
             projection = self._build_edge_projection(
                 spec,
                 portfolio=portfolio,
@@ -1083,6 +1092,8 @@ class GraphController:
                 )
             for edge_type, to_id, edge_props in declarations:
                 if spec.get("kind") == "literal":
+                    to_node_id = to_id
+                elif isinstance(to_id, str) and to_id.startswith("_dangling/"):
                     to_node_id = to_id
                 else:
                     to_node_id = self.make_node_id(spec["to_ring"], to_id)
