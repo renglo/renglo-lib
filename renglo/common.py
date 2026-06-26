@@ -33,9 +33,10 @@ def load_config():
     to load the system configuration before initializing controllers.
     
     Loading Strategy:
-    1. Try to load from system/env_config.py (local development)
-    2. Fall back to environment variables (Lambda/production)
-    3. Merge both sources (env vars take precedence)
+    1. Try explicit path from RENGLO_CONFIG_PATH
+    2. Try local env_config.py (for local development)
+    3. Try legacy system/env_config.py locations for backwards compatibility
+    4. Merge environment variables (env vars take precedence)
     
     Returns:
         dict: Configuration dictionary with all uppercase config variables
@@ -53,34 +54,53 @@ def load_config():
     
     # Try multiple paths to find env_config.py
     possible_paths = []
-    
-    # 1. Try relative to current working directory
+
+    # 1. Explicit config path (preferred for headless runtimes)
+    explicit_config_path = os.getenv("RENGLO_CONFIG_PATH")
+    if explicit_config_path:
+        possible_paths.append(explicit_config_path)
+
+    # 2. Try relative to current working directory
+    possible_paths.append(os.path.join(os.getcwd(), "env_config.py"))
     possible_paths.append(os.path.join(os.getcwd(), 'system', 'env_config.py'))
     
-    # 2. Try to find workspace root by looking for marker directories
+    # 3. Try to find workspace root by looking for marker directories
     current_dir = os.getcwd()
     while current_dir != os.path.dirname(current_dir):  # Stop at filesystem root
+        if os.path.exists(os.path.join(current_dir, "env_config.py")):
+            possible_paths.append(os.path.join(current_dir, "env_config.py"))
+            break
         if os.path.exists(os.path.join(current_dir, 'system', 'env_config.py')):
             possible_paths.append(os.path.join(current_dir, 'system', 'env_config.py'))
             break
         # Look for workspace markers
         if any(os.path.exists(os.path.join(current_dir, marker)) 
                for marker in ['dev', 'extensions', 'console', 'system']):
+            possible_paths.append(os.path.join(current_dir, "env_config.py"))
             possible_paths.append(os.path.join(current_dir, 'system', 'env_config.py'))
             break
         current_dir = os.path.dirname(current_dir)
     
-    # 3. Try relative from this module's location (renglo/common.py)
+    # 4. Try relative from this module's location (renglo/common.py)
     # Go up: renglo -> renglo-lib -> dev -> root
     renglo_lib_path = os.path.dirname(os.path.dirname(__file__))
     workspace_root = os.path.dirname(os.path.dirname(renglo_lib_path))
+    possible_paths.append(os.path.join(workspace_root, "env_config.py"))
     possible_paths.append(os.path.join(workspace_root, 'system', 'env_config.py'))
     
     env_config = None
     loaded_from = None
     
+    seen_paths = set()
+    deduped_paths = []
+    for candidate in possible_paths:
+        if not candidate or candidate in seen_paths:
+            continue
+        seen_paths.add(candidate)
+        deduped_paths.append(candidate)
+
     # Try to load from each path
-    for config_path in possible_paths:
+    for config_path in deduped_paths:
         if os.path.exists(config_path):
             try:
                 spec = importlib.util.spec_from_file_location("env_config", config_path)
@@ -135,7 +155,8 @@ def load_config():
     if missing_keys:
         raise RuntimeError(
             f"Critical configuration missing: {', '.join(missing_keys)}\n"
-            f"Please set these as environment variables or in system/env_config.py"
+            "Please set these as environment variables or provide env_config.py "
+            "via RENGLO_CONFIG_PATH"
         )
     
     return config
