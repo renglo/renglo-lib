@@ -17,6 +17,7 @@ from renglo.schd.external_handler_runner import (
     write_batch_payload,
     write_batch_result,
 )
+from renglo.runtime import attach_jwt_claims_to_payload
 
 from datetime import datetime
 
@@ -239,6 +240,7 @@ class SchdController:
 
         if has_external_handlers(extension) and is_external_handler_active(extension):
             print(f'Calling external handler:{handler}')
+            attach_jwt_claims_to_payload(payload)
             response = run_external_handler(
                 extension_name=extension,
                 handler_name=handler_name,
@@ -298,6 +300,7 @@ class SchdController:
                 if is_external_handler_active(extension):
                     # External handlers are active - use external handler runner
                     # This automatically chooses local Docker or Lambda based on environment
+                    attach_jwt_claims_to_payload(payload)
                     response = run_external_handler(
                         extension_name=extension,
                         handler_name=handler,
@@ -445,6 +448,7 @@ class SchdController:
             return {'success': False, 'error': 'Batch requires ECS_RESULTS_BUCKET or ECS config for result storage'}
 
         if has_external_handlers(extension) and is_external_handler_active(extension):
+            attach_jwt_claims_to_payload(payload)
             if use_dev_docker(extension):
                 response = call_local_docker_handler_batch_start(
                     extension_name=extension,
