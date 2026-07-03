@@ -625,6 +625,7 @@ class GraphController:
         # {
         #   "target": "knowledge_concept",
         #   "preview": ["name"],
+        #   "title": ["name", "element_type"],
         #   "label": ["DELEGATES_TO", "DELEGATED_BY"],
         #   "qualifiers": ["since", "domain"],
         #   "dynamic": true
@@ -654,6 +655,13 @@ class GraphController:
         elif isinstance(raw_projection, str) and raw_projection.strip():
             projection_fields = [token.strip() for token in raw_projection.split(",") if token and token.strip()]
 
+        title_fields: List[str] = []
+        raw_title = source.get("title")
+        if isinstance(raw_title, list):
+            title_fields = [str(token).strip() for token in raw_title if str(token).strip()]
+        elif isinstance(raw_title, str) and raw_title.strip():
+            title_fields = [token.strip() for token in raw_title.split(",") if token and token.strip()]
+
         label_pair: List[str] = []
         raw_label = source.get("label")
         if isinstance(raw_label, list):
@@ -665,6 +673,7 @@ class GraphController:
             "to_ring": to_ring.strip(),
             "id_token": "_id",
             "label_fields": label_fields,
+            "title_fields": title_fields,
             "edge_labels": label_pair[:2],
             "qualifier_keys": qualifier_keys,
             "projection_fields": projection_fields,
@@ -817,6 +826,7 @@ class GraphController:
                                 "to_ring": source_parts["to_ring"],
                                 "id_token": source_parts["id_token"],
                                 "label_fields": source_parts.get("label_fields", []),
+                                "title_fields": source_parts.get("title_fields", []),
                                 "edge_labels": source_parts.get("edge_labels", []),
                                 "qualifier_keys": source_parts.get("qualifier_keys", []),
                                 "projection_fields": source_parts.get("projection_fields", []),
@@ -919,6 +929,20 @@ class GraphController:
         cache[node_id] = extracted
         return extracted
 
+    @staticmethod
+    def _assemble_node_caption(attributes: Dict[str, Any], field_order: List[str]) -> Optional[str]:
+        if not isinstance(attributes, dict) or not field_order:
+            return None
+        parts: List[str] = []
+        for field_name in field_order:
+            raw = attributes.get(field_name)
+            if raw is None or isinstance(raw, (dict, list)):
+                continue
+            text = str(raw).strip()
+            if text:
+                parts.append(text)
+        return " | ".join(parts) if parts else None
+
     def _build_edge_projection(
         self,
         spec: Dict[str, Any],
@@ -951,6 +975,20 @@ class GraphController:
                 projection[f"from.{field_name}"] = from_attrs.get(field_name)
             if field_name in to_attrs:
                 projection[f"to.{field_name}"] = to_attrs.get(field_name)
+
+        caption_fields = (
+            spec.get("title_fields")
+            or spec.get("label_fields")
+            or projection_fields
+        )
+        if isinstance(caption_fields, list) and caption_fields:
+            from_caption = self._assemble_node_caption(from_attrs, caption_fields)
+            to_caption = self._assemble_node_caption(to_attrs, caption_fields)
+            if from_caption:
+                projection["from._caption"] = from_caption
+            if to_caption:
+                projection["to._caption"] = to_caption
+
         projection["_updated"] = projection_updated
         return projection
 
