@@ -37,6 +37,10 @@ result = dc.get_document('portfolio', 'org', 'ring', 'idx')
 
 This library contains NO Flask routes. Routes are in `renglo-api`.
 
+## License
+
+This project is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt) for details.
+
 
 ## Installation
 

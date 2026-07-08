@@ -9,6 +9,7 @@ setup(
     version="1.0.0",
     description="Core Renglo functionality - controllers, models, and utilities",
     author="Renglo Team",
+    license="MIT",
     packages=find_packages(),
     python_requires=">=3.12",
     install_requires=[
