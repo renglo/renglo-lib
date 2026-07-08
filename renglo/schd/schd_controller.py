@@ -3,6 +3,7 @@ from renglo.logger import get_logger
 from renglo.data.data_controller import DataController
 from renglo.docs.docs_controller import DocsController
 from renglo.blueprint.blueprint_controller import BlueprintController
+from renglo.auth.auth_controller import AuthController
 
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
@@ -34,6 +35,7 @@ class SchdController:
         self.DAC = DataController(config=self.config)
         self.DCC = DocsController(config=self.config)
         self.BPC = BlueprintController(config=self.config)
+        self.AUC = AuthController(config=self.config)
         self.SHM = SchdModel(config=self.config)
         self.SHL = SchdLoader()
         
@@ -281,28 +283,58 @@ class SchdController:
     
     
     
+    def _resolve_extension_handle(self, portfolio, extension):
+        """
+        Resolve a URL extension segment to the tool handle used by handlers.
+
+        - If already a valid handle (e.g. "productora"), return it as-is.
+        - If it is a tool id (e.g. "9def1b8eaa83"), resolve to tool.handle.
+        """
+        value = str(extension or "").strip()
+        if not value:
+            return value
+
+        # Already a valid python package name/handle.
+        if value.isidentifier() and not value[0].isdigit():
+            return value
+
+        try:
+            response = self.AUC.get_entity('tool', portfolio_id=portfolio, tool_id=value)
+            if response.get('success'):
+                document = response.get('document') or {}
+                handle = str(document.get('handle') or '').strip()
+                if handle:
+                    self.logger.debug(f"Resolved tool id '{value}' to handle '{handle}'")
+                    return handle
+        except Exception as e:
+            self.logger.warning(f"Could not resolve tool id '{value}' to handle: {e}")
+
+        return value
+
     def handler_call(self,portfolio,org,extension,handler,payload):
         action = 'handler_call'
         
         print(f'Calling handler:{handler}, payload:{payload}')
         
-        try:        
+        try:
+            resolved_extension = self._resolve_extension_handle(portfolio, extension)
+
             # We override portfolio, org and extension that might come in the payload.
             payload['portfolio'] = portfolio
             payload['org'] = org
-            payload['tool'] = extension 
+            payload['tool'] = resolved_extension 
                 
             response = {'success':False,'output':[]}
             
             # Switch logic: Check if extension has external handlers
-            if has_external_handlers(extension):
+            if has_external_handlers(resolved_extension):
                 # Extension has external handlers configured
-                if is_external_handler_active(extension):
+                if is_external_handler_active(resolved_extension):
                     # External handlers are active - use external handler runner
                     # This automatically chooses local Docker or Lambda based on environment
                     attach_jwt_claims_to_payload(payload)
                     response = run_external_handler(
-                        extension_name=extension,
+                        extension_name=resolved_extension,
                         handler_name=handler,
                         payload=payload
                     )
@@ -361,11 +393,11 @@ class SchdController:
                         }
                 else:
                     # External handlers are deactivated - fall back to internal
-                    print(f'External handlers for {extension} are deactivated, using internal handler')
-                    response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
+                    print(f'External handlers for {resolved_extension} are deactivated, using internal handler')
+                    response = self.SHL.load_and_run(f'{resolved_extension}/{handler}', payload=payload)
             else:
                 # Extension does not have external handlers - use internal handler loader
-                response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
+                response = self.SHL.load_and_run(f'{resolved_extension}/{handler}', payload=payload)
 
             # Handle internal handler response (SchdLoader format).
             # When load_and_run fails (e.g. exception), response['output'] can be a string, not a dict.
@@ -400,15 +432,17 @@ class SchdController:
         
         print(f'Calling handler check:{handler}, payload:{payload}')
         
-        try:        
+        try:
+            resolved_extension = self._resolve_extension_handle(portfolio, extension)
+
             # We override portfolio, org and extension that might come in the payload.
             payload['portfolio'] = portfolio
             payload['org'] = org
-            payload['tool'] = extension
+            payload['tool'] = resolved_extension
                 
             response = {'success':False,'output':[]}
             
-            response = self.SHL.load_and_run(f'{extension}/{handler}', payload = payload, check=True)
+            response = self.SHL.load_and_run(f'{resolved_extension}/{handler}', payload = payload, check=True)
 
             out = response.get('output')
             if not isinstance(out, dict):
@@ -437,32 +471,33 @@ class SchdController:
         """Start batch handler (any handler). Supports: local in-process, external dev Docker, or ECS."""
         action = 'handler_call_batch_start'
         payload = dict(payload or {})
+        resolved_extension = self._resolve_extension_handle(portfolio, extension)
         payload['portfolio'] = portfolio
         payload['org'] = org
-        payload['tool'] = extension
+        payload['tool'] = resolved_extension
 
-        s3_cfg = get_ecs_config(extension) if has_external_handlers(extension) else None
+        s3_cfg = get_ecs_config(resolved_extension) if has_external_handlers(resolved_extension) else None
         if not s3_cfg:
-            s3_cfg = get_batch_s3_config(extension)
+            s3_cfg = get_batch_s3_config(resolved_extension)
         if not s3_cfg:
             return {'success': False, 'error': 'Batch requires ECS_RESULTS_BUCKET or ECS config for result storage'}
 
-        if has_external_handlers(extension) and is_external_handler_active(extension):
+        if has_external_handlers(resolved_extension) and is_external_handler_active(resolved_extension):
             attach_jwt_claims_to_payload(payload)
-            if use_dev_docker(extension):
+            if use_dev_docker(resolved_extension):
                 response = call_local_docker_handler_batch_start(
-                    extension_name=extension,
+                    extension_name=resolved_extension,
                     handler_name=handler,
                     payload=payload,
                 )
             else:
-                if not is_ecs_handler(extension, handler):
+                if not is_ecs_handler(resolved_extension, handler):
                     return {
                         'success': False,
                         'error': 'Batch in production only for ECS handlers; use sync endpoint for this handler',
                     }
                 response = call_ecs_handler_async(
-                    extension_name=extension,
+                    extension_name=resolved_extension,
                     handler_name=handler,
                     payload=payload,
                 )
@@ -485,12 +520,12 @@ class SchdController:
         request_id = str(uuid.uuid4())
         event = {'handler': handler, 'payload': payload}
         try:
-            write_batch_payload(extension, request_id, event)
+            write_batch_payload(resolved_extension, request_id, event)
         except Exception as e:
             return {'success': False, 'error': f'Failed to write batch payload: {e}'}
         thread = threading.Thread(
             target=self._run_batch_local_worker,
-            args=(extension, handler, payload, request_id),
+            args=(resolved_extension, handler, payload, request_id),
             daemon=True,
         )
         thread.start()
