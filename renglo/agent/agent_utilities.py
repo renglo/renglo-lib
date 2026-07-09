@@ -1,5 +1,5 @@
 from renglo.data.data_controller import DataController
-from renglo.docs.docs_controller import DocsController
+from renglo.files.files_controller import FilesController
 from renglo.chat.chat_controller import ChatController
 from renglo.schd.schd_controller import SchdController
 from renglo.agent.websocket_client import WebSocketClient
@@ -100,7 +100,7 @@ class AgentUtilities:
         
         # Initialize controllers
         self.DAC = DataController(config=self.config)
-        self.DCC = DocsController(config=self.config)
+        self.FCC = FilesController(config=self.config)
         self.CHC = ChatController(config=self.config)
         self.SHC = SchdController(config=self.config)
         

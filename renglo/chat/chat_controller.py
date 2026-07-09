@@ -11,7 +11,7 @@ import boto3
 from flask import has_app_context
 
 from renglo.chat.chat_model import ChatModel
-from renglo.docs.docs_controller import DocsController
+from renglo.files.files_controller import FilesController
 from renglo.logger import get_logger
 from renglo.runtime import get_current_jwt_claims
 
@@ -433,7 +433,7 @@ class ChatController:
 
 
 
-    def _tmp_get_json(self, dcc: DocsController, key: str):
+    def _tmp_get_json(self, dcc: FilesController, key: str):
 
         t = self._tmp_key_five_tuple(key)
 
@@ -703,7 +703,7 @@ class ChatController:
 
 
 
-    def _replace_with_resolved_if_tmp_artifact(self, event, dcc: DocsController):
+    def _replace_with_resolved_if_tmp_artifact(self, event, dcc: FilesController):
 
         spec = self._first_tmp_artifact_from_tool_result(event)
 
@@ -761,7 +761,7 @@ class ChatController:
 
             return
 
-        dcc = DocsController(config=self.config)
+        dcc = FilesController(config=self.config)
 
         for i, event in enumerate(evl):
 

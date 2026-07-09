@@ -7,7 +7,7 @@ import traceback
 from decimal import Decimal
 
 from datetime import datetime
-from renglo.docs.docs_controller import DocsController
+from renglo.files.files_controller import FilesController
 from renglo.session.session_model import SessionModel
 from renglo.logger import get_logger
 from renglo.runtime import get_current_jwt_claims
@@ -150,7 +150,7 @@ class SessionController:
             return None
         return tuple(parts[:5])
 
-    def _tmp_get_json(self, dcc: DocsController, key: str):
+    def _tmp_get_json(self, dcc: FilesController, key: str):
         """
         Load JSON from tmp storage. Returns a Python value or None on failure.
         The underlying tmp_get returns a Flask Response in ['content'] for success.
@@ -304,7 +304,7 @@ class SessionController:
         return new_event
 
     def _replace_with_resolved_if_tmp_artifact(
-        self, event, dcc: DocsController
+        self, event, dcc: FilesController
     ) -> dict | None:
         """
         ``tool_result`` (nested result rows) *or* top-level ``tool_rs`` with tmp_artifact
@@ -341,7 +341,7 @@ class SessionController:
         evl = self._event_list_for_last_turn(last)
         if not evl or not isinstance(evl, list):
             return
-        dcc = DocsController(config=self.config)
+        dcc = FilesController(config=self.config)
         for i, event in enumerate(evl):
             if not isinstance(event, dict):
                 continue

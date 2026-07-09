@@ -1,14 +1,14 @@
 import json
 
-from renglo.docs.docs_model import DocsModel
+from renglo.files.files_model import FilesModel
 from renglo.logger import get_logger
 
-class DocsController:
+class FilesController:
 
     def __init__(self, config=None, tid=None, ip=None):
         self.config = config or {}
         self.logger = get_logger()
-        self.DCM = DocsModel(config=self.config)
+        self.FCM = FilesModel(config=self.config)
         
         self.valid_types = {
             'image/jpeg':'jpg', 
@@ -40,14 +40,13 @@ class DocsController:
     def a_b_post(self,portfolio,org,ring,file,type,name):
         
         # file needs to come in binary format already
-        self.logger.info("Uploading a DOC")
+        self.logger.info("Uploading a file")
         if file:    
             if type in self.valid_types:
                 # Further verification logic can be added here
                 self.logger.info("File type is valid.")
                 
-                #response = upload_doc_to_s3(portfolio,org,ring,raw_content,up_file_type) 
-                response = self.DCM.a_b_post(portfolio,org,ring,file,type,name)  
+                response = self.FCM.a_b_post(portfolio,org,ring,file,type,name)  
                 
                 if response['success']:    
                     return response 
@@ -63,7 +62,7 @@ class DocsController:
     
     def a_b_c_get(self,portfolio,org,ring,filename):
         
-        response = self.DCM.a_b_c_get(portfolio,org,ring,filename)
+        response = self.FCM.a_b_c_get(portfolio,org,ring,filename)
         
         return response
     
@@ -71,14 +70,12 @@ class DocsController:
     def tmp_post(self,portfolio,org,entity,file):
         
         #Uploading to /tmp space
-        self.logger.info("Uploading a doc to transient storage")
+        self.logger.info("Uploading a file to transient storage")
         if file:    
             if self._file_contents_is_valid_json(file):
                 self.logger.info("Upload body is valid JSON.")
                 
-                #response = upload_doc_to_s3(portfolio,org,ring,raw_content,up_file_type) 
-                
-                response = self.DCM.tmp_post(portfolio, org, entity, file)
+                response = self.FCM.tmp_post(portfolio, org, entity, file)
                 
                 print(f'tmp_post response: {response}')
                 
@@ -97,9 +94,9 @@ class DocsController:
     def tmp_get(self,portfolio,org,entity,date,id):
         
         #Getting from /tmp space
-        self.logger.info("Retrieving a doc from transient storage")
+        self.logger.info("Retrieving a file from transient storage")
         
-        response = self.DCM.tmp_get(portfolio,org,entity,date,id)
+        response = self.FCM.tmp_get(portfolio,org,entity,date,id)
         
         return response
         
@@ -107,5 +104,4 @@ class DocsController:
         
         
         
-    
     

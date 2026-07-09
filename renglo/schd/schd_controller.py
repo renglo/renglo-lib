@@ -1,7 +1,7 @@
 from renglo.logger import get_logger
 
 from renglo.data.data_controller import DataController
-from renglo.docs.docs_controller import DocsController
+from renglo.files.files_controller import FilesController
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
 
@@ -33,7 +33,7 @@ class SchdController:
         self.config = config or {}
         self.logger = get_logger()
         self.DAC = DataController(config=self.config)
-        self.DCC = DocsController(config=self.config)
+        self.FCC = FilesController(config=self.config)
         self.BPC = BlueprintController(config=self.config)
         self.AUC = AuthController(config=self.config)
         self.SHM = SchdModel(config=self.config)
@@ -168,7 +168,7 @@ class SchdController:
             if not response_3['success']:
                 status = 400
                 result.append({'success':False,'action':action,'handler':handler_name,'input':handler_input_data,'output':response_3})
-                #response_3b = self.DCC.a_b_post(portfolio,org,'schd_runs',json.dumps(response_3),'application/json',False)
+                #response_3b = self.FCC.a_b_post(portfolio,org,'schd_runs',json.dumps(response_3),'application/json',False)
                 #return result, 400
             else:  
                 status = 200
@@ -178,7 +178,7 @@ class SchdController:
              
         #Save response_3 to S3, You'll store the s3 url in the change['output']
         iso_date = datetime.now().strftime('%Y-%m-%d')
-        response_3b = self.DCC.a_b_post(portfolio,org,f'schd_runs/{iso_date}',json.dumps(response_3),'application/json',False)
+        response_3b = self.FCC.a_b_post(portfolio,org,f'schd_runs/{iso_date}',json.dumps(response_3),'application/json',False)
         
 
         # Check s3 Response
