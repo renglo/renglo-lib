@@ -435,8 +435,14 @@ class DataController:
     def _normalize_reference_object(self, field, item):
         source = field.get('source') if isinstance(field, dict) else {}
         source = source if isinstance(source, dict) else {}
-        qualifier_keys = source.get('qualifiers') if isinstance(source.get('qualifiers'), list) else []
-        qualifier_keys = [str(key).strip() for key in qualifier_keys if str(key).strip()]
+        attribute_keys_raw = source.get('attributes')
+        if not isinstance(attribute_keys_raw, list):
+            attribute_keys_raw = source.get('qualifiers')
+        attribute_keys = (
+            [str(key).strip() for key in attribute_keys_raw if str(key).strip()]
+            if isinstance(attribute_keys_raw, list)
+            else []
+        )
         source_labels_raw = source.get('label')
         source_labels = (
             [str(label).strip() for label in source_labels_raw if str(label).strip()]
@@ -457,12 +463,18 @@ class DataController:
         if source_labels:
             normalized.setdefault('label', source_labels[:2])
 
-        incoming_qualifiers = normalized.get('qualifiers')
-        qualifiers = incoming_qualifiers if isinstance(incoming_qualifiers, dict) else {}
-        for qualifier_key in qualifier_keys:
-            qualifiers.setdefault(qualifier_key, '')
-        if qualifiers or qualifier_keys:
-            normalized['qualifiers'] = qualifiers
+        incoming_attributes = normalized.get('attributes')
+        if not isinstance(incoming_attributes, dict):
+            incoming_attributes = normalized.get('qualifiers') if isinstance(normalized.get('qualifiers'), dict) else {}
+        attributes = dict(incoming_attributes) if isinstance(incoming_attributes, dict) else {}
+        for attribute_key in attribute_keys:
+            attributes.setdefault(attribute_key, '')
+        if attributes or attribute_keys:
+            normalized['attributes'] = attributes
+            normalized.pop('qualifiers', None)
+
+        if isinstance(normalized.get('properties'), dict) and 'extras' not in normalized:
+            normalized['extras'] = normalized.pop('properties')
 
         return normalized
 

@@ -615,7 +615,8 @@ class GraphController:
                 "id_token": "_id",
                 "label_fields": label_fields,
                 "edge_type": None,
-                "qualifier_keys": [],
+                "attribute_keys": [],
+                "allow_extras": True,
                 "projection_fields": [],
                 "dynamic": False,
                 "source_raw": source,
@@ -627,7 +628,8 @@ class GraphController:
         #   "preview": ["name"],
         #   "title": ["name", "element_type"],
         #   "label": ["DELEGATES_TO", "DELEGATED_BY"],
-        #   "qualifiers": ["since", "domain"],
+        #   "attributes": ["edge_taxonomy", "weight"],
+        #   "allow_extras": true,
         #   "dynamic": true
         # }
         if not isinstance(source, dict):
@@ -644,9 +646,17 @@ class GraphController:
         elif isinstance(preview, str) and preview.strip():
             label_fields = [token.strip() for token in preview.split(",") if token and token.strip()]
 
-        qualifier_keys = []
-        if isinstance(source.get("qualifiers"), list):
-            qualifier_keys = [str(token).strip() for token in source.get("qualifiers", []) if str(token).strip()]
+        attribute_keys = []
+        raw_attributes = source.get("attributes")
+        if not isinstance(raw_attributes, list):
+            # Legacy blueprint key.
+            raw_attributes = source.get("qualifiers")
+        if isinstance(raw_attributes, list):
+            attribute_keys = [str(token).strip() for token in raw_attributes if str(token).strip()]
+
+        allow_extras = True
+        if "allow_extras" in source:
+            allow_extras = bool(source.get("allow_extras"))
 
         projection_fields: List[str] = []
         raw_projection = source.get("projection")
@@ -675,7 +685,8 @@ class GraphController:
             "label_fields": label_fields,
             "title_fields": title_fields,
             "edge_labels": label_pair[:2],
-            "qualifier_keys": qualifier_keys,
+            "attribute_keys": attribute_keys,
+            "allow_extras": allow_extras,
             "projection_fields": projection_fields,
             "dynamic": bool(source.get("dynamic")),
             "source_raw": source,
@@ -784,7 +795,7 @@ class GraphController:
                     {
                         "value": normalized,
                         "label_forward": label,
-                        "qualifiers": {},
+                        "attributes": {},
                     },
                 )
             )
@@ -828,7 +839,8 @@ class GraphController:
                                 "label_fields": source_parts.get("label_fields", []),
                                 "title_fields": source_parts.get("title_fields", []),
                                 "edge_labels": source_parts.get("edge_labels", []),
-                                "qualifier_keys": source_parts.get("qualifier_keys", []),
+                                "attribute_keys": source_parts.get("attribute_keys", []),
+                                "allow_extras": source_parts.get("allow_extras", True),
                                 "projection_fields": source_parts.get("projection_fields", []),
                                 "source": source_parts["source_raw"],
                             }
@@ -854,9 +866,10 @@ class GraphController:
             return current_props
         merged = dict(current_props)
         for key, value in next_props.items():
-            if key == "qualifiers" and isinstance(value, dict):
-                prior = merged.get("qualifiers") if isinstance(merged.get("qualifiers"), dict) else {}
-                merged["qualifiers"] = {**prior, **value}
+            if key in {"attributes", "extras", "qualifiers"} and isinstance(value, dict):
+                # "qualifiers" kept briefly for merge of legacy stored edges.
+                prior = merged.get(key) if isinstance(merged.get(key), dict) else {}
+                merged[key] = {**prior, **value}
             else:
                 merged[key] = value
         return merged
@@ -1048,24 +1061,53 @@ class GraphController:
                 continue
 
             edge_props = {}
-            raw_props = value_obj.get("properties")
-            if isinstance(raw_props, dict):
-                edge_props.update(raw_props)
-            qualifiers = {}
-            declared_qualifiers = spec.get("qualifier_keys") or []
-            raw_qualifiers = value_obj.get("qualifiers")
-            if isinstance(raw_qualifiers, dict):
-                if declared_qualifiers:
-                    for qualifier_key in declared_qualifiers:
-                        if qualifier_key in raw_qualifiers:
-                            qualifiers[qualifier_key] = raw_qualifiers[qualifier_key]
-                else:
-                    qualifiers.update(raw_qualifiers)
+            declared_attributes = list(spec.get("attribute_keys") or [])
+            # Legacy edge-spec key from older graph controllers.
+            if not declared_attributes and isinstance(spec.get("qualifier_keys"), list):
+                declared_attributes = [
+                    str(token).strip() for token in spec.get("qualifier_keys", []) if str(token).strip()
+                ]
+            allow_extras = bool(spec.get("allow_extras", True))
 
-            if declared_qualifiers:
-                for qualifier_key in declared_qualifiers:
-                    if qualifier_key in value_obj and qualifier_key not in qualifiers:
-                        qualifiers[qualifier_key] = value_obj[qualifier_key]
+            raw_attributes = value_obj.get("attributes")
+            if not isinstance(raw_attributes, dict):
+                raw_attributes = value_obj.get("qualifiers") if isinstance(value_obj.get("qualifiers"), dict) else {}
+            raw_extras = value_obj.get("extras")
+            if not isinstance(raw_extras, dict):
+                # Legacy link bag: unfiltered properties.
+                raw_extras = value_obj.get("properties") if isinstance(value_obj.get("properties"), dict) else {}
+
+            attributes: Dict[str, Any] = {}
+            if isinstance(raw_attributes, dict):
+                if declared_attributes:
+                    for attribute_key in declared_attributes:
+                        if attribute_key in raw_attributes:
+                            attributes[attribute_key] = raw_attributes[attribute_key]
+                else:
+                    attributes.update(raw_attributes)
+
+            # Promote declared keys that handlers still put in extras/properties.
+            if declared_attributes and isinstance(raw_extras, dict):
+                for attribute_key in declared_attributes:
+                    if attribute_key in raw_extras and attribute_key not in attributes:
+                        attributes[attribute_key] = raw_extras[attribute_key]
+
+            if declared_attributes:
+                for attribute_key in declared_attributes:
+                    if attribute_key in value_obj and attribute_key not in attributes:
+                        attributes[attribute_key] = value_obj[attribute_key]
+
+            extras: Dict[str, Any] = {}
+            if allow_extras and isinstance(raw_extras, dict):
+                for key, value in raw_extras.items():
+                    if declared_attributes and key in declared_attributes:
+                        continue
+                    extras[key] = value
+            # Non-declared attributes keys become extras when allowlisted.
+            if allow_extras and isinstance(raw_attributes, dict) and declared_attributes:
+                for key, value in raw_attributes.items():
+                    if key not in declared_attributes and key not in extras:
+                        extras[key] = value
 
             spec_edge_labels = spec.get("edge_labels") if isinstance(spec.get("edge_labels"), list) else []
             raw_value_label = value_obj.get("label")
@@ -1079,8 +1121,10 @@ class GraphController:
             forward_edge_label = resolved_edge_labels[0] if len(resolved_edge_labels) > 0 else edge_type.strip()
             backward_edge_label = resolved_edge_labels[1] if len(resolved_edge_labels) > 1 else edge_type.strip()
 
-            if qualifiers:
-                edge_props["qualifiers"] = qualifiers
+            if attributes:
+                edge_props["attributes"] = attributes
+            if extras:
+                edge_props["extras"] = extras
             edge_props["label_forward"] = forward_edge_label
             edge_props["label_backward"] = backward_edge_label
 

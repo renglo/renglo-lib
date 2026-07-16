@@ -218,7 +218,8 @@ def _diagnose_document_edges(
             "edge_type": "diagnostic",
             "to_ring": parsed.get("to_ring"),
             "id_token": parsed.get("id_token"),
-            "qualifier_keys": parsed.get("qualifier_keys", []),
+            "attribute_keys": parsed.get("attribute_keys", []),
+            "allow_extras": parsed.get("allow_extras", True),
         }
         declarations = grc._extract_edge_declarations(attributes.get(field_name_str), temp_spec)
         if not declarations:

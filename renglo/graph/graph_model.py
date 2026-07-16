@@ -538,7 +538,7 @@ class GraphModel:
         if not isinstance(item, dict):
             return False
         # If reverse-index projection is KEYS_ONLY or partial, non-key properties
-        # such as edge labels/qualifiers are not present.
+        # such as edge labels/attributes are not present.
         if "created_at" in item or "updated_at" in item:
             return False
         if "graph_index" not in item or "forward_index" not in item:

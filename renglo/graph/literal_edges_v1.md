@@ -27,7 +27,7 @@ For field `status` in ring `productora_candidates` with primary id field `talent
 - `edge_label`: `HAS_STATUS`
 - `edge_type`: `productora_candidates:talent_id:_literal:status`
 - `from_node_id`: `<ring>/<doc_id>`
-- `properties`: `{ "value": <canonical_value> }` plus transport metadata (`label_forward`, empty `qualifiers`)
+- Edge bag: `{ "value": <canonical_value> }` plus transport metadata (`label_forward`, empty `attributes`)
 
 ## Canonicalization
 
