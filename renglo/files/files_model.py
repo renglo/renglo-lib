@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from renglo.logger import get_logger
 
-class DocsModel:
+class FilesModel:
 
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
@@ -32,7 +32,7 @@ class DocsModel:
         s3_client = boto3.client('s3')
         bucket_name = self._bucket_name()
         filename = f'{name}.{self.valid_types[type]}'
-        file_path = f'_docs/{portfolio}/{org}/{ring}/{filename}'
+        file_path = f'_files/{portfolio}/{org}/{ring}/{filename}'
 
         content_type = {
             'image/jpeg': 'image/jpeg',
@@ -61,7 +61,7 @@ class DocsModel:
     
     def a_b_c_get(self, portfolio, org, ring, filename):
         
-        file_path = f'_docs/{portfolio}/{org}/{ring}/{filename}'
+        file_path = f'_files/{portfolio}/{org}/{ring}/{filename}'
     
         s3_client = boto3.client('s3')
         bucket_name = self._bucket_name()
@@ -114,7 +114,7 @@ class DocsModel:
         
         print(f'@tmp_post: Saving to {file_path} : {raw_doc}')
 
-        # tmp uploads are JSON (validated in DocsController.tmp_post); do not use
+        # tmp uploads are JSON (validated in FilesController.tmp_post); do not use
         # undefined `type` here — that accidentally resolved to builtin `type`.
         content_type = 'application/json'
 
@@ -135,7 +135,6 @@ class DocsModel:
         except Exception as e:
             self.logger.error(f"Error uploading file {file_path}: {str(e)}")
             return {'success': False}
-        
         
         
         
@@ -187,7 +186,3 @@ class DocsModel:
             return {'success': False, 'error': 'Error retrieving file'}  # Return error object
 
         
-        
-        
-        
-
