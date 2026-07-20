@@ -859,6 +859,18 @@ class GraphController:
                 )
         return specs
 
+    @staticmethod
+    def _strip_projection_duplicate_bag(bag: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned: Dict[str, Any] = {}
+        for key, value in (bag or {}).items():
+            key_str = str(key)
+            if key_str.startswith("to.") or key_str.startswith("from."):
+                continue
+            if key_str == "target_native_id":
+                continue
+            cleaned[key_str] = value
+        return cleaned
+
     def _merge_edge_properties(self, current_props, next_props):
         if not isinstance(current_props, dict):
             return next_props if isinstance(next_props, dict) else None
@@ -869,9 +881,13 @@ class GraphController:
             if key in {"attributes", "extras", "qualifiers"} and isinstance(value, dict):
                 # "qualifiers" kept briefly for merge of legacy stored edges.
                 prior = merged.get(key) if isinstance(merged.get(key), dict) else {}
-                merged[key] = {**prior, **value}
+                merged[key] = self._strip_projection_duplicate_bag({**prior, **value})
             else:
                 merged[key] = value
+        if isinstance(merged.get("extras"), dict):
+            merged["extras"] = self._strip_projection_duplicate_bag(merged["extras"])
+        if isinstance(merged.get("attributes"), dict):
+            merged["attributes"] = self._strip_projection_duplicate_bag(merged["attributes"])
         return merged
 
     def _get_ring_data_table(self):
@@ -1100,9 +1116,12 @@ class GraphController:
             extras: Dict[str, Any] = {}
             if allow_extras and isinstance(raw_extras, dict):
                 for key, value in raw_extras.items():
-                    if declared_attributes and key in declared_attributes:
+                    key_str = str(key)
+                    if declared_attributes and key_str in declared_attributes:
                         continue
-                    extras[key] = value
+                    if key_str.startswith("to.") or key_str.startswith("from."):
+                        continue
+                    extras[key_str] = value
             # Non-declared attributes keys become extras when allowlisted.
             if allow_extras and isinstance(raw_attributes, dict) and declared_attributes:
                 for key, value in raw_attributes.items():
@@ -1122,9 +1141,9 @@ class GraphController:
             backward_edge_label = resolved_edge_labels[1] if len(resolved_edge_labels) > 1 else edge_type.strip()
 
             if attributes:
-                edge_props["attributes"] = attributes
+                edge_props["attributes"] = self._strip_projection_duplicate_bag(attributes)
             if extras:
-                edge_props["extras"] = extras
+                edge_props["extras"] = self._strip_projection_duplicate_bag(extras)
             edge_props["label_forward"] = forward_edge_label
             edge_props["label_backward"] = backward_edge_label
 

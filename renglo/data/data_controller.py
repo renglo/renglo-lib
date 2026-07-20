@@ -248,25 +248,19 @@ class DataController:
     
     
     
-    def sanitize(self,obj):
-        '''
-        Avoids Floats being sent to DynamoDB
-        '''
+    def sanitize(self, obj):
+        """Recursively normalize numeric values for DynamoDB writes."""
         if isinstance(obj, list):
             return [self.sanitize(x) for x in obj]
-        elif isinstance(obj, dict):
+        if isinstance(obj, dict):
             return {k: self.sanitize(v) for k, v in obj.items()}
-        elif isinstance(obj, Decimal):
-            # Convert Decimal to int if it's a whole number, otherwise float
-            return int(obj) if obj % 1 == 0 else float(obj)
-        elif isinstance(obj, float):
-            # Keep as Decimal for DynamoDB numeric compatibility
+        if isinstance(obj, float):
             return Decimal(str(obj))
-        elif isinstance(obj, int):
-            # Keep integers as is
+        if isinstance(obj, Decimal):
             return obj
-        else:
+        if isinstance(obj, int):
             return obj
+        return obj
         
             
     
@@ -469,14 +463,35 @@ class DataController:
         attributes = dict(incoming_attributes) if isinstance(incoming_attributes, dict) else {}
         for attribute_key in attribute_keys:
             attributes.setdefault(attribute_key, '')
+        attributes = self._strip_link_projection_bag(attributes)
         if attributes or attribute_keys:
             normalized['attributes'] = attributes
             normalized.pop('qualifiers', None)
 
         if isinstance(normalized.get('properties'), dict) and 'extras' not in normalized:
             normalized['extras'] = normalized.pop('properties')
+        if isinstance(normalized.get('extras'), dict):
+            extras = self._strip_link_projection_bag(normalized.get('extras'))
+            if extras:
+                normalized['extras'] = extras
+            else:
+                normalized.pop('extras', None)
 
         return normalized
+
+    @staticmethod
+    def _strip_link_projection_bag(bag):
+        if not isinstance(bag, dict):
+            return {}
+        cleaned = {}
+        for key, value in bag.items():
+            key_str = str(key)
+            if key_str.startswith('to.') or key_str.startswith('from.'):
+                continue
+            if key_str in {'target_native_id', 'value'}:
+                continue
+            cleaned[key_str] = value
+        return cleaned
 
     def _normalize_source_reference_value(self, field, parsed_value):
         if not self._is_object_source_definition(field):
