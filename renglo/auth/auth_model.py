@@ -188,6 +188,39 @@ class AuthModel:
             }
 
 
+    def cognito_update_user_attributes(self, username, *, given_name=None, family_name=None):
+        """Update standard Cognito profile attributes for an existing pool user."""
+        attributes = []
+        if given_name is not None:
+            attributes.append({'Name': 'given_name', 'Value': given_name})
+        if family_name is not None:
+            attributes.append({'Name': 'family_name', 'Value': family_name})
+        if not attributes:
+            return {
+                'success': True,
+                'message': 'Nothing to update',
+                'status': 200,
+            }
+        try:
+            response = self.cognito_client.admin_update_user_attributes(
+                UserPoolId=self.USER_POOL_ID,
+                Username=username,
+                UserAttributes=attributes,
+            )
+            return {
+                'success': True,
+                'message': 'Cognito user updated',
+                'document': response,
+                'status': 200,
+            }
+        except ClientError as e:
+            return {
+                'success': False,
+                'message': str(e),
+                'status': 400,
+            }
+
+
     #NOT USED 
     def cognito_user_login_challenge(self,email,new_password):
 
@@ -248,8 +281,13 @@ class AuthModel:
 
 
     def send_email(self, sender, recipient, subject, body_text, body_html):
-        # Initialize the SES client
-        ses_client = boto3.client('ses', region_name=self.config.get('COGNITO_REGION', 'us-east-1'))  # Replace with your AWS region
+        region = (
+            self.config.get('AWS_REGION')
+            or self.config.get('AWS_DEFAULT_REGION')
+            or self.config.get('COGNITO_REGION')
+            or 'us-east-1'
+        )
+        ses_client = boto3.client('ses', region_name=region)
 
         # Email details
         email_data = {

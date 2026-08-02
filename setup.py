@@ -20,6 +20,7 @@ setup(
         "Requests==2.32.3",
         "validate_email==1.3",
         "openai==1.65.2",
+        "Pillow==11.1.0",
     ],
     extras_require={
         "flask": [

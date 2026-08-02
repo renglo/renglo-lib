@@ -24,6 +24,92 @@ def create_md5_hash(input_string, num_digits):
     return full_hash[:num_digits]
 
 
+_TAG_INJECTION_PATTERN = re.compile(r'[{};:\/\'\"\\\(\)\[\]\$\|&<>]')
+
+
+def _entity_tag_text_is_safe(text: str) -> bool:
+    return not _TAG_INJECTION_PATTERN.search(text)
+
+
+def _normalize_tag_values(value):
+    """Coerce a tag value into a deduplicated list of safe strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple)):
+        candidates = value
+    else:
+        candidates = [value]
+
+    normalized = []
+    seen = set()
+    for item in candidates:
+        if item is None:
+            continue
+        tag_value = str(item).strip()
+        if not tag_value or not _entity_tag_text_is_safe(tag_value):
+            continue
+        if tag_value in seen:
+            continue
+        seen.add(tag_value)
+        normalized.append(tag_value)
+    return normalized
+
+
+def sanitize_entity_tags(raw_tags):
+    """Normalize tags to dict[str, list[str]] for storage on entity documents."""
+    if not isinstance(raw_tags, dict):
+        return {}
+    clean = {}
+    for key, value in raw_tags.items():
+        if not isinstance(key, str):
+            continue
+        tag_key = key.strip().lower()
+        if not tag_key or not _entity_tag_text_is_safe(tag_key):
+            continue
+
+        values = _normalize_tag_values(value)
+        if not values:
+            continue
+
+        if tag_key in clean:
+            existing = clean[tag_key]
+            existing_seen = set(existing)
+            for tag_value in values:
+                if tag_value not in existing_seen:
+                    existing.append(tag_value)
+                    existing_seen.add(tag_value)
+        else:
+            clean[tag_key] = values
+    return clean
+
+
+_LOCAL_DEV_CONSOLE_URL = "http://127.0.0.1:5174"
+
+
+def resolve_invite_fe_base_url(config):
+    """
+    Console base URL for /invite links in team-invite emails.
+
+    INVITE_FE_BASE_URL overrides FE_BASE_URL when set (local dev console).
+    On a non-Lambda API, defaults to the local Vite URL when FE_BASE_URL is
+    unset or still points at Amplify — so invite emails work before cloud console deploy.
+    """
+    cfg = config or {}
+    override = (cfg.get("INVITE_FE_BASE_URL") or "").strip().rstrip("/")
+    if override:
+        return override
+
+    fe_base = (cfg.get("FE_BASE_URL") or "").strip().rstrip("/")
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        return fe_base
+
+    if not fe_base or fe_base == "x" or "amplifyapp.com" in fe_base:
+        return _LOCAL_DEV_CONSOLE_URL
+    return fe_base
+
+
 def load_config():
     """
     Load configuration for handlers from env_config.py or environment variables.
@@ -124,7 +210,8 @@ def load_config():
     # Load from environment variables (overwrites file-based config)
     # This allows Lambda/production to use environment variables
     env_var_keys = [
-        'WL_NAME', 'BASE_URL', 'FE_BASE_URL', 'DOC_BASE_URL',
+        'WL_NAME', 'BASE_URL', 'FE_BASE_URL', 'INVITE_FE_BASE_URL', 'DOC_BASE_URL',
+        'FROM_EMAIL',
         'AWS_REGION', 'API_GATEWAY_ARN', 'ROLE_ARN', 'SYS_ENV',
         'DYNAMODB_ENTITY_TABLE', 'DYNAMODB_BLUEPRINT_TABLE', 'DYNAMODB_RINGDATA_TABLE',
         'DYNAMODB_REL_TABLE', 'DYNAMODB_CHAT_TABLE', 'DYNAMODB_SESSION_TABLE', 'DYNAMODB_GRAPH_TABLE',

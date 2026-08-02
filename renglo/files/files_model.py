@@ -57,6 +57,49 @@ class FilesModel:
         except Exception as e:
             self.logger.error(f"Error uploading file {file_path}: {str(e)}")
             return {'success': False}
+
+    USER_THUMBNAIL_PREFIX = 'auth/thumbnails'
+
+    def user_thumbnail_key(self, handle: str) -> str:
+        return f'{self.USER_THUMBNAIL_PREFIX}/{handle}.png'
+
+    def user_thumbnail_post(self, handle, raw_doc):
+        s3_client = boto3.client('s3')
+        bucket_name = self._bucket_name()
+        file_path = self.user_thumbnail_key(handle)
+
+        try:
+            response = s3_client.put_object(
+                Bucket=bucket_name,
+                Key=file_path,
+                Body=raw_doc,
+                ContentType='image/png',
+            )
+            if response['ResponseMetadata']['HTTPStatusCode'] == 200:
+                return {'success': True, 'path': file_path, 'id': handle}
+            return {'success': False}
+        except Exception as e:
+            self.logger.error(f"Error uploading user thumbnail {file_path}: {str(e)}")
+            return {'success': False}
+
+    def user_thumbnail_get(self, handle):
+        file_path = self.user_thumbnail_key(handle)
+        s3_client = boto3.client('s3')
+        bucket_name = self._bucket_name()
+
+        try:
+            document = s3_client.get_object(Bucket=bucket_name, Key=file_path)
+            content = document['Body'].read()
+            return {
+                'success': True,
+                'content': content,
+                'content_type': document.get('ContentType', 'image/png'),
+            }
+        except s3_client.exceptions.NoSuchKey:
+            return {'success': False, 'error': 'File not found'}
+        except Exception as e:
+            self.logger.error(f"Error retrieving user thumbnail: {str(e)}")
+            return {'success': False, 'error': 'Error retrieving file'}
     
     
     def a_b_c_get(self, portfolio, org, ring, filename):

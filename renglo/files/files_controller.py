@@ -1,6 +1,12 @@
 import json
 
 from renglo.files.files_model import FilesModel
+from renglo.files.image_processor import (
+    ImageUploadError,
+    OUTPUT_MIME_TYPE,
+    is_raster_image_mime,
+    process_uploaded_image,
+)
 from renglo.logger import get_logger
 
 class FilesController:
@@ -43,10 +49,20 @@ class FilesController:
         self.logger.info("Uploading a file")
         if file:    
             if type in self.valid_types:
-                # Further verification logic can be added here
+                body = file
+                storage_type = type
+
+                if is_raster_image_mime(type):
+                    try:
+                        body = process_uploaded_image(file)
+                        storage_type = OUTPUT_MIME_TYPE
+                    except ImageUploadError as exc:
+                        self.logger.warning("Raster image upload rejected: %s", exc)
+                        return {"success": False, "message": str(exc)}
+
                 self.logger.info("File type is valid.")
                 
-                response = self.FCM.a_b_post(portfolio,org,ring,file,type,name)  
+                response = self.FCM.a_b_post(portfolio,org,ring,body,storage_type,name)  
                 
                 if response['success']:    
                     return response 
@@ -58,6 +74,34 @@ class FilesController:
                 return {'success':False, 'message':'Invalid file type'}
             
         return {'success':False, 'message':'No file'}
+    
+    
+    @staticmethod
+    def _is_valid_user_handle(handle: str) -> bool:
+        return bool(handle) and len(handle) == 9 and handle.isalnum()
+
+    def user_thumbnail_post(self, handle, file, mime_type):
+        if not self._is_valid_user_handle(handle):
+            return {'success': False, 'message': 'Invalid user handle'}
+
+        if not is_raster_image_mime(mime_type):
+            return {'success': False, 'message': 'Invalid file type'}
+
+        try:
+            body = process_uploaded_image(file)
+        except ImageUploadError as exc:
+            self.logger.warning("User thumbnail upload rejected: %s", exc)
+            return {'success': False, 'message': str(exc)}
+
+        response = self.FCM.user_thumbnail_post(handle, body)
+        if response.get('success'):
+            return response
+        return {'success': False, 'message': 'Upload failed'}
+
+    def user_thumbnail_get(self, handle):
+        if not self._is_valid_user_handle(handle):
+            return {'success': False, 'error': 'Invalid user handle'}
+        return self.FCM.user_thumbnail_get(handle)
     
     
     def a_b_c_get(self,portfolio,org,ring,filename):

@@ -8,6 +8,7 @@ from ..common import *
 import uuid
 from decimal import Decimal
 from renglo.auth.auth_model import AuthModel
+from renglo.common import sanitize_entity_tags
 import re
 import time
 from validate_email import validate_email
@@ -102,7 +103,7 @@ class AuthController:
         return None
 
 
-    def invite_user(self,email,team_id,portfolio_id,sender_id):
+    def invite_user(self,email,team_id,portfolio_id,sender_id,sender_profile=None):
         '''
         Invites user to a team
 
@@ -110,6 +111,7 @@ class AuthController:
         - email
         - team_id
         - portfolio_id
+        - sender_profile: optional JWT fields (name, slot_a, email) when user doc is sparse
         '''
         # 1. Check whether the email is valid
         #This function is not working. It is rejecting valid emails
@@ -186,7 +188,8 @@ class AuthController:
             email=email,
             team_id=team_id,
             portfolio_id=portfolio_id,
-            sender_id=sender_id
+            sender_id=sender_id,
+            sender_profile=sender_profile or {},
             )
         
         self.logger.debug('Invite User Funnel > response: '+ str(response))
@@ -202,8 +205,8 @@ class AuthController:
         else:
             return{
                 "success":False, 
-                "message": "Invite could not be sent out.", 
-                "status" :400
+                "message": response.get("message") or "Invite could not be sent out.", 
+                "status" : response.get("status") or 400
                 }
 
 
@@ -548,6 +551,7 @@ class AuthController:
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['org_id'] = org_id
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['name'] = org['name']
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['handle'] = org['handle']
+                                tree['portfolios'][portfolio_id]['orgs'][org_id]['tags'] = org.get('tags') or {}
                                 
                                 
                                 if org_id in active_orgs:
@@ -748,7 +752,8 @@ class AuthController:
             'raw_id': raw_id,
             'index':pk,
             'irn':irn,
-            'language':kwargs['lan'] if 'lan' in kwargs else ''           
+            'language':kwargs['lan'] if 'lan' in kwargs else '',
+            'tags': kwargs.get('tags') if isinstance(kwargs.get('tags'), dict) else {},           
         }
 
     
@@ -849,9 +854,18 @@ class AuthController:
         #Get the existing document from DB
         entity_doc = response_1['document']
 
+        if type == 'user':
+            for field, key in (('name', 'name'), ('slot_a', 'slot_a'), ('email', 'email')):
+                incoming = (kwargs.get(key) or '').strip()
+                if incoming and not (entity_doc.get(field) or '').strip():
+                    entity_doc[field] = incoming
+
         #Replace values of existing attributes with the ones in the payload
         for key, val in kwargs['payload'].items():
-            entity_doc[key] = val
+            if key == 'tags':
+                entity_doc[key] = sanitize_entity_tags(val)
+            else:
+                entity_doc[key] = val
 
         #Save the document back to DB
         response = self.AUM.update_entity(entity_doc)
@@ -869,6 +883,50 @@ class AuthController:
         result['status'] = response['status']   
         #self.logger.debug('Returned object:'+str(result))
         return result
+
+
+    def update_user_profile(self, *, user_id, cognito_username, first_name, last_name):
+        """Update first/last name in DynamoDB user entity and Cognito."""
+        first = (first_name or '').strip()
+        last = (last_name or '').strip()
+        if not first or not last:
+            return {
+                'success': False,
+                'message': 'First and last name are required',
+                'status': 400,
+            }
+
+        response = self.get_entity('user', user_id=user_id)
+        if not response.get('success'):
+            return response
+
+        entity_doc = response['document']
+        entity_doc['name'] = first
+        entity_doc['slot_a'] = last
+        entity_doc['modified'] = datetime.now().isoformat()
+
+        db_response = self.AUM.update_entity(entity_doc)
+        if not db_response.get('success'):
+            return db_response
+
+        cognito_response = self.AUM.cognito_update_user_attributes(
+            cognito_username,
+            given_name=first,
+            family_name=last,
+        )
+        if not cognito_response.get('success'):
+            cognito_response['message'] = (
+                f"Saved profile in database but Cognito update failed: "
+                f"{cognito_response.get('message', 'unknown error')}"
+            )
+            return cognito_response
+
+        return {
+            'success': True,
+            'message': 'Profile updated',
+            'document': db_response.get('document'),
+            'status': 200,
+        }
 
 
 
@@ -1225,10 +1283,26 @@ class AuthController:
         return numeric_hash_str
 
 
+    @staticmethod
+    def _inviter_display_name(senderdoc: dict) -> str:
+        """Human-readable inviter for team-invite email."""
+        name = (senderdoc.get('name') or '').strip()
+        last = (senderdoc.get('slot_a') or '').strip()
+        full = f'{name} {last}'.strip()
+        if full:
+            return full
+        email = (senderdoc.get('email') or '').strip()
+        if email:
+            return email
+        handle = (senderdoc.get('handle') or '').strip()
+        if handle:
+            return handle
+        return 'A team member'
+
     
     def generate_invite_hash(self,email,ttl):
-
-        string_to_hash = email+SECRET_KEY+str(ttl)
+        secret_key = str(self.config.get('SECRET_KEY') or '')
+        string_to_hash = email + secret_key + str(ttl)
         return self.generate_numeric_hash(string_to_hash,6)
     
 
@@ -1776,8 +1850,13 @@ class AuthController:
             return response_1b
         else:
             bridge['senderdoc'] = response_1b['document']
+            profile = kwargs.get('sender_profile') or {}
+            for field, key in (('name', 'name'), ('slot_a', 'slot_a'), ('email', 'email')):
+                if not (bridge['senderdoc'].get(field) or '').strip():
+                    fallback = (profile.get(key) or '').strip()
+                    if fallback:
+                        bridge['senderdoc'][field] = fallback
         
-
 
         #1c. Get Portfolio document
         response_1c = self.get_entity(
@@ -1829,29 +1908,64 @@ class AuthController:
 
 
         #4. Send email to invite recipient
+        # Invite links open the console (/invite), not the API BASE_URL.
+        from_email = (self.config.get('FROM_EMAIL') or '').strip()
+        fe_base_url = resolve_invite_fe_base_url(self.config)
+        wl_name = (self.config.get('WL_NAME') or '').strip() or 'Renglo'
+        invite_hash = bridge['hash']
+        invite_link = f"{fe_base_url}/invite?code={invite_hash}&email={kwargs['email']}"
 
-        response_4 = self.AUM.send_email(
-            sender="human@helloirma.com",
-            recipient=kwargs['email'],
-            subject='You have been invited to team '+bridge['portfoliodoc']['name']+'/'+ bridge['teamdoc']['name'],
-            body_text=
-                'You have been invited by '+ bridge['senderdoc']['name']+' '+bridge['senderdoc']['slot_a']+' to team '+ bridge['portfoliodoc']['name']+'/'+ bridge['teamdoc']['name'] +
-                '. Your invite code is: '+
-                rel_data['hash']+
-                '. Follow this link: '+BASE_URL+'/invite?code='+
-                rel_data['hash']+' .' ,
-            body_html='<html><body>'+
-                        '<h1>Hello from '+WL_NAME+'</h1>'+
-                        '<h2>You have been invited by '+ bridge['senderdoc']['name']+' '+bridge['senderdoc']['slot_a']+' to team '+ bridge['portfoliodoc']['name']+'/'+ bridge['teamdoc']['name'] +
-                        '<div>Your invite code is: '+rel_data['hash']+'</div>'+
-                        '<div>Follow this link:</div>'+
-                        '<div>'+BASE_URL+'/invite?code='+rel_data['hash']+'&email='+kwargs['email']+'</div>' 
-                      '</body></html>'
+        if not from_email:
+            return {
+                "success": False,
+                "message": (
+                    "FROM_EMAIL is not configured. Set it in env_config / SSM "
+                    "(application SES identity from customer-config email_from)."
+                ),
+                "status": 500,
+            }
+        if not fe_base_url:
+            return {
+                "success": False,
+                "message": (
+                    "Invite console URL is not configured. Set FE_BASE_URL (cloud Amplify URL "
+                    "from SSM) or INVITE_FE_BASE_URL (local dev console, e.g. "
+                    "http://127.0.0.1:5174)."
+                ),
+                "status": 500,
+            }
+
+        team_label = (
+            bridge['portfoliodoc']['name'] + '/' + bridge['teamdoc']['name']
         )
-        response_4['message'] = 'Sent invite to team '+kwargs['team_id']+' via email to '+kwargs['email'] 
-        
+        inviter = self._inviter_display_name(bridge['senderdoc'])
+        response_4 = self.AUM.send_email(
+            sender=from_email,
+            recipient=kwargs['email'],
+            subject='You have been invited to team ' + team_label,
+            body_text=(
+                f'You have been invited by {inviter} to team {team_label}. '
+                f'Your invite code is: {invite_hash}. '
+                f'Follow this link: {invite_link}'
+            ),
+            body_html=(
+                '<html><body>'
+                f'<h1>Hello from {wl_name}</h1>'
+                f'<h2>You have been invited by {inviter} to team {team_label}</h2>'
+                f'<div>Your invite code is: {invite_hash}</div>'
+                '<div>Follow this link:</div>'
+                f'<div><a href="{invite_link}">{invite_link}</a></div>'
+                '</body></html>'
+            ),
+        )
+        response_4['message'] = (
+            'Sent invite to team ' + kwargs['team_id'] + ' via email to ' + kwargs['email']
+        )
+
         if not response_4['success']:
-            response_4['message'] = 'Could not send the invite'                
+            # Keep SES error detail (e.g. unverified identity / sandbox) for operators.
+            ses_msg = response_4.get('message') or 'Could not send the invite'
+            response_4['message'] = f'Could not send the invite: {ses_msg}'
             return response_4
         else:
             transaction.append(response_4)
