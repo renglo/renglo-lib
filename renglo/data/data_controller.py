@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 from renglo.data.data_model import DataModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
+from renglo.auth.authorize import authorize
 from renglo.search.search_controller import SearchController
 from renglo.graph.graph_controller import GraphController
 from renglo.logger import get_logger
@@ -203,8 +204,8 @@ class DataController:
         
             
         
+    @authorize(return_status=True)
     def refresh_s3_cache(self,portfolio, org, ring, sort=None):
-    
         s3_client = boto3.client('s3')
         bucket_name = self.config.get('S3_BUCKET_NAME')
         if not bucket_name:
@@ -986,6 +987,7 @@ class DataController:
         
         
 
+    @authorize()
     def get_a_b(self,portfolio,org,ring,limit=1000,lastkey=None,sort=None):
         '''
         Get page of items
@@ -1006,7 +1008,6 @@ class DataController:
           [{(item)}]
 
         '''
-       
         items = []
 
         response = self.DAM.get_a_b(portfolio,org,ring,limit=limit,lastkey=lastkey)
@@ -1071,11 +1072,11 @@ class DataController:
     
 
 
+    @authorize(return_status=True)
     def post_a_b(self,portfolio,org,ring,payload):
         '''
         Creates new item
         '''
-
         try:
             item = self.construct_post_item(portfolio,org,ring,payload)
             
@@ -1126,10 +1127,11 @@ class DataController:
 
 
     
+    @authorize()
     def get_a_b_c(self,portfolio,org,ring,idx):
         '''
         Gets an existing item
-        '''   
+        '''
         self.logger.debug('IDX:'+str(idx))
         
         response = self.DAM.get_a_b_c(portfolio,org,ring,idx)
@@ -1176,13 +1178,12 @@ class DataController:
     
 
 
+    @authorize(return_status=True)
     def put_a_b_c(self,portfolio,org,ring,idx,payload):
         '''
         Partial updates to an existing document. 
         FE only needs to send the field to be updated. No need to send the entire document.
         '''
-        #1. 
-
         result = {}
 
         #self.logger.debug('Icoming put object:'+str(payload))
@@ -1231,11 +1232,11 @@ class DataController:
 
             return result, status
 
+    @authorize(return_status=True)
     def delete_a_b_c(self, portfolio, org, ring, idx):
         '''
         Delete an existing document.
         '''
-        
         self.logger.debug('Item to delete:'+str(idx))
 
         doc_before_delete = self.get_a_b_c(portfolio, org, ring, idx)

@@ -12,6 +12,9 @@ from typing import Any, Dict, Optional
 # Internal key used to forward Cognito JWT claims to external handlers (Lambda/ECS/Docker).
 JWT_CLAIMS_PAYLOAD_KEY = "_jwt_claims"
 
+# Server-resolved tool roles for the caller (never trust client-supplied values).
+AUTH_ROLES_PAYLOAD_KEY = "_auth_roles"
+
 
 def get_session_value(key: str, default: Any = None) -> Any:
     try:
@@ -83,10 +86,32 @@ def attach_jwt_claims_to_payload(payload: Optional[Dict[str, Any]]) -> Dict[str,
     return payload
 
 
+def attach_auth_roles_to_payload(
+    payload: Optional[Dict[str, Any]],
+    roles: Optional[Any],
+) -> Dict[str, Any]:
+    """
+    Stamp server-resolved roles onto the handler payload.
+    Always overwrites AUTH_ROLES_PAYLOAD_KEY so clients cannot forge roles.
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+    if roles is None:
+        payload[AUTH_ROLES_PAYLOAD_KEY] = []
+    elif isinstance(roles, str):
+        payload[AUTH_ROLES_PAYLOAD_KEY] = [roles] if roles.strip() else []
+    elif isinstance(roles, (list, tuple)):
+        payload[AUTH_ROLES_PAYLOAD_KEY] = [str(r).strip() for r in roles if str(r).strip()]
+    else:
+        payload[AUTH_ROLES_PAYLOAD_KEY] = []
+    return payload
+
+
 def apply_handler_invocation_context(handler: Any, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Apply forwarded JWT claims to handler controllers before run().
     Removes JWT_CLAIMS_PAYLOAD_KEY from payload so handlers do not persist it.
+    Leaves AUTH_ROLES_PAYLOAD_KEY on the payload for handler consumption.
     Always resets invocation claims (even when absent) so cached handler instances
     on warm Lambda containers do not reuse a previous caller's identity.
     """

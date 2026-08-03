@@ -13,6 +13,8 @@ import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from renglo.auth.auth_controller import AuthController
+from renglo.auth.authorize import authorize
 from renglo.graph.graph_model import (
     GraphEdge,
     GraphModel,
@@ -53,6 +55,9 @@ class GraphController:
         # Cache blueprint lookups by (handle, ring) to avoid repeated DynamoDB
         # reads when processing many documents from the same rings.
         self._blueprint_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self.AUC = AuthController(config=self.config)
+
+
 
     @property
     def model(self) -> GraphModel:
@@ -90,6 +95,7 @@ class GraphController:
     def make_reverse_sk(edge_type: str, to_node_id: str, from_node_id: str) -> str:
         return GraphModel.make_reverse_sk(edge_type, to_node_id, from_node_id)
 
+    @authorize()
     def put_edge(
         self,
         portfolio: str,
@@ -109,6 +115,7 @@ class GraphController:
             properties=properties,
         )
 
+    @authorize()
     def remove_edge(
         self,
         portfolio: str,
@@ -119,6 +126,7 @@ class GraphController:
     ) -> bool:
         return self.GRM.remove_edge(portfolio, org, edge_type, from_node_id, to_node_id)
 
+    @authorize()
     def get_edge(
         self,
         portfolio: str,
@@ -129,6 +137,7 @@ class GraphController:
     ) -> Optional[GraphEdge]:
         return self.GRM.get_edge(portfolio, org, edge_type, from_node_id, to_node_id)
 
+    @authorize()
     def list_edges_by_type(
         self,
         portfolio: str,
@@ -146,6 +155,7 @@ class GraphController:
             exclusive_start_key=exclusive_start_key,
         )
 
+    @authorize()
     def list_outgoing_edges(
         self,
         portfolio: str,
@@ -165,6 +175,7 @@ class GraphController:
             exclusive_start_key=exclusive_start_key,
         )
 
+    @authorize()
     def list_incoming_edges(
         self,
         portfolio: str,
@@ -184,6 +195,7 @@ class GraphController:
             exclusive_start_key=exclusive_start_key,
         )
 
+    @authorize()
     def list_incoming_edges_any_type(
         self,
         portfolio: str,
@@ -201,6 +213,7 @@ class GraphController:
             exclusive_start_key=exclusive_start_key,
         )
 
+    @authorize()
     def list_edges_between_nodes(
         self,
         portfolio: str,
@@ -217,6 +230,7 @@ class GraphController:
             to_node_id,
         )
 
+    @authorize()
     def traverse(
         self,
         portfolio: str,
@@ -256,6 +270,7 @@ class GraphController:
             return_frontier_on_stop=return_frontier_on_stop,
         )
 
+    @authorize()
     def remove_node_edges(
         self,
         portfolio: str,
@@ -273,6 +288,7 @@ class GraphController:
             batch_size=batch_size,
         )
 
+    @authorize()
     def verify_node_edges_removed(
         self,
         portfolio: str,
@@ -282,6 +298,7 @@ class GraphController:
     ) -> Dict[str, int]:
         return self.GRM.verify_node_edges_removed(portfolio, org, node_id, edge_types)
 
+    @authorize()
     def find_orphan_edges_for_node(
         self,
         portfolio: str,
@@ -292,6 +309,7 @@ class GraphController:
     ) -> List[GraphEdge]:
         return self.GRM.find_orphan_edges_for_node(portfolio, org, node_id, edge_types, node_exists)
 
+    @authorize()
     def scan_orphan_edges_by_type(
         self,
         portfolio: str,
@@ -312,6 +330,7 @@ class GraphController:
     def remove_edges(self, edges: Iterable[GraphEdge]) -> int:
         return self.GRM.remove_edges(edges)
 
+    @authorize()
     def sync_node_edges(
         self,
         portfolio: str,
@@ -329,6 +348,7 @@ class GraphController:
             managed_edge_types=managed_edge_types,
         )
 
+    @authorize()
     def traverse_dynamic_forward(
         self,
         portfolio: str,
@@ -462,6 +482,7 @@ class GraphController:
             next_frontier=frontier if return_frontier_on_stop else None,
         )
 
+    @authorize()
     def traverse_dynamic_backward(
         self,
         portfolio: str,
@@ -1203,6 +1224,7 @@ class GraphController:
 
         return [(edge_type, to_node_id, props) for (edge_type, to_node_id), props in desired_by_key.items()]
 
+    @authorize()
     def upsert_edge_and_verify(self, portfolio, org, edge_type, from_node_id, to_node_id, properties=None):
         before = self.get_edge(portfolio, org, edge_type, from_node_id, to_node_id)
         self.put_edge(
@@ -1220,6 +1242,7 @@ class GraphController:
             'exists_after': after is not None,
         }
 
+    @authorize()
     def remove_edge_and_verify(self, portfolio, org, edge_type, from_node_id, to_node_id):
         existed_before = self.get_edge(portfolio, org, edge_type, from_node_id, to_node_id) is not None
         removed = self.remove_edge(portfolio, org, edge_type, from_node_id, to_node_id)
@@ -1272,6 +1295,7 @@ class GraphController:
         # Return the last attempted shape for diagnostics compatibility.
         return blueprint if "blueprint" in locals() else {}
 
+    @authorize()
     def sync_document_graph_edges(self, portfolio, org, ring, idx, attributes, blueprint_handle: Optional[str] = None):
         # Writes should read the latest blueprint shape so newly-declared source
         # options (e.g. projection) apply without requiring process restart.
@@ -1310,6 +1334,7 @@ class GraphController:
             'missing_desired_edges': missing,
         }
 
+    @authorize()
     def remove_document_graph_edges(self, portfolio, org, ring, idx, attributes, blueprint_handle: Optional[str] = None):
         blueprint = self._get_blueprint_for_ring(
             ring,

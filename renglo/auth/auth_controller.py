@@ -22,6 +22,8 @@ class AuthController:
         self.AUM = AuthModel(config=self.config)
         self._invocation_user_id = None
         self._invocation_jwt_claims = None
+        # Per-instance auth tree cache: {user_id: tree_dict}
+        self._auth_tree_cache = None
         # Set up logger
         self.logger = logging.getLogger(self.__class__.__name__)
         # Configure logger if not already configured (prevents duplicate handlers)
@@ -51,11 +53,302 @@ class AuthController:
         # Store the new version in S3
         try:
             s3_client.put_object(Bucket=bucket_name, Key=file_path, Body=json.dumps(response['document']))
+            if response.get('success') and response.get('document'):
+                self._auth_tree_cache = {
+                    'user_id': data['user_id'],
+                    'tree': response['document'],
+                }
         except Exception as e:
             self.logger.error(f"Failed to upload to S3: {str(e)}")
             return {"success": False, "message": "Failed to upload to S3", "status": 500}, 500
         
         return response
+
+    def get_cached_tree(self, user_id):
+        """
+        Load the user's auth tree from S3 (auth/tree/{user_id}).
+        On miss, rebuild via get_tree_full and cache to S3.
+        Caches the parsed tree on this instance for reuse within the same request.
+        """
+        if not user_id:
+            return {
+                "success": False,
+                "message": "User identity required",
+                "status": 401,
+            }
+
+        cached = getattr(self, "_auth_tree_cache", None)
+        if cached and cached.get("user_id") == user_id and cached.get("tree") is not None:
+            return {
+                "success": True,
+                "document": cached["tree"],
+                "status": 200,
+                "cached": True,
+            }
+
+        bucket_name = self.config.get("S3_BUCKET_NAME")
+        if not bucket_name:
+            return {
+                "success": False,
+                "message": "S3_BUCKET_NAME not configured",
+                "status": 500,
+            }
+
+        s3_client = boto3.client("s3")
+        file_path = f"auth/tree/{user_id}"
+
+        try:
+            response = s3_client.get_object(Bucket=bucket_name, Key=file_path)
+            tree = json.loads(response["Body"].read())
+            self._auth_tree_cache = {"user_id": user_id, "tree": tree}
+            self.logger.debug("Auth tree loaded from S3 for user %s", user_id)
+            return {
+                "success": True,
+                "document": tree,
+                "status": 200,
+                "cached": False,
+            }
+        except Exception as e:
+            # Miss or read error — rebuild from DynamoDB relationships
+            self.logger.debug(
+                "Auth tree not found in S3 for user %s (%s); rebuilding", user_id, e
+            )
+
+        rebuild = self.get_tree_full(user_id=user_id)
+        if not rebuild.get("success"):
+            return rebuild
+
+        tree = rebuild["document"]
+        try:
+            s3_client.put_object(
+                Bucket=bucket_name, Key=file_path, Body=json.dumps(tree)
+            )
+        except Exception as e:
+            self.logger.error("Failed to upload auth tree to S3: %s", e)
+            # Still return the rebuilt tree so authorization can proceed
+
+        self._auth_tree_cache = {"user_id": user_id, "tree": tree}
+        return {
+            "success": True,
+            "document": tree,
+            "status": 200,
+            "cached": False,
+        }
+
+    @staticmethod
+    def _normalize_roles_list(raw):
+        """Normalize a roles catalog/assignment value to a list of non-empty strings."""
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            return []
+        out = []
+        seen = set()
+        for item in raw:
+            role = str(item).strip()
+            if role and role not in seen:
+                seen.add(role)
+                out.append(role)
+        return out
+
+    @staticmethod
+    def _resolve_tool_ref(portfolio_node, tool_ref):
+        """
+        Resolve a tool id or handle to tool_id using the portfolio tree node.
+        Returns tool_id or None if not found.
+        """
+        if not portfolio_node or not tool_ref:
+            return None
+        tools = portfolio_node.get("tools") or {}
+        ref = str(tool_ref).strip()
+        if ref in tools:
+            return ref
+        for tid, tdoc in tools.items():
+            if str((tdoc or {}).get("handle") or "").strip() == ref:
+                return tid
+        return None
+
+    @staticmethod
+    def _collect_roles_for_tool_org(portfolio_node, org, tool_id):
+        """
+        Union of roles assigned to any of the user's teams for tool_id,
+        limited to teams that also have org access for that tool.
+        """
+        if not portfolio_node or not org or not tool_id:
+            return []
+        roles = []
+        seen = set()
+        teams = portfolio_node.get("teams") or {}
+        for team in teams.values():
+            tool_access = ((team or {}).get("tools") or {}).get(tool_id) or {}
+            orgs = tool_access.get("orgs") or []
+            if org not in orgs:
+                continue
+            for role in tool_access.get("roles") or []:
+                role_id = str(role).strip()
+                if role_id and role_id not in seen:
+                    seen.add(role_id)
+                    roles.append(role_id)
+        return roles
+
+    def resolve_tool_roles(self, portfolio, org, tool_id, user_id=None):
+        """
+        Resolve the caller's roles for a tool in an org from the S3 auth tree.
+        tool_id may be a tool id or handle. Returns a list of role strings.
+        """
+        resolved_user_id = user_id if user_id is not None else self.get_current_user()
+        if not resolved_user_id:
+            return []
+        tree_response = self.get_cached_tree(resolved_user_id)
+        if not tree_response.get("success"):
+            return []
+        tree = tree_response.get("document") or {}
+        portfolio_node = (tree.get("portfolios") or {}).get(portfolio) or {}
+        resolved_tool_id = self._resolve_tool_ref(portfolio_node, tool_id)
+        if not resolved_tool_id:
+            return []
+        return self._collect_roles_for_tool_org(portfolio_node, org, resolved_tool_id)
+
+    def authorize(
+        self,
+        portfolio,
+        org,
+        *,
+        resource="org",
+        action="access",
+        tool_id=None,
+        user_id=None,
+    ):
+        """
+        Authorize the current (or given) user against their S3-cached auth tree.
+
+        resource='org': user may access the org when portfolios[p].orgs[o].active.
+        resource='tool': also requires a team grant of tool_id in that org
+        (team/tool:org). Returns roles for the tool in that org when tool_id is set.
+
+        action is reserved for future role→action checks inside extensions.
+        """
+        resolved_user_id = user_id if user_id is not None else self.get_current_user()
+        if not resolved_user_id:
+            return {
+                "success": False,
+                "message": "Authentication required",
+                "status": 401,
+                "user_id": None,
+                "roles": [],
+            }
+
+        if resource not in ("org", "tool"):
+            return {
+                "success": False,
+                "message": f"Authorization for resource '{resource}' is not implemented",
+                "status": 501,
+                "user_id": resolved_user_id,
+                "roles": [],
+            }
+
+        tree_response = self.get_cached_tree(resolved_user_id)
+        if not tree_response.get("success"):
+            return {
+                "success": False,
+                "message": tree_response.get("message", "Failed to load auth tree"),
+                "status": tree_response.get("status", 500),
+                "user_id": resolved_user_id,
+                "roles": [],
+            }
+
+        tree = tree_response.get("document") or {}
+        portfolios = tree.get("portfolios") or {}
+        portfolio_node = portfolios.get(portfolio)
+        if not portfolio_node:
+            self.logger.debug(
+                "Auth deny: user %s has no access to portfolio %s",
+                resolved_user_id,
+                portfolio,
+            )
+            return {
+                "success": False,
+                "message": "Access denied to organization",
+                "status": 403,
+                "user_id": resolved_user_id,
+                "roles": [],
+            }
+
+        org_node = (portfolio_node.get("orgs") or {}).get(org)
+        if not org_node or org_node.get("active") is not True:
+            self.logger.debug(
+                "Auth deny: user %s has no active access to org %s/%s",
+                resolved_user_id,
+                portfolio,
+                org,
+            )
+            return {
+                "success": False,
+                "message": "Access denied to organization",
+                "status": 403,
+                "user_id": resolved_user_id,
+                "roles": [],
+            }
+
+        resolved_tool_id = None
+        roles = []
+        if tool_id:
+            resolved_tool_id = self._resolve_tool_ref(portfolio_node, tool_id)
+            if resource == "tool":
+                if not resolved_tool_id:
+                    return {
+                        "success": False,
+                        "message": "Access denied to tool",
+                        "status": 403,
+                        "user_id": resolved_user_id,
+                        "roles": [],
+                    }
+                # Require at least one team with this tool in this org
+                has_tool_org = False
+                for team in (portfolio_node.get("teams") or {}).values():
+                    tool_access = ((team or {}).get("tools") or {}).get(resolved_tool_id) or {}
+                    if org in (tool_access.get("orgs") or []):
+                        has_tool_org = True
+                        break
+                if not has_tool_org:
+                    self.logger.debug(
+                        "Auth deny: user %s has no tool %s access in org %s/%s",
+                        resolved_user_id,
+                        resolved_tool_id,
+                        portfolio,
+                        org,
+                    )
+                    return {
+                        "success": False,
+                        "message": "Access denied to tool",
+                        "status": 403,
+                        "user_id": resolved_user_id,
+                        "roles": [],
+                    }
+            if resolved_tool_id:
+                roles = self._collect_roles_for_tool_org(
+                    portfolio_node, org, resolved_tool_id
+                )
+
+        # action reserved for future extension-level checks
+        _ = action
+
+        return {
+            "success": True,
+            "message": "Authorized",
+            "status": 200,
+            "user_id": resolved_user_id,
+            "roles": roles,
+            "tool_id": resolved_tool_id,
+        }
+
+    def require_org_access(self, portfolio, org, user_id=None):
+        """Round-1 helper: require org-level access for portfolio/org."""
+        return self.authorize(
+            portfolio, org, resource="org", action="access", user_id=user_id
+        )
         
         
         
@@ -444,6 +737,11 @@ class AuthController:
                                 tree['portfolios'][portfolio_id]['tools'][tool_id]['tool_id'] = tool_id
                                 tree['portfolios'][portfolio_id]['tools'][tool_id]['name'] = tool['name']
                                 tree['portfolios'][portfolio_id]['tools'][tool_id]['handle'] = tool['handle']
+                                # Catalog of roles this tool supports (from tool entity).
+                                # Assigned roles live under teams[t].tools[tool].roles.
+                                tree['portfolios'][portfolio_id]['tools'][tool_id]['roles'] = self._normalize_roles_list(
+                                    tool.get('roles')
+                                )
 
                                 
                                 if 'tools' not in tree['portfolios'][portfolio_id]['teams'][team_id]:
@@ -755,6 +1053,9 @@ class AuthController:
             'language':kwargs['lan'] if 'lan' in kwargs else '',
             'tags': kwargs.get('tags') if isinstance(kwargs.get('tags'), dict) else {},           
         }
+
+        if type == 'tool':
+            data['roles'] = self._normalize_roles_list(kwargs.get('roles'))
 
     
         self.logger.debug('Entity to Create:'+str(data))
@@ -2606,7 +2907,39 @@ class AuthController:
             result['message'] = 'Missing attributes' 
             result['status'] = 400             
             return result
-        
+
+        role_id = str(kwargs['role_id']).strip()
+        if not role_id:
+            return {
+                "success": False,
+                "message": "Invalid role_id",
+                "status": 400,
+            }
+
+        # When assigning, validate role_id against the tool entity catalog (if present).
+        if kwargs.get('method') == 'POST':
+            portfolio_id = None
+            index = 'irn:rel:team:portfolio:' + kwargs['team_id'] + ':*'
+            rels = self.AUM.list_rel(index)
+            items = ((rels or {}).get('document') or {}).get('items') or []
+            if items:
+                portfolio_id = items[0].get('rel')
+            if portfolio_id:
+                tool_entity = self.get_entity(
+                    'tool',
+                    portfolio_id=portfolio_id,
+                    tool_id=kwargs['tool_id'],
+                )
+                if tool_entity.get('success'):
+                    catalog = self._normalize_roles_list(
+                        (tool_entity.get('document') or {}).get('roles')
+                    )
+                    if catalog and role_id not in catalog:
+                        return {
+                            "success": False,
+                            "message": f"Role '{role_id}' is not defined for this tool",
+                            "status": 400,
+                        }
         
         reltype = 'team/tool:role'
         if kwargs['method'] == 'POST':
@@ -2614,15 +2947,21 @@ class AuthController:
                 reltype,
                 team_id=kwargs['team_id'],
                 tool_id=kwargs['tool_id'],
-                role_id=kwargs['role_id']
+                role_id=role_id
                 )
         elif kwargs['method'] == 'DELETE':
             response = self.delete_rel(
                 reltype,
                 team_id=kwargs['team_id'],
                 tool_id=kwargs['tool_id'],
-                role_id=kwargs['role_id']
+                role_id=role_id
                 )
+        else:
+            return {
+                "success": False,
+                "message": "Unsupported method",
+                "status": 400,
+            }
             
         return response
     

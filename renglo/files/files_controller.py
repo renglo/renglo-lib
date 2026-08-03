@@ -1,5 +1,7 @@
 import json
 
+from renglo.auth.auth_controller import AuthController
+from renglo.auth.authorize import authorize
 from renglo.files.files_model import FilesModel
 from renglo.files.image_processor import (
     ImageUploadError,
@@ -15,6 +17,7 @@ class FilesController:
         self.config = config or {}
         self.logger = get_logger()
         self.FCM = FilesModel(config=self.config)
+        self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         
         self.valid_types = {
             'image/jpeg':'jpg', 
@@ -43,8 +46,8 @@ class FilesController:
         except (json.JSONDecodeError, UnicodeDecodeError, TypeError, OSError, ValueError):
             return False
 
+    @authorize()
     def a_b_post(self,portfolio,org,ring,file,type,name):
-        
         # file needs to come in binary format already
         self.logger.info("Uploading a file")
         if file:    
@@ -104,15 +107,15 @@ class FilesController:
         return self.FCM.user_thumbnail_get(handle)
     
     
+    @authorize()
     def a_b_c_get(self,portfolio,org,ring,filename):
-        
         response = self.FCM.a_b_c_get(portfolio,org,ring,filename)
         
         return response
     
     
+    @authorize()
     def tmp_post(self,portfolio,org,entity,file):
-        
         #Uploading to /tmp space
         self.logger.info("Uploading a file to transient storage")
         if file:    
@@ -135,17 +138,11 @@ class FilesController:
         return {'success':False, 'message':'No file'}
     
     
+    @authorize()
     def tmp_get(self,portfolio,org,entity,date,id):
-        
         #Getting from /tmp space
         self.logger.info("Retrieving a file from transient storage")
         
         response = self.FCM.tmp_get(portfolio,org,entity,date,id)
         
         return response
-        
-        
-        
-        
-        
-    

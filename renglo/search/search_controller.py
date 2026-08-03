@@ -7,6 +7,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from renglo.auth.auth_controller import AuthController
+from renglo.auth.authorize import authorize
 from renglo.logger import get_logger
 from renglo.search.search_index_service import SearchIndexService
 from renglo.search.search_model import SearchModel
@@ -47,6 +49,7 @@ class SearchController:
     ):
         self.config = config or {}
         self.logger = get_logger()
+        self.AUC = AuthController(config=self.config)
         self.model: Optional[SearchModel] = None
         self.index_service: Optional[SearchIndexService] = None
         self.dynamodb_resource = dynamodb_resource
@@ -293,6 +296,7 @@ class SearchController:
             score += 1.0
         return score
 
+    @authorize()
     def index_document(
         self,
         portfolio: str,
@@ -372,6 +376,7 @@ class SearchController:
             "token_count": len(rows),
         }
 
+    @authorize()
     def delete_document(self, portfolio: str, org: str, ring: str, doc_id: str) -> Dict[str, Any]:
         if not self.is_enabled():
             return {"success": False, "message": "Search is not configured"}
@@ -391,6 +396,7 @@ class SearchController:
             "deleted_rows": deleted_rows,
         }
 
+    @authorize()
     def search(
         self,
         portfolio: str,

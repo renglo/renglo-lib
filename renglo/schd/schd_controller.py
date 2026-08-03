@@ -4,6 +4,7 @@ from renglo.data.data_controller import DataController
 from renglo.files.files_controller import FilesController
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
+from renglo.auth.authorize import authorize
 
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
@@ -18,7 +19,7 @@ from renglo.schd.external_handler_runner import (
     write_batch_payload,
     write_batch_result,
 )
-from renglo.runtime import attach_jwt_claims_to_payload
+from renglo.runtime import attach_auth_roles_to_payload, attach_jwt_claims_to_payload
 
 from datetime import datetime
 
@@ -52,11 +53,11 @@ class SchdController:
         return result
         
     
+    @authorize()
     def create_rule(self,portfolio,org,name,schedule_expression,payload):
         '''
         Function used to create the cronjob
         '''
-        
         rule_name = "cron_"+portfolio+"_"+org+"_"+name
 
         result = self.SHM.create_https_target_event(
@@ -69,11 +70,11 @@ class SchdController:
         return result
     
 
+    @authorize()
     def remove_rule(self,portfolio,org,name):
         '''
         Function used to create the cronjob
         '''
-        
         rule_name = "cron_"+portfolio+"_"+org+"_"+name
         
         result = self.SHM.delete_https_target_event(rule_name)
@@ -90,11 +91,11 @@ class SchdController:
     
    
     # COMPLETE  
+    @authorize(return_status=True)
     def create_job_run(self,portfolio,org,payload):
         '''
         Function that is called by the cronjob 
         '''
-        
         self.logger.debug('Action: create_job_run:')
         
         result = []
@@ -311,9 +312,9 @@ class SchdController:
 
         return value
 
+    @authorize(resource="tool", tool_id_param="extension")
     def handler_call(self,portfolio,org,extension,handler,payload):
         action = 'handler_call'
-        
         print(f'Calling handler:{handler}, payload:{payload}')
         
         try:
@@ -427,9 +428,9 @@ class SchdController:
         
         
 
+    @authorize(resource="tool", tool_id_param="extension")
     def handler_check(self,portfolio,org,extension,handler,payload):
         action = 'handler_check'
-        
         print(f'Calling handler check:{handler}, payload:{payload}')
         
         try:
@@ -467,10 +468,14 @@ class SchdController:
         except Exception as e:
             write_batch_result(extension, request_id, {'success': False, 'output': str(e), 'error': str(e)})
 
+    @authorize(resource="tool", tool_id_param="extension")
     def handler_call_batch_start(self, portfolio, org, extension, handler, payload):
         """Start batch handler (any handler). Supports: local in-process, external dev Docker, or ECS."""
         action = 'handler_call_batch_start'
         payload = dict(payload or {})
+        # Re-stamp roles after copying payload (decorator stamped the original dict).
+        auth_ctx = getattr(self, "_auth_context", None) or {}
+        attach_auth_roles_to_payload(payload, auth_ctx.get("roles") or [])
         resolved_extension = self._resolve_extension_handle(portfolio, extension)
         payload['portfolio'] = portfolio
         payload['org'] = org
@@ -536,6 +541,7 @@ class SchdController:
             'task_id': None,
         }
 
+    @authorize()
     def get_batch_result(self, portfolio, org, extension, request_id):
         """Return batch result from S3 or pending."""
         result = run_get_batch_result(extension_name=extension, request_id=request_id)
@@ -544,6 +550,7 @@ class SchdController:
         result['extension'] = extension
         return result
 
+    @authorize()
     def get_batch_status(self, portfolio, org, extension, request_id):
         """Return batch progress from S3 (status/<request_id>.json)."""
         result = run_get_batch_status(extension_name=extension, request_id=request_id)

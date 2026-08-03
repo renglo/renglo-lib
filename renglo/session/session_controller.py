@@ -7,6 +7,8 @@ import traceback
 from decimal import Decimal
 
 from datetime import datetime
+from renglo.auth.auth_controller import AuthController
+from renglo.auth.authorize import authorize
 from renglo.files.files_controller import FilesController
 from renglo.session.session_model import SessionModel
 from renglo.logger import get_logger
@@ -29,11 +31,13 @@ class SessionController:
         self.logger = get_logger()
         self._invocation_jwt_claims = None
         self.SSM = SessionModel(config=self.config, tid=tid, ip=ip)
+        self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         
         
         
     def set_invocation_jwt_claims(self, jwt_claims):
         self._invocation_jwt_claims = jwt_claims
+        self.AUC.set_invocation_jwt_claims(jwt_claims)
 
     def get_current_user(self):
         
@@ -56,10 +60,9 @@ class SessionController:
         
     # THREADS
         
+    @authorize()
     def list_threads(self,portfolio,org,entity_type,entity_id):
         
-        #TO-DO : Check is this user has access to this tool before returning threads.
-          
         index = f"irn:session:{portfolio}:{org}:{entity_type}/thread:*/*"
         secondary = f"{entity_id}"
 
@@ -76,9 +79,8 @@ class SessionController:
         
         return response
      
+    @authorize()
     def query_threads(self,portfolio,org,entity_type,query):
-        
-        #TO-DO : Check is this user has access to this tool before returning threads.  
         
         index = f"irn:session:{portfolio}:{org}:{entity_type}/thread:*/*"
         query = f"{query}"
@@ -93,6 +95,7 @@ class SessionController:
         return response
          
     
+    @authorize()
     def create_thread(self,portfolio,org,entity_type,entity_id,public_user=''):
         
 
@@ -352,6 +355,7 @@ class SessionController:
             if replacement is not None:
                 evl[i] = replacement
 
+    @authorize()
     def list_turns(
         self, portfolio, org, entity_type, entity_id, thread_id, resolve=False
     ):
@@ -385,6 +389,7 @@ class SessionController:
             return response
     
     
+    @authorize()
     def get_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id):
         
         index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/turn:*/*/*/*"
@@ -405,6 +410,7 @@ class SessionController:
         return {'success':False,'output':'Turn not found'}
     
     
+    @authorize()
     def create_turn(self,portfolio,org,entity_type, entity_id, thread_id, payload):
         print('SSC:create_turn')
         try:
@@ -479,6 +485,7 @@ class SessionController:
     
             
     
+    @authorize()
     def update_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id, update, call_id=False):
         # Sanitize update early to prevent serialization errors in logging
         update = self._convert_floats_to_strings(update)
@@ -565,6 +572,7 @@ class SessionController:
         
     # WORKSPACE
     
+    @authorize()
     def list_workspaces(self,portfolio,org,entity_type,entity_id,thread_id):
               
         index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*"
@@ -580,6 +588,7 @@ class SessionController:
         return response
     
     
+    @authorize()
     def get_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id):
         
         index = f"irn:session:{portfolio}:{org}:{entity_type}/thread/time/workspace:*/*/*/*" 
@@ -596,6 +605,7 @@ class SessionController:
         return {'success':False,'output':'Workspace not found'}
     
     
+    @authorize()
     def create_workspace(self,portfolio,org,entity_type,entity_id,thread_id,payload):
         print('SSC:create_workspace')
         try:
@@ -680,6 +690,7 @@ class SessionController:
             }
         
         
+    @authorize()
     def update_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id,payload):
         # Sanitize payload early to prevent serialization errors in logging
         payload = self._convert_floats_to_strings(payload)

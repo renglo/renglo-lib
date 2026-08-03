@@ -1,4 +1,4 @@
-﻿# chat_controller.py
+# chat_controller.py
 
 import copy
 import json
@@ -10,6 +10,8 @@ from decimal import Decimal
 import boto3
 from flask import has_app_context
 
+from renglo.auth.auth_controller import AuthController
+from renglo.auth.authorize import authorize
 from renglo.chat.chat_model import ChatModel
 from renglo.files.files_controller import FilesController
 from renglo.logger import get_logger
@@ -50,6 +52,8 @@ class ChatController:
         self._invocation_jwt_claims = None
 
         self.CHM = ChatModel(config=self.config, tid=tid, ip=ip)
+
+        self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
 
         
 
@@ -120,6 +124,8 @@ class ChatController:
     def set_invocation_jwt_claims(self, jwt_claims):
 
         self._invocation_jwt_claims = jwt_claims
+
+        self.AUC.set_invocation_jwt_claims(jwt_claims)
 
 
 
@@ -195,13 +201,10 @@ class ChatController:
 
         
 
+    @authorize()
     def list_threads(self,portfolio,org,entity_type,entity_id):
 
         
-
-        #TO-DO : Check is this user has access to this tool before returning threads.
-
-          
 
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
 
@@ -249,11 +252,8 @@ class ChatController:
 
      
 
+    @authorize()
     def query_threads(self,portfolio,org,entity_type,query):
-
-        
-
-        #TO-DO : Check is this user has access to this tool before returning threads.  
 
         
 
@@ -283,11 +283,8 @@ class ChatController:
 
     
 
+    @authorize()
     def create_thread(self,portfolio,org,entity_type,entity_id,public_user=''):
-
-        
-
-
 
         index = f"irn:chat:{portfolio}:{org}:{entity_type}/thread:*/*"
 
@@ -783,6 +780,7 @@ class ChatController:
 
 
 
+    @authorize()
     def list_turns(
 
         self, portfolio, org, entity_type, entity_id, thread_id, resolve=False
@@ -843,6 +841,7 @@ class ChatController:
 
     
 
+    @authorize()
     def get_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id):
 
         
@@ -883,6 +882,7 @@ class ChatController:
 
     
 
+    @authorize()
     def create_turn(self,portfolio,org,entity_type, entity_id, thread_id, payload):
 
         print('CHC:create_turn')
@@ -1033,6 +1033,7 @@ class ChatController:
 
     
 
+    @authorize()
     def update_turn(self,portfolio,org,entity_type, entity_id, thread_id, turn_id, update, call_id=False):
 
         # Sanitize update early to prevent serialization errors in logging
@@ -1212,6 +1213,7 @@ class ChatController:
 
     
 
+    @authorize()
     def list_workspaces(self,portfolio,org,entity_type,entity_id,thread_id):
 
               
@@ -1242,6 +1244,7 @@ class ChatController:
 
     
 
+    @authorize()
     def get_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id):
 
         
@@ -1274,6 +1277,7 @@ class ChatController:
 
     
 
+    @authorize()
     def create_workspace(self,portfolio,org,entity_type,entity_id,thread_id,payload):
 
         print('CHC:create_workspace')
@@ -1436,6 +1440,7 @@ class ChatController:
 
         
 
+    @authorize()
     def update_workspace(self,portfolio,org,entity_type,entity_id,thread_id,workspace_id,payload):
 
         # Sanitize payload early to prevent serialization errors in logging
