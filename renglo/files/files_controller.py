@@ -105,6 +105,14 @@ class FilesController:
         if not self._is_valid_user_handle(handle):
             return {'success': False, 'error': 'Invalid user handle'}
         return self.FCM.user_thumbnail_get(handle)
+
+    # Org/portfolio thumbnails are loaded via <img src> (no Authorization header).
+    _PUBLIC_READ_RINGS = frozenset({'_thumbnails'})
+
+    def a_b_c_get_public(self, portfolio, org, ring, filename):
+        if ring not in self._PUBLIC_READ_RINGS:
+            return {'success': False, 'message': 'Forbidden', 'status': 403}
+        return self.FCM.a_b_c_get(portfolio, org, ring, filename)
     
     
     @authorize()

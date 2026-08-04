@@ -204,49 +204,49 @@ class DataController:
         
             
         
-    @authorize(return_status=True)
-    def refresh_s3_cache(self,portfolio, org, ring, sort=None):
+    def _refresh_s3_cache_impl(self, portfolio, org, ring, sort=None):
         s3_client = boto3.client('s3')
         bucket_name = self.config.get('S3_BUCKET_NAME')
         if not bucket_name:
             raise ValueError("S3_BUCKET_NAME not found in config")
-        self.logger.debug(f'Refreshing s3 cache')
-        # Proceed to regenerate the document
-        response = []  # Initialize response
-        # Simulate regeneration logic
+        self.logger.debug('Refreshing s3 cache')
+        response = []
         max_iterations = 50
         limit = 249
         iterations = 0
         lastkey = None
-        
+
         file_path = f'data/{portfolio}/{org}/{ring}'
-        
+
         while True:
             iterations += 1
             self.logger.debug("Iteration:" + str(iterations))
-            
+
             partial_response = self.get_a_b(portfolio, org, ring, limit, lastkey, sort)
             response.extend(partial_response['items'])
             lastkey = partial_response.get('last_id')
-            
+
             if lastkey is None or iterations >= max_iterations:
                 break
-        
+
         result = {
             "items": response,
             "last_id": None,
             "success": True
         }
-        
-        # Upload to S3
+
         s3_client.put_object(
             Bucket=bucket_name,
             Key=file_path,
             Body=json.dumps(result, cls=DecimalEncoder)
         )
-        
+
         return result, 201
-    
+
+    @authorize(return_status=True)
+    def refresh_s3_cache(self, portfolio, org, ring, sort=None):
+        return self._refresh_s3_cache_impl(portfolio, org, ring, sort)
+
     
     
     def sanitize(self, obj):

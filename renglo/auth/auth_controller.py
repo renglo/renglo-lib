@@ -16,6 +16,9 @@ from renglo.runtime import get_current_jwt_claims
 
 
 class AuthController:
+    # Sentinel org id for portfolio-scoped data rings (config, schd_tools, etc.).
+    # Not a real org entity — must never be treated as "any org".
+    PORTFOLIO_SCOPE_ORG = "_all"
 
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
@@ -100,6 +103,7 @@ class AuthController:
         try:
             response = s3_client.get_object(Bucket=bucket_name, Key=file_path)
             tree = json.loads(response["Body"].read())
+            tree = self.normalize_auth_tree(tree)
             self._auth_tree_cache = {"user_id": user_id, "tree": tree}
             self.logger.debug("Auth tree loaded from S3 for user %s", user_id)
             return {
@@ -119,6 +123,7 @@ class AuthController:
             return rebuild
 
         tree = rebuild["document"]
+        tree = self.normalize_auth_tree(tree)
         try:
             s3_client.put_object(
                 Bucket=bucket_name, Key=file_path, Body=json.dumps(tree)
@@ -169,6 +174,49 @@ class AuthController:
             if str((tdoc or {}).get("handle") or "").strip() == ref:
                 return tid
         return None
+
+    @classmethod
+    def is_portfolio_scope_org(cls, org) -> bool:
+        """True when org is the portfolio-scoped pseudo-org (_all)."""
+        return str(org or "").strip() == cls.PORTFOLIO_SCOPE_ORG
+
+    def _ensure_portfolio_scope_org(self, portfolio_node):
+        """
+        Inject the portfolio-scoped org (_all) into the auth tree.
+
+        Unlike entity-backed orgs, _all is not stored in DynamoDB. Team/tool/org
+        rels may reference org_id=_all; active is derived from those grants.
+        """
+        org_id = self.PORTFOLIO_SCOPE_ORG
+        active = False
+        tools_for_all = []
+        for team in (portfolio_node.get("teams") or {}).values():
+            for tool_id, tool_access in ((team or {}).get("tools") or {}).items():
+                orgs = tool_access.get("orgs") or []
+                if org_id in orgs:
+                    active = True
+                    tools_for_all.append(tool_id)
+
+        if "orgs" not in portfolio_node:
+            portfolio_node["orgs"] = {}
+
+        portfolio_node["orgs"][org_id] = {
+            "org_id": org_id,
+            "name": "ALL",
+            "handle": org_id,
+            "tags": {},
+            "tools": list(set(tools_for_all)),
+            "active": active,
+            "portfolio_scope": True,
+        }
+
+    def normalize_auth_tree(self, tree):
+        """Ensure portfolio-scoped pseudo-org (_all) exists on every portfolio node."""
+        if not isinstance(tree, dict):
+            return tree
+        for portfolio_node in (tree.get("portfolios") or {}).values():
+            self._ensure_portfolio_scope_org(portfolio_node)
+        return tree
 
     @staticmethod
     def _collect_roles_for_tool_org(portfolio_node, org, tool_id):
@@ -225,6 +273,8 @@ class AuthController:
         Authorize the current (or given) user against their S3-cached auth tree.
 
         resource='org': user may access the org when portfolios[p].orgs[o].active.
+        org='_all' is a portfolio-scoped pseudo-org (not in DynamoDB); it appears
+        in the auth tree when a team has a team/tool:org rel with org_id=_all.
         resource='tool': also requires a team grant of tool_id in that org
         (team/tool:org). Returns roles for the tool in that org when tool_id is set.
 
@@ -276,13 +326,28 @@ class AuthController:
                 "roles": [],
             }
 
-        org_node = (portfolio_node.get("orgs") or {}).get(org)
+        org_key = str(org or "").strip()
+        if not org_key:
+            self.logger.debug(
+                "Auth deny: user %s missing org for %s",
+                resolved_user_id,
+                portfolio,
+            )
+            return {
+                "success": False,
+                "message": "Access denied to organization",
+                "status": 403,
+                "user_id": resolved_user_id,
+                "roles": [],
+            }
+
+        org_node = (portfolio_node.get("orgs") or {}).get(org_key)
         if not org_node or org_node.get("active") is not True:
             self.logger.debug(
                 "Auth deny: user %s has no active access to org %s/%s",
                 resolved_user_id,
                 portfolio,
-                org,
+                org_key,
             )
             return {
                 "success": False,
@@ -305,11 +370,10 @@ class AuthController:
                         "user_id": resolved_user_id,
                         "roles": [],
                     }
-                # Require at least one team with this tool in this org
                 has_tool_org = False
                 for team in (portfolio_node.get("teams") or {}).values():
                     tool_access = ((team or {}).get("tools") or {}).get(resolved_tool_id) or {}
-                    if org in (tool_access.get("orgs") or []):
+                    if org_key in (tool_access.get("orgs") or []):
                         has_tool_org = True
                         break
                 if not has_tool_org:
@@ -318,7 +382,7 @@ class AuthController:
                         resolved_user_id,
                         resolved_tool_id,
                         portfolio,
-                        org,
+                        org_key,
                     )
                     return {
                         "success": False,
@@ -329,7 +393,7 @@ class AuthController:
                     }
             if resolved_tool_id:
                 roles = self._collect_roles_for_tool_org(
-                    portfolio_node, org, resolved_tool_id
+                    portfolio_node, org_key, resolved_tool_id
                 )
 
         # action reserved for future extension-level checks
@@ -858,6 +922,7 @@ class AuthController:
                                 #    tree['portfolios'][portfolio_id]['orgs'][org_id]['active'] = False 
                                 
 
+        self.normalize_auth_tree(tree)
 
         response = {}
         response['success'] = True
