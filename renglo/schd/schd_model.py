@@ -61,7 +61,33 @@ class SchdModel:
 
         
         
-        # Set the HTTPS target for the rule
+        # Set the HTTPS target for the rule.
+        # Prefer universal /_schd/ingress; fall back to /_schd/ping for older configs.
+        stage = self.config.get('SYS_ENV', '') or 'production'
+        path = '/_schd/ingress'
+        if self.config.get('SCHD_USE_PING_TARGET'):
+            path = '/_schd/ping'
+        target_arn = (
+            self.config.get('API_GATEWAY_ARN', '')
+            + '/'
+            + stage
+            + '/POST'
+            + path
+        )
+
+        job_payload = dict(payload or {})
+        if not job_payload.get('type'):
+            job_payload['type'] = 'schd_job'
+
+        header_params = {'Content-Type': 'application/json'}
+        ingress_secret = (
+            self.config.get('RENGLO_INGRESS_SECRET')
+            or self.config.get('WHATSAPP_INGRESS_SECRET')
+            or self.config.get('GMAIL_INGRESS_SECRET')
+            or ''
+        )
+        if ingress_secret:
+            header_params['X-Renglo-Ingress-Secret'] = str(ingress_secret)
 
         try:
             response_2 = self.client.put_targets(
@@ -69,13 +95,11 @@ class SchdModel:
                     Targets=[
                         {
                             'Id': rule_name+'_target',
-                            'Arn':  self.config.get('API_GATEWAY_ARN', '')+'/'+self.config.get('SYS_ENV', '')+'/POST/_schd/ping', # ARN of the API Gateway
+                            'Arn': target_arn,
                             'RoleArn': self.config.get('ROLE_ARN', ''),  # IAM role to allow EventBridge to invoke HTTPS
-                            'Input': json.dumps(payload),
+                            'Input': json.dumps(job_payload),
                             'HttpParameters': {
-                                'HeaderParameters': {
-                                    'Content-Type': 'application/json'
-                                },
+                                'HeaderParameters': header_params,
                                 'PathParameterValues': [],
                                 'QueryStringParameters': {}
                             }

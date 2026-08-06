@@ -612,6 +612,11 @@ class DataController:
             # ids fully backward compatible.
             if self._is_object_source_definition(field) and isinstance(raw_value, dict):
                 return raw_value
+            # Structured payloads into string fields (e.g. schd_tools.input):
+            # persist JSON text, not Python str(dict) which uses single quotes
+            # and breaks json.loads consumers (Dumbo tool schemas).
+            if isinstance(raw_value, (dict, list)):
+                return json.dumps(raw_value, ensure_ascii=False)
             return str(raw_value).strip() if raw_value not in (None, '') else ''
 
         if field_type in ('number', 'integer', 'float'):
