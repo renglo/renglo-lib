@@ -39,11 +39,11 @@ For Production (Lambda - System):
         "ARBITIUM_EXTERNAL_HANDLERS_DOCKER_IMAGE": "arbitium-lambda-builder:latest"
 
 For Development:
-    - Add to system/env_config.py:
+    - Add to dev/renglo-api/env_config.py (or set RENGLO_CONFIG_PATH):
         EXTERNAL_HANDLERS = 'arbitium'
     
     This uses the same mechanism as other environment variables and works
-    automatically when the system loads env_config.py.
+    automatically when load_config() reads env_config.py.
 """
 
 import json

@@ -44,6 +44,5 @@ This project is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt) f
 
 ## Installation
 
-Refer to the readme here: 
-https://github.com/renglo/system/blob/main/README.md
+Refer to the local setup guide in `renglo-api` (`dev/renglo-api/README.md`).
 

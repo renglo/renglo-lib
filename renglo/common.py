@@ -120,8 +120,8 @@ def load_config():
     
     Loading Strategy:
     1. Try explicit path from RENGLO_CONFIG_PATH
-    2. Try local env_config.py (for local development)
-    3. Try legacy system/env_config.py locations for backwards compatibility
+    2. Try local env_config.py (cwd / walk-up)
+    3. Try workspace ``dev/renglo-api/env_config.py`` (local development)
     4. Merge environment variables (env vars take precedence)
     
     Returns:
@@ -141,6 +141,11 @@ def load_config():
     # Try multiple paths to find env_config.py
     possible_paths = []
 
+    def _append_workspace_config_paths(root: str) -> None:
+        possible_paths.append(os.path.join(root, "env_config.py"))
+        possible_paths.append(os.path.join(root, "dev", "renglo-api", "env_config.py"))
+        possible_paths.append(os.path.join(root, "renglo-api", "env_config.py"))
+
     # 1. Explicit config path (preferred for headless runtimes)
     explicit_config_path = os.getenv("RENGLO_CONFIG_PATH")
     if explicit_config_path:
@@ -148,7 +153,6 @@ def load_config():
 
     # 2. Try relative to current working directory
     possible_paths.append(os.path.join(os.getcwd(), "env_config.py"))
-    possible_paths.append(os.path.join(os.getcwd(), 'system', 'env_config.py'))
     
     # 3. Try to find workspace root by looking for marker directories
     current_dir = os.getcwd()
@@ -156,14 +160,10 @@ def load_config():
         if os.path.exists(os.path.join(current_dir, "env_config.py")):
             possible_paths.append(os.path.join(current_dir, "env_config.py"))
             break
-        if os.path.exists(os.path.join(current_dir, 'system', 'env_config.py')):
-            possible_paths.append(os.path.join(current_dir, 'system', 'env_config.py'))
-            break
         # Look for workspace markers
-        if any(os.path.exists(os.path.join(current_dir, marker)) 
-               for marker in ['dev', 'extensions', 'console', 'system']):
-            possible_paths.append(os.path.join(current_dir, "env_config.py"))
-            possible_paths.append(os.path.join(current_dir, 'system', 'env_config.py'))
+        if any(os.path.exists(os.path.join(current_dir, marker))
+               for marker in ("dev", "extensions", "console", "renglo-api")):
+            _append_workspace_config_paths(current_dir)
             break
         current_dir = os.path.dirname(current_dir)
     
@@ -171,8 +171,9 @@ def load_config():
     # Go up: renglo -> renglo-lib -> dev -> root
     renglo_lib_path = os.path.dirname(os.path.dirname(__file__))
     workspace_root = os.path.dirname(os.path.dirname(renglo_lib_path))
-    possible_paths.append(os.path.join(workspace_root, "env_config.py"))
-    possible_paths.append(os.path.join(workspace_root, 'system', 'env_config.py'))
+    _append_workspace_config_paths(workspace_root)
+    # Also try sibling of renglo-lib when layout is workspace/dev/renglo-lib
+    possible_paths.append(os.path.join(os.path.dirname(renglo_lib_path), "renglo-api", "env_config.py"))
     
     env_config = None
     loaded_from = None

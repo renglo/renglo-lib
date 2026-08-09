@@ -260,8 +260,8 @@ def call_local_docker_handler(
         if value:
             docker_args.extend(['-e', f'{env_var}={value}'])
     
-    # Pass configuration environment variables (same as run_handler_local.sh does)
-    # Load config from system/env_config.py or environment variables
+    # Pass configuration environment variables into the container
+    # Load config from RENGLO_CONFIG_PATH / env_config.py / environment variables
     config = load_config_for_docker()
     for key, value in config.items():
         if value is not None and value != '':
