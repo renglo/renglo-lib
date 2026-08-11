@@ -208,8 +208,10 @@ def load_config():
     else:
         print("Config file not found, using environment variables", file=sys.stderr)
     
-    # Load from environment variables (overwrites file-based config)
-    # This allows Lambda/production to use environment variables
+    # Load from environment variables (overwrites file-based config).
+    # Keep this list platform-agnostic. Extension-specific keys (e.g. vector index
+    # names) should come from env_config.py, Stack-B runtime exports, or the
+    # prefix merge below — not hardcoded extension vocabulary here.
     env_var_keys = [
         'WL_NAME', 'BASE_URL', 'FE_BASE_URL', 'INVITE_FE_BASE_URL', 'DOC_BASE_URL',
         'FROM_EMAIL',
@@ -225,19 +227,37 @@ def load_config():
         'OPENAI_API_KEY', 'WEBSOCKET_CONNECTIONS',
         'ALLOW_DEV_ORIGINS', 'EXTERNAL_HANDLERS',
         'OPENSEARCH_ENDPOINT', 'OPENSEARCH_INDEX', 'OPENSEARCH_REFRESH',
-        'KB_ID', 'RAG_MODEL_ARN',
+        # Generic RAG / vectors platform knobs (values & index names are extension-owned)
+        'KB_ID', 'RAG_MODEL_ARN', 'RAG_DATA_SOURCE_ID', 'RAG_DOCS_BUCKET', 'RAG_DOCS_PREFIX',
+        'S3_VECTORS_BUCKET', 'EMBEDDING_MODEL_ID',
         'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET',
         'GMAIL_OAUTH_REDIRECT_URI', 'OAUTH_STATE_SECRET',
         'RENGLO_INGRESS_SECRET', 'GMAIL_INGRESS_SECRET', 'WHATSAPP_INGRESS_SECRET',
         'WEBHOOK_EDGE_BASE_URL',
     ]
-    
+    # Any env var under these prefixes is absorbed so extensions can export
+    # custom index/KB names via CDK without changing renglo-lib.
+    env_var_prefixes = (
+        'S3_VECTORS_',
+        'RAG_',
+        'KB_',
+        'EMBEDDING_',
+    )
+
     env_loaded_count = 0
+    seen_env_keys = set()
     for key in env_var_keys:
         if key in os.environ:
             config[key] = os.environ[key]
+            seen_env_keys.add(key)
             env_loaded_count += 1
-    
+    for key, value in os.environ.items():
+        if key in seen_env_keys or not key.isupper():
+            continue
+        if any(key.startswith(prefix) for prefix in env_var_prefixes):
+            config[key] = value
+            env_loaded_count += 1
+
     if env_loaded_count > 0:
         print(f"Loaded {env_loaded_count} config values from environment variables")
     
