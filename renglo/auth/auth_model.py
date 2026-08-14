@@ -1,4 +1,6 @@
 import logging
+import secrets
+import string
 import boto3
 from botocore.exceptions import ClientError
 from datetime import datetime
@@ -6,6 +8,20 @@ import uuid
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
+
+
+def _cognito_temp_password(length: int = 20) -> str:
+    """Generate a one-time password that satisfies default Cognito policy."""
+    alphabet = string.ascii_letters + string.digits + '!@#$%^&*'
+    while True:
+        pwd = ''.join(secrets.choice(alphabet) for _ in range(length))
+        if (
+            any(c.islower() for c in pwd)
+            and any(c.isupper() for c in pwd)
+            and any(c.isdigit() for c in pwd)
+            and any(c in '!@#$%^&*' for c in pwd)
+        ):
+            return pwd
 
 
 class AuthModel:
@@ -80,111 +96,145 @@ class AuthModel:
                 "status" : e.response['ResponseMetadata']['HTTPStatusCode']
             }
         
-    #DEPRECATED
-    def cognito_user_create_with_permanent_password(self,email, password,first='FIRST',last='LAST'):
+    def cognito_user_delete(self, username):
+        """Remove a Cognito user. Used to roll back a failed invite create."""
         try:
-            # Step 1: Create the user with a temporary password
-            response_1 = self.cognito_client.admin_create_user(
+            response = self.cognito_client.admin_delete_user(
+                UserPoolId=self.USER_POOL_ID,
+                Username=username,
+            )
+            return {
+                'success': True,
+                'message': 'User deleted',
+                'document': response,
+                'status': 200,
+            }
+        except ClientError as e:
+            return {
+                'success': False,
+                'message': e.response.get('Error', {}).get('Message', str(e)),
+                'status': e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 400),
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'message': str(e),
+                'status': 400,
+            }
+
+    def cognito_user_create_with_permanent_password(self, email, password, first='FIRST', last='LAST'):
+        """
+        Create an invitee Cognito user already CONFIRMED (no NEW_PASSWORD_REQUIRED).
+
+        AdminCreateUser always starts users in FORCE_CHANGE_PASSWORD; we immediately
+        assign the user-chosen password as permanent. On failure after create, delete
+        the Cognito user so they are not stuck unable to reset password.
+        """
+        created = False
+        try:
+            create_response = self.cognito_client.admin_create_user(
                 UserPoolId=self.USER_POOL_ID,
                 Username=email,
                 UserAttributes=[
                     {'Name': 'email', 'Value': email},
                     {'Name': 'email_verified', 'Value': 'true'},
-                    {'Name': 'given_name', 'Value': first },
-                    {'Name': 'family_name','Value': last }
+                    {'Name': 'given_name', 'Value': first},
+                    {'Name': 'family_name', 'Value': last},
                 ],
-                TemporaryPassword=password,
-                MessageAction='SUPPRESS'  # Optionally suppress the email notification
+                TemporaryPassword=_cognito_temp_password(),
+                MessageAction='SUPPRESS',
             )
+            created = True
 
-            
-            # Step 2: Set the password as permanent
-            response_2 = self.cognito_client.admin_set_user_password(
+            self.cognito_client.admin_set_user_password(
                 UserPoolId=self.USER_POOL_ID,
                 Username=email,
                 Password=password,
-                Permanent=True  # Make the password permanent
+                Permanent=True,
             )
 
-            print(f"User {email} created with a permanent password.")
-
+            return {
+                'success': True,
+                'message': 'User created with permanent password',
+                'document': create_response,
+                'status': 200,
+            }
+        except ClientError as e:
+            if created:
+                cleanup = self.cognito_user_delete(email)
+                if not cleanup.get('success'):
+                    logger.warning(
+                        'Failed to roll back Cognito user %s after permanent password error: %s',
+                        email,
+                        cleanup.get('message'),
+                    )
+            return {
+                'success': False,
+                'message': e.response.get('Error', {}).get('Message', str(e)),
+                'status': e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 400),
+            }
         except Exception as e:
-            print(f"Error creating user: {str(e)}")
+            if created:
+                cleanup = self.cognito_user_delete(email)
+                if not cleanup.get('success'):
+                    logger.warning(
+                        'Failed to roll back Cognito user %s after permanent password error: %s',
+                        email,
+                        cleanup.get('message'),
+                    )
+            return {
+                'success': False,
+                'message': str(e),
+                'status': 400,
+            }
 
-
-    
-    def cognito_user_permanent_password_assign(self,email,password):
+    def cognito_user_permanent_password_assign(self, email, password):
         try:
-            
-            # Set the password as permanent
             response = self.cognito_client.admin_set_user_password(
                 UserPoolId=self.USER_POOL_ID,
                 Username=email,
                 Password=password,
-                Permanent=True  # Make the password permanent
+                Permanent=True,
             )
-
-            print(f"User {email} created with a permanent password.")
-            # Return success message
             return {
                 'success': True,
                 'message': 'Password assigned',
                 'document': response,
-                'status': 200
+                'status': 200,
             }
-
         except Exception as e:
             return {
                 'success': False,
                 'message': str(e),
-                'status': 400
+                'status': 400,
             }
-        
 
-
-    def cognito_user_create(self,email,first='FIRST',last='LAST'):
+    def cognito_user_create(self, email, first='FIRST', last='LAST'):
+        """Create a Cognito user with a temporary password (FORCE_CHANGE_PASSWORD)."""
         try:
-            
-            temporary_password = 'TempPassword123!'
-            # Create the user in the Cognito User Pool
             response = self.cognito_client.admin_create_user(
                 UserPoolId=self.USER_POOL_ID,
                 Username=email,
                 UserAttributes=[
-                    {
-                        'Name': 'email',
-                        'Value': email
-                    },
-                    {
-                        'Name': 'email_verified',
-                        'Value': 'true'
-                    },
-                    {
-                        'Name': 'given_name',
-                        'Value': first
-                    },
-                    {
-                        'Name': 'family_name',
-                        'Value': last
-                    }
+                    {'Name': 'email', 'Value': email},
+                    {'Name': 'email_verified', 'Value': 'true'},
+                    {'Name': 'given_name', 'Value': first},
+                    {'Name': 'family_name', 'Value': last},
                 ],
-                TemporaryPassword=temporary_password,  # Optional: Set a temporary password for the user
-                MessageAction='SUPPRESS'  # Optional: Suppresses the sending of the welcome email
+                TemporaryPassword=_cognito_temp_password(),
+                MessageAction='SUPPRESS',
             )
-
-            # Return success message
             return {
                 'success': True,
                 'message': 'User created successfully',
                 'document': response,
-                'status': 200
+                'status': 200,
             }
-
         except Exception as e:
             return {
                 'success': False,
                 'message': str(e),
-                'status': 400
+                'status': 400,
             }
 
 
@@ -221,54 +271,46 @@ class AuthModel:
             }
 
 
-    #NOT USED 
-    def cognito_user_login_challenge(self,email,new_password):
-
-        temporary_password = 'TempPassword123!'
-        
+    # NOT USED — admin NEW_PASSWORD_REQUIRED is completed in the console (authInvite).
+    def cognito_user_login_challenge(self, email, temporary_password, new_password):
         try:
-            # Step 1: Authenticate the user with the email and temporary password
             auth_response = self.cognito_client.admin_initiate_auth(
                 UserPoolId=self.USER_POOL_ID,
                 ClientId=self.COGNITO_APP_CLIENT_ID,
                 AuthFlow='ADMIN_NO_SRP_AUTH',
                 AuthParameters={
-                    'USERNAME': email,  # Use email as the username
-                    'PASSWORD': temporary_password
-                }
+                    'USERNAME': email,
+                    'PASSWORD': temporary_password,
+                },
             )
 
-            # Step 2: Check if a password change is required
-            if auth_response['ChallengeName'] == 'NEW_PASSWORD_REQUIRED':
-                # Step 3: Respond to the password challenge by providing the new password
+            if auth_response.get('ChallengeName') == 'NEW_PASSWORD_REQUIRED':
                 challenge_response = self.cognito_client.respond_to_auth_challenge(
                     ClientId=self.COGNITO_APP_CLIENT_ID,
                     ChallengeName='NEW_PASSWORD_REQUIRED',
                     ChallengeResponses={
-                        'USERNAME': email,  # Use email as the username
+                        'USERNAME': email,
                         'NEW_PASSWORD': new_password,
-                        'PASSWORD': temporary_password
                     },
-                    Session=auth_response['Session']
+                    Session=auth_response['Session'],
                 )
                 return {
                     'success': True,
                     'message': 'Password changed successfully. User is now authenticated.',
                     'document': challenge_response['AuthenticationResult'],
-                    'status': 200
+                    'status': 200,
                 }
 
-            else:
-                return {
-                    'success': False,
-                    'message': 'Unexpected challenge. Expected NEW_PASSWORD_REQUIRED.',
-                    'status': 400
-                }
+            return {
+                'success': False,
+                'message': 'Unexpected challenge. Expected NEW_PASSWORD_REQUIRED.',
+                'status': 400,
+            }
 
         except self.cognito_client.exceptions.NotAuthorizedException:
-            return {'success': False, 'message': 'Invalid temporary password', 'status':401}
+            return {'success': False, 'message': 'Invalid temporary password', 'status': 401}
         except Exception as e:
-            return {'success': False, 'message': str(e),'status':500}
+            return {'success': False, 'message': str(e), 'status': 500}
 
             
 

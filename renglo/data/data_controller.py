@@ -962,8 +962,29 @@ class DataController:
                 continue
             
             item = {}
-            item = row['attributes']
-            item['_id'] = row['_id']
+            if isinstance(row.get("attributes"), dict):
+                item = dict(row["attributes"])
+            else:
+                item = {
+                    k: v
+                    for k, v in row.items()
+                    if k
+                    not in {
+                        "portfolio_index",
+                        "doc_index",
+                        "added",
+                        "modified",
+                        "license",
+                        "public",
+                        "blueprint",
+                        "portfolio",
+                        "org",
+                        "ring",
+                        "blueprint_version",
+                        "path_index",
+                    }
+                }
+            item["_id"] = row.get("_id") or item.get("_id")
 
             if 'modified' in row:
                 item['_modified'] = row['modified']
@@ -1040,8 +1061,29 @@ class DataController:
                 continue
             
             item = {}
-            item = row['attributes']
-            item['_id'] = row['_id']
+            if isinstance(row.get("attributes"), dict):
+                item = dict(row["attributes"])
+            else:
+                item = {
+                    k: v
+                    for k, v in row.items()
+                    if k
+                    not in {
+                        "portfolio_index",
+                        "doc_index",
+                        "added",
+                        "modified",
+                        "license",
+                        "public",
+                        "blueprint",
+                        "portfolio",
+                        "org",
+                        "ring",
+                        "blueprint_version",
+                        "path_index",
+                    }
+                }
+            item["_id"] = row.get("_id") or item.get("_id")
 
             if 'modified' in row:
                 item['_modified'] = row['modified']

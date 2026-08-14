@@ -2421,28 +2421,24 @@ class AuthController:
  
             
 
-        #3. Create a stable new Cognito User
-        #Input: email,first,last,pass
-
-        #3a. Add user to cognito user pool
-        response_3a = self.AUM.cognito_user_create(kwargs['email'], kwargs['first'], kwargs['last'])    
-        self.logger.debug('Step 3a: Creating Cognito user ')
-        self.logger.debug(response_3a)  
-        if not response_3a['success']:
-            response_3a['message'] = 'Could not create user in Identity Service'                
-            return response_3a
-        bridge['cognito_username'] = response_3a['document']['User']['Username']
-        
-        #3b. Assigned user password
-        response_3b = self.AUM.cognito_user_permanent_password_assign(kwargs['email'],kwargs['pass'])
-        self.logger.debug('Step 3a: Assign user password')
-        self.logger.debug(response_3b)
-        if not response_3b['success']:
-            response_3a['message'] = 'Could not assigned provided password please reset your password'
-            return response_3b
-     
-        transaction.append(response_3a)
-        transaction.append(response_3b)
+        #3. Create Cognito user with the invitee's chosen password as permanent
+        #   (CONFIRMED — no NEW_PASSWORD_REQUIRED challenge on first login)
+        response_3 = self.AUM.cognito_user_create_with_permanent_password(
+            kwargs['email'],
+            kwargs['pass'],
+            kwargs['first'],
+            kwargs['last'],
+        )
+        self.logger.debug('Step 3: Creating Cognito user with permanent password')
+        self.logger.debug(response_3)
+        if not response_3['success']:
+            response_3['message'] = (
+                response_3.get('message')
+                or 'Could not create user in Identity Service'
+            )
+            return response_3
+        bridge['cognito_username'] = response_3['document']['User']['Username']
+        transaction.append(response_3)
 
 
         #4. Create User Entity

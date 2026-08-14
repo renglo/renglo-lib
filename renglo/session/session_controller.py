@@ -39,9 +39,18 @@ class SessionController:
         self._invocation_jwt_claims = jwt_claims
         self.AUC.set_invocation_jwt_claims(jwt_claims)
 
+    def set_invocation_user(self, user_id):
+        """Impersonate a Renglo user for ingress/channel paths (authorize + author_id)."""
+        self._invocation_user_id = user_id
+        if hasattr(self.AUC, "set_invocation_user"):
+            self.AUC.set_invocation_user(user_id)
+
     def get_current_user(self):
         
         self.logger.debug(f'Getting user')
+
+        if getattr(self, "_invocation_user_id", None):
+            return self._invocation_user_id
 
         claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
         if "cognito:username" in claims:
@@ -56,6 +65,13 @@ class SessionController:
         self.logger.debug(f'User Id:{user_id}')
 
         return user_id
+
+    @staticmethod
+    def _thread_time(item):
+        try:
+            return float(item.get("time") or 0)
+        except (TypeError, ValueError):
+            return 0.0
         
         
     # THREADS
@@ -64,18 +80,18 @@ class SessionController:
     def list_threads(self,portfolio,org,entity_type,entity_id):
         
         index = f"irn:session:{portfolio}:{org}:{entity_type}/thread:*/*"
+        # Prefix query: legacy rows used entity_index == entity_id; new rows use
+        # entity_index == "{entity_id}/{thread_id}" so multiple threads can coexist.
         secondary = f"{entity_id}"
 
-        
-        # entity_id = ''  //This will return ALL the threads
-        # entity_id = <entity_id_prefix>  //This will return everything that matches the prefix
-        # entity_id = <entity_id_full> // This will return the exact match (one result)
-        #>>>>
-        
-        limit = 10
+        limit = 1000
         sort = 'desc'
         
-        response = self.SSM.list_session(index,secondary,limit,sort=sort)
+        response = self.SSM.query_session(index, secondary, limit, sort=sort)
+        if response.get("success") and response.get("items"):
+            response["items"] = sorted(
+                response["items"], key=self._thread_time, reverse=True
+            )
         
         return response
      
@@ -91,6 +107,10 @@ class SessionController:
         sort = 'desc'
         
         response = self.SSM.query_session(index,query,limit,sort=sort)
+        if response.get("success") and response.get("items"):
+            response["items"] = sorted(
+                response["items"], key=self._thread_time, reverse=True
+            )
         
         return response
          
@@ -100,7 +120,9 @@ class SessionController:
         
 
         index = f"irn:session:{portfolio}:{org}:{entity_type}/thread:*/*"
-        secondary = f"{entity_id}"
+        thread_id = str(uuid.uuid4())
+        # Unique sort key per thread so list_threads (begins_with entity_id) returns all threads.
+        secondary = f"{entity_id}/{thread_id}"
 
         
         if public_user:
@@ -117,12 +139,48 @@ class SessionController:
             'entity_index' : secondary, 
             'language' : 'EN',
             'index' : index,
-            '_id':str(uuid.uuid4()),        
+            '_id': thread_id,
         }
         
         response = self.SSM.create_session(data)
         
         return response
+
+    @authorize()
+    def ensure_latest_thread(self, portfolio, org, entity_type, entity_id, public_user=""):
+        """
+        Return the newest Renglo thread for these coordinates, or create one.
+
+        ``list_threads`` is time-desc; ``items[0]`` is the current conversation
+        lane. Call ``create_thread`` again after memorialization/compaction when
+        a fresh context cut is needed.
+        """
+        listed = self.list_threads(portfolio, org, entity_type, entity_id)
+        if listed.get("success") and listed.get("items"):
+            return {
+                "success": True,
+                "action": "ensure_latest_thread",
+                "created": False,
+                "document": listed["items"][0],
+            }
+
+        created = self.create_thread(
+            portfolio, org, entity_type, entity_id, public_user=public_user
+        )
+        if not created.get("success"):
+            return {
+                "success": False,
+                "action": "ensure_latest_thread",
+                "created": False,
+                "message": created.get("message") or "Could not create thread",
+                "output": created,
+            }
+        return {
+            "success": True,
+            "action": "ensure_latest_thread",
+            "created": True,
+            "document": created.get("document") or {},
+        }
     
 
     
@@ -567,9 +625,75 @@ class SessionController:
                 "message": f"Error updating message: {str(e)}",
                 "status": 500
             }
-        
-        
-        
+
+    @authorize()
+    def append_channel_delivery(
+        self,
+        portfolio,
+        org,
+        entity_type,
+        entity_id,
+        thread_id,
+        turn_id,
+        *,
+        channel,
+        status,
+        external_id="",
+        provider_status=None,
+        provider_error=None,
+        provider_message_id=None,
+        related_event_id=None,
+        text_excerpt=None,
+    ):
+        """Append a ``channel_delivery`` event to an existing turn (sent / failed)."""
+        if not all([portfolio, org, entity_type, entity_id, thread_id, turn_id, channel, status]):
+            return {
+                "success": False,
+                "message": "Missing required parameters for channel_delivery",
+                "status": 400,
+            }
+
+        event_id = str(uuid.uuid4())
+        ts = datetime.now().isoformat()
+        payload = {
+            "status": str(status),
+            "channel": str(channel),
+            "external_id": str(external_id or ""),
+        }
+        if provider_status is not None:
+            payload["provider_status"] = provider_status
+        if provider_error is not None:
+            payload["provider_error"] = provider_error
+        if provider_message_id:
+            payload["provider_message_id"] = str(provider_message_id)
+        if related_event_id:
+            payload["related_event_id"] = str(related_event_id)
+        if text_excerpt:
+            payload["text_excerpt"] = str(text_excerpt)[:240]
+
+        update = {
+            "_type": "channel_delivery",
+            "_out": {
+                "role": "system",
+                "content": payload,
+            },
+            "_meta": {
+                "event_id": event_id,
+                "session_id": f"{entity_type}|{entity_id}|{thread_id}",
+                "timestamp": ts,
+            },
+        }
+        return self.update_turn(
+            portfolio,
+            org,
+            entity_type,
+            entity_id,
+            thread_id,
+            turn_id,
+            update,
+            call_id=False,
+        )
+
     # WORKSPACE
     
     @authorize()
