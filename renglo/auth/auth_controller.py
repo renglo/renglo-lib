@@ -218,6 +218,15 @@ class AuthController:
             self._ensure_portfolio_scope_org(portfolio_node)
         return tree
 
+    def _has_active_entity_org(self, portfolio_node) -> bool:
+        """True when the user has at least one real (non-_all) active org."""
+        for org_id, org_node in (portfolio_node.get("orgs") or {}).items():
+            if self.is_portfolio_scope_org(org_id):
+                continue
+            if (org_node or {}).get("active") is True:
+                return True
+        return False
+
     @staticmethod
     def _collect_roles_for_tool_org(portfolio_node, org, tool_id):
         """
@@ -273,8 +282,10 @@ class AuthController:
         Authorize the current (or given) user against their S3-cached auth tree.
 
         resource='org': user may access the org when portfolios[p].orgs[o].active.
-        org='_all' is a portfolio-scoped pseudo-org (not in DynamoDB); it appears
-        in the auth tree when a team has a team/tool:org rel with org_id=_all.
+        org='_all' is a portfolio-scoped pseudo-org (not in DynamoDB). For
+        resource='org', _all is allowed when the user has any active entity org
+        in the portfolio (extension grants on real orgs). For resource='tool',
+        _all still requires an explicit team/tool:org rel with org_id=_all.
         resource='tool': also requires a team grant of tool_id in that org
         (team/tool:org). Returns roles for the tool in that org when tool_id is set.
 
@@ -342,7 +353,24 @@ class AuthController:
             }
 
         org_node = (portfolio_node.get("orgs") or {}).get(org_key)
-        if not org_node or org_node.get("active") is not True:
+        if self.is_portfolio_scope_org(org_key):
+            # _all.active is only true with an explicit _all tool grant.
+            # Org-level operations (files, data rings) should succeed when the
+            # user already has an active entity org via an extension.
+            if resource == "org" and not self._has_active_entity_org(portfolio_node):
+                self.logger.debug(
+                    "Auth deny: user %s has no active org in portfolio %s for _all",
+                    resolved_user_id,
+                    portfolio,
+                )
+                return {
+                    "success": False,
+                    "message": "Access denied to organization",
+                    "status": 403,
+                    "user_id": resolved_user_id,
+                    "roles": [],
+                }
+        elif not org_node or org_node.get("active") is not True:
             self.logger.debug(
                 "Auth deny: user %s has no active access to org %s/%s",
                 resolved_user_id,
