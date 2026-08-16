@@ -215,7 +215,7 @@ def load_config():
     env_var_keys = [
         'WL_NAME', 'BASE_URL', 'FE_BASE_URL', 'INVITE_FE_BASE_URL', 'DOC_BASE_URL',
         'FROM_EMAIL',
-        'AWS_REGION', 'API_GATEWAY_ARN', 'ROLE_ARN', 'SYS_ENV',
+        'AWS_REGION', 'ROLE_ARN', 'EVENTBRIDGE_EMULATOR_URL',
         'DYNAMODB_ENTITY_TABLE', 'DYNAMODB_BLUEPRINT_TABLE', 'DYNAMODB_RINGDATA_TABLE',
         'DYNAMODB_REL_TABLE', 'DYNAMODB_CHAT_TABLE', 'DYNAMODB_SESSION_TABLE', 'DYNAMODB_GRAPH_TABLE',
         'DYNAMODB_SEARCH_TABLE',
@@ -232,8 +232,9 @@ def load_config():
         'S3_VECTORS_BUCKET', 'EMBEDDING_MODEL_ID',
         'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET',
         'GMAIL_OAUTH_REDIRECT_URI', 'OAUTH_STATE_SECRET',
-        'RENGLO_INGRESS_SECRET', 'GMAIL_INGRESS_SECRET', 'WHATSAPP_INGRESS_SECRET',
+        'RENGLO_INGRESS_SECRET',
         'WEBHOOK_EDGE_BASE_URL',
+        'RENGLO_INGRESS_DESTINATION',
     ]
     # Any env var under these prefixes is absorbed so extensions can export
     # custom index/KB names via CDK without changing renglo-lib.
