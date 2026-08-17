@@ -13,8 +13,8 @@ setup(
     packages=find_packages(),
     python_requires=">=3.12",
     install_requires=[
-        "boto3==1.35.38",
-        "botocore==1.35.38",
+        "boto3==1.43.72",
+        "botocore==1.43.72",
         "opensearch-py>=2.4.0",
         "PyJWT==2.10.1",
         "Requests==2.32.3",
