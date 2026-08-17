@@ -1,265 +1,271 @@
-import boto3
 import json
 
+import boto3
+import requests
+
+DEFAULT_EBE_URL = 'http://127.0.0.1:5056'
 
 
 class SchdModel:
-    
-    
+
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
-        aws_region = self.config.get('AWS_REGION', 'us-east-1')
-        self.client = boto3.client('events', region_name=aws_region)
-        
+        self.client = None
+        self._destination_arn = None
 
-    def create_https_target_event(self, rule_name, schedule_expression, payload):
-        """
-        Create an EventBridge rule that triggers an HTTPS POST request to a specified Flask endpoint.
-        
-        Parameters:
-        - rule_name: Name of the EventBridge rule.
-        - schedule_expression: Cron or rate expression (e.g., 'rate(1 minute)').
-        - target_url: The HTTPS endpoint that EventBridge should send events to.
-        """
-        # Create or update the EventBridge rule
-        print('action:create_https_target_events')
-        
+    def _use_ebe(self, backend=None):
+        """Local origin talks to ebe; cloud origin talks to EventBridge. They coexist."""
+        return str(backend or 'cloud').strip().lower() == 'local'
+
+    def _emulator_url(self):
+        return str(self.config.get('EVENTBRIDGE_EMULATOR_URL') or DEFAULT_EBE_URL).rstrip('/')
+
+    def _events_client(self):
+        if self.client is None:
+            aws_region = self.config.get('AWS_REGION', 'us-east-1')
+            self.client = boto3.client('events', region_name=aws_region)
+        return self.client
+
+    def _local_request(self, method, path, body=None, params=None):
+        url = f'{self._emulator_url()}{path}'
         try:
-            response_1 = self.client.put_rule(
-                Name=rule_name,
-                ScheduleExpression=schedule_expression,
-                State='ENABLED'
-            )
-            if not 'RuleArn' in response_1:
-                return {'success':False,'output':response_1}
-               
-            rule_arn = response_1['RuleArn']
-            
-            print('action:create_https_target_events')
-            print(response_1)
-        
+            resp = requests.request(method, url, json=body, params=params, timeout=15)
         except Exception as e:
-            
-            '''
-            A successful response_1 looks like this: 
-            {
-                "RuleArn": "arn:aws:events:us-east-1:123456789012:rule/my-scheduled-rule"
-            }
-            
-            You could get the following errors: 
-            
-            1. AccessDeniedException: The IAM role doesn't have the necessary permissions to create the rule.
-                Solution: Ensure the AWS user has events:PutRule permission in IAM.
-            2. ValidationException: The ScheduleExpression is incorrect.
-                Solution: Make sure you are using a valid cron or rate expression (rate(5 minutes), cron(0 12 * * ? *)).
-            3. LimitExceededException: You have reached the maximum number of rules allowed.
-                Solution: Delete unused rules or request a quota increase.
-            '''
-        
-            return {'success':False,'output':str(e)}
-        
+            return {'success': False, 'output': str(e)}
+        if resp.status_code >= 400:
+            return {'success': False, 'output': resp.text}
+        try:
+            data = resp.json()
+        except Exception:
+            data = {'status': resp.status_code}
+        if isinstance(data, dict):
+            if 'success' not in data:
+                data = {'success': True, 'output': data}
+            return data
+        return {'success': True, 'output': data}
 
-        
-        
-        # Set the HTTPS target for the rule.
-        # Prefer universal /_schd/ingress; fall back to /_schd/ping for older configs.
-        stage = self.config.get('SYS_ENV', '') or 'production'
-        path = '/_schd/ingress'
-        if self.config.get('SCHD_USE_PING_TARGET'):
-            path = '/_schd/ping'
-        target_arn = (
-            self.config.get('API_GATEWAY_ARN', '')
-            + '/'
-            + stage
-            + '/POST'
-            + path
-        )
+    def ingress_destination_name(self):
+        named = str(self.config.get('RENGLO_INGRESS_DESTINATION') or '').strip()
+        if named:
+            return named
+        env_name = str(self.config.get('WL_NAME') or '').strip()
+        if env_name:
+            return f'{env_name}-renglo-process'
+        return ''
 
+    def ingress_destination_arn(self):
+        """Look up the shared webhook API Destination by name."""
+        if self._destination_arn:
+            return self._destination_arn
+        name = self.ingress_destination_name()
+        if not name:
+            return ''
+        try:
+            response = self._events_client().describe_api_destination(Name=name)
+            arn = str(response.get('ApiDestinationArn') or '').strip()
+            if arn:
+                self._destination_arn = arn
+            return arn
+        except Exception:
+            return ''
+
+    def create_https_target_event(self, rule_name, schedule_expression, payload, backend='cloud'):
+        """Create a scheduled rule that POSTs to /_schd/ingress via the webhook API Destination."""
         job_payload = dict(payload or {})
         if not job_payload.get('type'):
             job_payload['type'] = 'schd_job'
 
-        header_params = {'Content-Type': 'application/json'}
-        ingress_secret = (
-            self.config.get('RENGLO_INGRESS_SECRET')
-            or self.config.get('WHATSAPP_INGRESS_SECRET')
-            or self.config.get('GMAIL_INGRESS_SECRET')
-            or ''
-        )
-        if ingress_secret:
-            header_params['X-Renglo-Ingress-Secret'] = str(ingress_secret)
-
-        try:
-            response_2 = self.client.put_targets(
-                    Rule=rule_name,
-                    Targets=[
-                        {
-                            'Id': rule_name+'_target',
-                            'Arn': target_arn,
-                            'RoleArn': self.config.get('ROLE_ARN', ''),  # IAM role to allow EventBridge to invoke HTTPS
-                            'Input': json.dumps(job_payload),
-                            'HttpParameters': {
-                                'HeaderParameters': header_params,
-                                'PathParameterValues': [],
-                                'QueryStringParameters': {}
-                            }
-                        }
-                    ]
-        
+        if self._use_ebe(backend):
+            return self._local_request(
+                'PUT',
+                '/rules',
+                {
+                    'name': rule_name,
+                    'kind': 'schedule',
+                    'schedule_expression': schedule_expression,
+                    'payload': job_payload,
+                    'machine_id': job_payload.get('schd_machine_id') or '',
+                    'enabled': True,
+                },
             )
+
+        print('action:create_https_target_events')
+        try:
+            response_1 = self._events_client().put_rule(
+                Name=rule_name,
+                ScheduleExpression=schedule_expression,
+                State='ENABLED',
+            )
+            if 'RuleArn' not in response_1:
+                return {'success': False, 'output': response_1}
+            print(response_1)
         except Exception as e:
-            
-            '''
-            A successful response looks like this:
-            
-            {
-                "FailedEntryCount": 0,
-                "FailedEntries": []
-            }
-            
-            
-            
+            return {'success': False, 'output': str(e)}
 
-            1.	Invalid Target ARN: Ensure the ARN provided is correct and belongs to a supported service (Lambda, SQS, etc.).
-            2.	Permission Issues: The EventBridge rule might not have permissions to invoke the target (check IAM roles).
-            3.	Malformed Input:Ensure the Input JSON is properly formatted.      
-            '''
-            
-            #If creating the target failed, you should delete the rule you created in the first part 
-            # TO DO !!!!
-            
-            return {'success':False,'output':str(e)}
-        
-        
+        result = self._put_ingress_target(rule_name, job_payload)
+        if not result.get('success'):
+            try:
+                self._events_client().delete_rule(Name=rule_name)
+            except Exception:
+                pass
+            return result
 
-        #return f"Rule {rule_name} created successfully."
-        input = {
-            'rule_name':rule_name,
-            'schedule_expression':schedule_expression,
-            'payload':payload  
-            }
-        
-        return {'success':True,
-                'message':'Rule created successfully',
-                'input':input,
-                'output':response_1
-                } 
-    
-    
+        return {
+            'success': True,
+            'message': 'Rule created successfully',
+            'input': {
+                'rule_name': rule_name,
+                'schedule_expression': schedule_expression,
+                'payload': payload,
+            },
+            'output': response_1,
+        }
 
-    def delete_https_target_event(self, rule_name):
-        """
-        Delete an EventBridge rule and its associated target.
-        
-        Parameters:
-        - rule_name: Name of the EventBridge rule to delete.
-        
-        Returns:
-        - Dictionary containing success status and operation details
-        """
+    def delete_https_target_event(self, rule_name, backend='cloud'):
+        """Delete an EventBridge rule and its associated target."""
+        if self._use_ebe(backend):
+            return self._local_request('DELETE', f'/rules/{rule_name}')
         try:
-            # First remove the targets associated with the rule
-            response_1 = self.client.remove_targets(
+            client = self._events_client()
+            response_1 = client.remove_targets(
                 Rule=rule_name,
-                Ids=[rule_name + '_target'],  # Using same target ID format as in create_https_target_event
-                Force=True
+                Ids=[rule_name + '_target'],
+                Force=True,
             )
-            
             if response_1['FailedEntryCount'] > 0:
                 return {'success': False, 'message': 'Failed to remove target', 'output': response_1}
-            
-            # Then delete the rule itself
-            response_2 = self.client.delete_rule(
-                Name=rule_name
-            )
-            
+
+            response_2 = client.delete_rule(Name=rule_name)
             return {
                 'success': True,
                 'message': 'Rule and target deleted successfully',
                 'input': {'rule_name': rule_name},
-                'output': {'remove_targets': response_1, 'delete_rule': response_2}
+                'output': {'remove_targets': response_1, 'delete_rule': response_2},
             }
-            
         except Exception as e:
             print(e)
             return {'success': False, 'message': 'Failed to delete rule', 'output': str(e)}
-    
-    
 
-     
     def find_rule(self, rulename):
-        """
-        Retrieve events that need to be executed within a time window.
-        
-        Sample: 
-        {
-            "Name": "MyRule1",
-            "Arn": "arn:aws:events:us-east-1:123456789012:rule/MyRule1",
-            "EventPattern": "{\"source\":[\"aws.ec2\"]}",
-            "State": "ENABLED",
-            "Description": "This is my first rule",
-            "RoleArn": "arn:aws:iam::123456789012:role/MyRole",
-            "ManagedBy": "AWS",
-            "ScheduleExpression": "rate(5 minutes)",
-            "EventBusName": "default",
-            "Targets": [
-                {
-                    "Id": "Target1",
-                    "Arn": "arn:aws:lambda:us-east-1:123456789012:function:MyFunction",
-                    "Input": "{\"key1\":\"value1\"}"
-                }
-            ]
-        }
-        """
-
         action = 'find_rule'
-        
-        paginator = self.client.get_paginator('list_rules')
-
+        paginator = self._events_client().get_paginator('list_rules')
         for page in paginator.paginate():
             for rule in page['Rules']:
                 print(f'Rule >>> {rule}')
-                if 'Name' in rule:
-                    if rule['Name'] == rulename :
-                        if rule['State'] == 'ENABLED': 
-                            return {'success':True,'action':action,'input':rulename,'output':rule} 
+                if rule.get('Name') == rulename:
+                    return {'success': True, 'action': action, 'input': rulename, 'output': rule}
+        return {'success': False, 'input': rulename, 'output': False}
 
-        return {'success':False,'input':rulename,'output':False}
-  
-  
-    
-    #NOT USED
-    def get_scheduled_events(self, start_time, end_time):
-        """
-        Retrieve events that need to be executed within a time window.
-        """
-        paginator = self.client.get_paginator('list_rules')
-        rules = []
+    def set_rule_state(self, rule_name, enabled=True, backend='cloud'):
+        """Enable or disable an EventBridge rule without deleting it."""
+        if self._use_ebe(backend):
+            return self._local_request('PATCH', f'/rules/{rule_name}', {'enabled': enabled})
+        try:
+            client = self._events_client()
+            client.enable_rule(Name=rule_name) if enabled else client.disable_rule(Name=rule_name)
+            return {'success': True, 'rule_name': rule_name, 'enabled': enabled}
+        except Exception as e:
+            return {'success': False, 'output': str(e)}
 
-        for page in paginator.paginate():
-            for rule in page['Rules']:
-                if 'ScheduleExpression' in rule:
-                    # Filter rules within the time window
-                    schedule_expression = rule['ScheduleExpression']
-                    if self._is_within_time_window(schedule_expression, start_time, end_time):
-                        rules.append(rule)
+    def create_event_pattern_target(self, rule_name, event_source, payload_defaults=None, backend='cloud'):
+        """Rule that matches PutEvents source and POSTs to /_schd/ingress."""
+        if self._use_ebe(backend):
+            return {'success': True, 'message': 'Local fan-out does not use a pattern rule'}
 
-        return rules
+        pattern = json.dumps({"source": [event_source]})
+        try:
+            response_1 = self._events_client().put_rule(
+                Name=rule_name,
+                EventPattern=pattern,
+                State='ENABLED',
+            )
+            if 'RuleArn' not in response_1:
+                return {'success': False, 'output': response_1}
+        except Exception as e:
+            return {'success': False, 'output': str(e)}
 
-    
-    #NOT USED
-    def _is_within_time_window(self, schedule_expression, start_time, end_time):
-        """
-        Check if a rule's schedule falls within a specific time window.
-        (This is a placeholder; implement cron parsing for real checks.)
-        """
-        # Placeholder logic: assumes hourly cron schedule
-        if 'rate' in schedule_expression or 'cron' in schedule_expression:
-            now = datetime.utcnow()
-            return start_time <= now <= end_time
-        return False
-    
-    
-    
-    
-    
+        job_payload = dict(payload_defaults or {})
+        result = self._put_ingress_target(rule_name, job_payload)
+        if not result.get('success'):
+            try:
+                self._events_client().delete_rule(Name=rule_name)
+            except Exception:
+                pass
+            return result
+        return {
+            'success': True,
+            'message': 'Event pattern rule created',
+            'output': response_1,
+        }
+
+    def put_schd_events(self, entries, backend=None):
+        """PutEvents onto the default bus. Each entry is a detail dict."""
+        if not entries:
+            return {'success': True, 'output': {'FailedEntryCount': 0}}
+        if backend is None:
+            first = entries[0] if entries else {}
+            backend = 'local' if str((first or {}).get('schedule_origin') or '') == 'local' else 'cloud'
+        if self._use_ebe(backend):
+            result = self._local_request('POST', '/events', {'entries': list(entries)})
+            if result.get('success'):
+                result.setdefault('output', {'FailedEntryCount': 0, 'queued': result.get('queued')})
+            return result
+        try:
+            response = self._events_client().put_events(
+                Entries=[
+                    {
+                        'Source': 'custom.renglo.schd',
+                        'DetailType': 'SchdJob',
+                        'Detail': json.dumps(detail),
+                    }
+                    for detail in entries
+                ]
+            )
+            failed = int(response.get('FailedEntryCount') or 0)
+            return {'success': failed == 0, 'output': response}
+        except Exception as e:
+            return {'success': False, 'output': str(e)}
+
+    def _put_ingress_target(self, rule_name, job_payload):
+        """Attach the shared webhook API Destination. Auth is on the Connection."""
+        target_arn = self.ingress_destination_arn()
+        if not target_arn:
+            name = self.ingress_destination_name() or 'RENGLO_INGRESS_DESTINATION'
+            return {
+                'success': False,
+                'output': f'API Destination not found ({name}). Deploy the webhook ingress stack.',
+            }
+        if 'api-destination' not in target_arn:
+            return {
+                'success': False,
+                'output': f'Ingress target must be an API Destination ARN, got {target_arn}',
+            }
+        target = {
+            'Id': rule_name + '_target',
+            'Arn': target_arn,
+            'RoleArn': self.config.get('ROLE_ARN', ''),
+            'HttpParameters': {
+                'HeaderParameters': {'Content-Type': 'application/json'},
+                'PathParameterValues': [],
+                'QueryStringParameters': {},
+            },
+        }
+        if job_payload:
+            target['Input'] = json.dumps(job_payload)
+        try:
+            response_2 = self._events_client().put_targets(Rule=rule_name, Targets=[target])
+            if response_2.get('FailedEntryCount'):
+                return {'success': False, 'output': response_2}
+            return {'success': True, 'output': response_2, 'target_arn': target_arn}
+        except Exception as e:
+            return {'success': False, 'output': str(e)}
+
+    def append_local_activity(self, entry):
+        return self._local_request('POST', '/activity', dict(entry or {}))
+
+    def list_local_activity(self, **filters):
+        params = {key: value for key, value in (filters or {}).items() if value not in (None, '')}
+        return self._local_request('GET', '/activity', params=params)
+
+    def get_local_activity(self, event_id):
+        return self._local_request('GET', f'/activity/{event_id}')
