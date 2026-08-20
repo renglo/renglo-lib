@@ -106,6 +106,11 @@ class FilesController:
             return {'success': False, 'error': 'Invalid user handle'}
         return self.FCM.user_thumbnail_get(handle)
 
+    def user_thumbnail_presign(self, handle):
+        if not self._is_valid_user_handle(handle):
+            return {'success': False, 'error': 'Invalid user handle', 'status': 400}
+        return self.FCM.user_thumbnail_presign(handle)
+
     # Org/portfolio thumbnails are loaded via <img src> (no Authorization header).
     _PUBLIC_READ_RINGS = frozenset({'_thumbnails'})
 
@@ -113,6 +118,11 @@ class FilesController:
         if ring not in self._PUBLIC_READ_RINGS:
             return {'success': False, 'message': 'Forbidden', 'status': 403}
         return self.FCM.a_b_c_get(portfolio, org, ring, filename)
+
+    def a_b_c_presign_public(self, portfolio, org, ring, filename):
+        if ring not in self._PUBLIC_READ_RINGS:
+            return {'success': False, 'message': 'Forbidden', 'status': 403}
+        return self.FCM.a_b_c_presign(portfolio, org, ring, filename)
     
     
     @authorize()
@@ -120,6 +130,10 @@ class FilesController:
         response = self.FCM.a_b_c_get(portfolio,org,ring,filename)
         
         return response
+
+    @authorize()
+    def a_b_c_presign(self, portfolio, org, ring, filename):
+        return self.FCM.a_b_c_presign(portfolio, org, ring, filename)
     
     
     @authorize()

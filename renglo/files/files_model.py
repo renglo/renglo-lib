@@ -5,6 +5,9 @@ from renglo.logger import get_logger
 
 class FilesModel:
 
+    # HTTP GETs redirect to a signed S3 URL. Signing is local HMAC; no GetObject.
+    PRESIGN_EXPIRES_IN = 3600
+
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
         self.logger = get_logger()
@@ -24,6 +27,35 @@ class FilesModel:
         if not bucket_name:
             raise ValueError("S3_BUCKET_NAME configuration is required")
         return bucket_name
+
+    def _s3_client(self):
+        return boto3.client('s3')
+
+    def presign_get(self, file_path, expires_in=None):
+        """Return a time-limited S3 GET URL. Does not check that the object exists."""
+        if expires_in is None:
+            expires_in = self.PRESIGN_EXPIRES_IN
+        try:
+            url = self._s3_client().generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self._bucket_name(), 'Key': file_path},
+                ExpiresIn=expires_in,
+            )
+            return {'success': True, 'url': url, 'path': file_path}
+        except Exception as e:
+            self.logger.error(f"Error presigning {file_path}: {str(e)}")
+            return {'success': False, 'error': 'Error generating download URL'}
+
+    def a_b_c_presign(self, portfolio, org, ring, filename, expires_in=None):
+        file_path = f'_files/{portfolio}/{org}/{ring}/{filename}'
+        return self.presign_get(file_path, expires_in)
+
+    def user_thumbnail_presign(self, handle, expires_in=None):
+        return self.presign_get(self.user_thumbnail_key(handle), expires_in)
+
+    def tmp_presign(self, portfolio, org, entity, date, object_id, expires_in=None):
+        file_path = f'_tmp/{portfolio}/{org}/{entity}/{date}/{object_id}'
+        return self.presign_get(file_path, expires_in)
 
     def a_b_post(self,portfolio, org, ring, raw_doc, type, name):
         if not name:
