@@ -47,8 +47,36 @@ class BlueprintController:
 
 
     def get_blueprint(self,handle,name,v):
+        from renglo.blueprint.extension_blueprints import (
+            is_blueprint_document,
+            resolve_blueprint,
+        )
 
-        return self.BPM.get_blueprint(handle,name,v)
+        from_code = resolve_blueprint(handle, name, v, dynamo=None, public=None)
+        if from_code:
+            return from_code
+        dynamo = self.BPM.get_blueprint(handle, name, v)
+        if is_blueprint_document(dynamo):
+            return dynamo
+        public = self._get_public_blueprint(handle, name, v)
+        return public if public else dynamo
+
+    def _get_public_blueprint(self, handle, name, v):
+        from renglo.blueprint.extension_blueprints import is_blueprint_document
+
+        base = str((self.config or {}).get("BLUEPRINT_PUBLIC_BASE_URL") or "").strip()
+        if not base:
+            return None
+        url = f"{base.rstrip('/')}/{handle}/{name}/{v}"
+        try:
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError, TypeError):
+            return None
+        if is_blueprint_document(data):
+            return data
+        return None
 
 
     def update_blueprint(self, handle, name, data=None):

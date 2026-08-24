@@ -1,8 +1,12 @@
 """
 Install an extension's blueprint JSON files when they are missing from DynamoDB.
 
-Looks for a blueprints/ folder next to the extension (same files upload_blueprints.py
-uses) and puts any document that get_blueprint cannot find.
+Looks for a blueprints/ folder next to the extension (repo-root blueprints/ in a
+checkout, or package_data inside an installed wheel) and puts any document that
+Dynamo does not already have.
+
+``BlueprintController.get_blueprint`` resolves code (installed wheel) first,
+then tenant Dynamo, then an optional public URL.
 
 Declared pip dependencies that are themselves Renglo extensions (gro, arbitiumlab,
 …) are resolved the same way so activating one extension also installs the
@@ -21,10 +25,106 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.logger import get_logger
 
 _REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+_INSTALLED_INDEX: dict[tuple[str, str], dict] | None = None
+
+
+def clear_installed_blueprint_cache() -> None:
+    global _INSTALLED_INDEX
+    _INSTALLED_INDEX = None
+
+
+def _iter_installed_package_files() -> Iterable[str]:
+    try:
+        mapping = importlib.metadata.packages_distributions()
+    except Exception:
+        mapping = {}
+    for package in mapping:
+        try:
+            spec = importlib.util.find_spec(package)
+        except (ModuleNotFoundError, ValueError):
+            continue
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if origin:
+            yield origin
+
+
+def _iter_blueprint_dirs() -> Iterable[Path]:
+    seen: set[Path] = set()
+    for module_file in _iter_installed_package_files():
+        found = find_blueprints_dir(module_file)
+        if found is None:
+            continue
+        resolved = found.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        yield resolved
+
+
+def collect_blueprint_documents(dirs: Iterable[Path]) -> dict[tuple[str, str], dict]:
+    """Map (handle, name) → blueprint document for the current-tag JSON files."""
+    index: dict[tuple[str, str], dict] = {}
+    for blueprints_dir in dirs:
+        for path, document in load_blueprint_files(blueprints_dir):
+            handle = _blueprint_handle(document)
+            name = _blueprint_name(document, path)
+            index[(handle, name)] = document
+    return index
+
+
+def installed_blueprint_index() -> dict[tuple[str, str], dict]:
+    global _INSTALLED_INDEX
+    if _INSTALLED_INDEX is None:
+        _INSTALLED_INDEX = collect_blueprint_documents(_iter_blueprint_dirs())
+    return _INSTALLED_INDEX
+
+
+def is_blueprint_document(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("success") is False or item.get("error"):
+        return False
+    return bool(item.get("irn") or item.get("fields") or item.get("name"))
+
+
+def resolve_blueprint(
+    handle: str,
+    name: str,
+    version: str,
+    *,
+    dynamo: dict | None,
+    public: dict | None = None,
+) -> dict | None:
+    """Code (wheel) first, then Dynamo, then an optional public document."""
+    installed = get_installed_blueprint(handle, name, version)
+    if installed:
+        return installed
+    if is_blueprint_document(dynamo):
+        return dynamo
+    if is_blueprint_document(public):
+        return public
+    return dynamo
+
+
+def get_installed_blueprint(handle: str, name: str, version: str) -> dict | None:
+    """Return current-tag JSON from installed packages / workspace, or None.
+
+    ``last`` / ``latest`` match the file in the wheel. A specific semver matches
+    only when it equals that file's version (old versions fall through to Dynamo).
+    """
+    document = installed_blueprint_index().get((str(handle).strip(), str(name).strip()))
+    if not document:
+        return None
+    wanted = str(version or "").strip()
+    if wanted in {"last", "latest", ""}:
+        return document
+    file_version = str(document.get("version") or "").strip()
+    if file_version == wanted:
+        return document
+    return None
 
 
 def find_blueprints_dir(module_file: str) -> Path | None:
@@ -67,8 +167,10 @@ def _blueprint_handle(document: dict) -> str:
     return str(document.get("handle") or "irma").strip() or "irma"
 
 
-def _blueprint_exists(bpc: BlueprintController, document: dict, path: Path) -> bool:
-    existing = bpc.get_blueprint(
+def _blueprint_exists(bpc: Any, document: dict, path: Path) -> bool:
+    # Query Dynamo only. Controller get_blueprint is code-first and would
+    # skip seeding if the wheel already has the file.
+    existing = bpc.BPM.get_blueprint(
         _blueprint_handle(document),
         _blueprint_name(document, path),
         "last",
@@ -287,7 +389,7 @@ def _blueprints_dir_for_dependency(module_file: str, dist_name: str) -> tuple[Pa
 
 
 def _install_from_dir(
-    bpc: BlueprintController,
+    bpc: Any,
     blueprints_dir: Path,
     *,
     label: str = "",
@@ -386,6 +488,8 @@ def ensure_extension_blueprints(config, *, module_file: str) -> dict:
                 "dependencies": [],
             },
         }
+
+    from renglo.blueprint.blueprint_controller import BlueprintController
 
     bpc = BlueprintController(config=config)
     own = _install_from_dir(bpc, blueprints_dir)
