@@ -188,6 +188,133 @@ class DataController:
             self.logger.error(f"Graph operation '{op_name}' failed: {str(exc)}")
             return {'success': False, 'skipped': True, 'reason': 'Graph operation failed', 'error': str(exc)}
 
+    def _run_search_operation(self, op_name, operation):
+        """Best-effort inverted-index write. Never raises.
+
+        This is the reverse index in `DYNAMODB_SEARCH_TABLE`, not the ring
+        store and not the graph. A failure here means full-text search will
+        not see this document until it is reindexed. The document itself is
+        already saved.
+        """
+        table = str(self.config.get('DYNAMODB_SEARCH_TABLE') or '').strip()
+        if not table or not self.search_controller or not self.search_controller.is_enabled():
+            self.logger.warning(
+                f"Search index operation '{op_name}' skipped: DYNAMODB_SEARCH_TABLE is not set"
+            )
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': 'Search index disabled: DYNAMODB_SEARCH_TABLE is not set',
+                'table': table,
+            }
+
+        try:
+            result = operation()
+        except Exception as exc:
+            self.logger.error(
+                f"Search index operation '{op_name}' failed on table '{table}': {exc}"
+            )
+            return {
+                'success': False,
+                'skipped': True,
+                'reason': 'Search index operation failed',
+                'error': str(exc),
+                'table': table,
+            }
+
+        if not isinstance(result, dict):
+            return {'success': True, 'table': table}
+
+        if result.get('success') is False:
+            message = result.get('message') or 'Search index operation failed'
+            self.logger.error(
+                f"Search index operation '{op_name}' failed on table '{table}': {message}"
+            )
+            return {
+                'success': False,
+                'skipped': True,
+                'reason': message,
+                'error': message,
+                'table': table,
+            }
+
+        out = dict(result)
+        out.setdefault('table', table)
+        return out
+
+    def _note_side_effect_warnings(self, result):
+        """Surface a failed index or graph sync without failing the document write."""
+        warnings = []
+        search = result.get('search')
+        if isinstance(search, dict) and search.get('success') is False:
+            detail = (
+                search.get('error')
+                or search.get('reason')
+                or search.get('message')
+                or 'unknown error'
+            )
+            warnings.append(f"Search index was not updated: {detail}")
+        graph = result.get('graph')
+        if isinstance(graph, dict) and graph.get('success') is False:
+            detail = (
+                graph.get('error')
+                or graph.get('reason')
+                or graph.get('message')
+                or 'unknown error'
+            )
+            warnings.append(f"Graph edges were not updated: {detail}")
+        if warnings:
+            result['warnings'] = warnings
+            self.logger.warning(
+                f"Document write succeeded; side effects incomplete: {'; '.join(warnings)}"
+            )
+        return result
+
+    def _share_auth_controller(self):
+        """Give search and graph the same AuthController as the document write."""
+        if self.search_controller is not None:
+            self.search_controller.AUC = self.AUC
+        if self.GRC is not None:
+            self.GRC.AUC = self.AUC
+
+    def _sync_saved_document(self, result, portfolio, org, ring, doc_id, item, verb):
+        """Index and graph-sync a document that is already stored.
+
+        Each side effect is isolated. A search-index failure must not skip
+        graph sync, and a graph failure must not skip the search index.
+        Neither may change `result['success']`.
+        """
+        # DELETE receives the pre-delete attribute bag (get_a_b_c returns
+        # attributes flattened, not nested under `attributes`). POST/PUT
+        # receive the stored document.
+        if verb == 'DELETE':
+            attributes = item if isinstance(item, dict) else {}
+        else:
+            attributes = item.get('attributes', {}) if isinstance(item, dict) else {}
+        if verb == 'DELETE':
+            result['search'] = self._run_search_operation(
+                'delete_document (DELETE)',
+                lambda: self.search_controller.delete_document(portfolio, org, ring, doc_id),
+            )
+            result['graph'] = self._run_graph_operation(
+                'remove_document_graph_edges (DELETE)',
+                lambda: self.GRC.remove_document_graph_edges(
+                    portfolio, org, ring, doc_id, attributes,
+                ),
+            )
+        else:
+            result['search'] = self._run_search_operation(
+                f'index_document ({verb})',
+                lambda: self.search_controller.index_document(portfolio, org, ring, item),
+            )
+            result['graph'] = self._run_graph_operation(
+                f'sync_document_graph_edges ({verb})',
+                lambda: self.GRC.sync_document_graph_edges(
+                    portfolio, org, ring, doc_id, attributes,
+                ),
+            )
+        return self._note_side_effect_warnings(result)
+
     def __init__(self, config=None, tid=None, ip=None):
         self.config = config or {}
         self.logger = get_logger()
@@ -201,6 +328,10 @@ class DataController:
         self.GRC = None
         if self.graph_db_enabled and self.config.get('DYNAMODB_GRAPH_TABLE'):
             self.GRC = GraphController(config=self.config)
+        # One auth identity for the document, the index, and the edges.
+        # Separate controllers would authorize the ring write and then refuse
+        # the side effects for the same caller (no JWT on a worker thread).
+        self._share_auth_controller()
         
             
         
@@ -892,11 +1023,6 @@ class DataController:
             'ring':<ring_id>,
             'operator':<begins_with|chrono|greater_than|less_than|equal_to>,
             'value':<value>,
-            'filter':{
-                   'operator':<greater_than|less_than>,
-                   'field':<field_to_filter_on>,
-                   'value':<value_filter_uses_on_the_field>
-                },
             'limit':<page_limit>,
             'lastkey':<page_lastkey>,
             'sort': <asc|desc>
@@ -1140,16 +1266,8 @@ class DataController:
                 result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+item['_id'])
                 result['item'] = item
                 status = 200
-                self.search_controller.index_document(portfolio, org, ring, item)
-                result['graph'] = self._run_graph_operation(
-                    'sync_document_graph_edges (POST)',
-                    lambda: self.GRC.sync_document_graph_edges(
-                        portfolio,
-                        org,
-                        ring,
-                        item['_id'],
-                        item.get('attributes', {}),
-                    ),
+                self._sync_saved_document(
+                    result, portfolio, org, ring, item['_id'], item, 'POST',
                 )
 
             else:
@@ -1256,17 +1374,7 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
-            self.search_controller.index_document(portfolio, org, ring, item)
-            result['graph'] = self._run_graph_operation(
-                'sync_document_graph_edges (PUT)',
-                lambda: self.GRC.sync_document_graph_edges(
-                    portfolio,
-                    org,
-                    ring,
-                    idx,
-                    item.get('attributes', {}),
-                ),
-            )
+            self._sync_saved_document(result, portfolio, org, ring, idx, item, 'PUT')
 
             return result, status
 
@@ -1301,16 +1409,8 @@ class DataController:
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
             self.logger.debug('Returned object:'+str(result))
-            self.search_controller.delete_document(portfolio, org, ring, idx)
-            result['graph'] = self._run_graph_operation(
-                'remove_document_graph_edges (DELETE)',
-                lambda: self.GRC.remove_document_graph_edges(
-                    portfolio,
-                    org,
-                    ring,
-                    idx,
-                    graph_attrs,
-                ),
+            self._sync_saved_document(
+                result, portfolio, org, ring, idx, graph_attrs, 'DELETE',
             )
 
             return result, status

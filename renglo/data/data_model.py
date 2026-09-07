@@ -248,11 +248,6 @@ class DataModel:
             'ring':<ring_id>,
             'operator':'begins_with',
             'value':<value>,
-            'filter':{
-                   'operator':<greater_than|less_than>,
-                   'field':<field_to_filter_on>,
-                   'value':<value_filter_uses_on_the_field>
-                },
             'limit':<page_limit>,
             'lastkey':<page_lastkey>,
             'sort': <asc|desc>
