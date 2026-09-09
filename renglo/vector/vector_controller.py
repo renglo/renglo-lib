@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
-from renglo.vector_model import VectorModel
+from renglo.vector.vector_model import VectorModel
 
 
 class VectorController:
