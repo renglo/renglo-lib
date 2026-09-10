@@ -161,6 +161,7 @@ class SchdLoader:
             
             payload = kwargs.get('payload')  # Extract payload from kwargs
             check = kwargs.get('check',False)
+            describe = kwargs.get('describe', False)
             
             # Inject subhandler into payload if a third part was provided
             if subhandler is not None:
@@ -170,6 +171,15 @@ class SchdLoader:
                 if 'subhandler' not in payload:
                     payload['subhandler'] = subhandler
                     print(f'Injected subhandler into payload: {subhandler}')
+
+            if isinstance(payload, dict):
+                if payload.get('_describe'):
+                    describe = True
+                payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in ('_describe', '_stack')
+                }
             
             instance = self.load_code_class(module_parts[0], module_parts[1], class_name, *args, **kwargs)
             runtime_loaded_class = True
@@ -187,6 +197,24 @@ class SchdLoader:
                     error = f"Class '{class_name}' in '{actual_module_name}' has no 'check' method."
                     print(error)
                     return {'success':False,'action':func_name,'error':error,'status':500}
+
+            elif describe:
+                if hasattr(instance, "describe"):
+                    result = instance.describe(payload)
+                else:
+                    result = {
+                        'success': True,
+                        'action': 'describe',
+                        'output': {
+                            'described': False,
+                            'handler': module_parts[1],
+                            'input_schema': {
+                                'type': 'object',
+                                'additionalProperties': True,
+                            },
+                            'output_schema': {'type': 'object'},
+                        },
+                    }
     
             else:
                 if hasattr(instance, "run"):       
