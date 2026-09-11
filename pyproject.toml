@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renglo-lib"
-version = "0.0.1"
+version = "0.0.2"
 description = "Core Renglo functionality - controllers, models, and utilities"
 license = { text = "MIT" }
 authors = [

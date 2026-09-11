@@ -40,12 +40,24 @@ class SchdController(SchdScheduleMixin):
         self.AUC = AuthController(config=self.config)
         self.SHM = SchdModel(config=self.config)
         self.SHL = SchdLoader()
-        
 
+    @staticmethod
+    def _pop_reserved_flag(payload, key):
+        if not isinstance(payload, dict):
+            return False
+        value = payload.pop(key, False)
+        if value is True or value == 1:
+            return True
+        if isinstance(value, str) and value.strip().lower() in ("1", "true", "yes"):
+            return True
+        return False
 
-    
-    
-    
+    @staticmethod
+    def _maybe_stack(result, stack, include_stack):
+        if include_stack:
+            result["stack"] = stack
+        return result
+
     def find_rule(self,portfolio,org,timer):
         
         rule_name = "cron_"+portfolio+"_"+org+"_"+timer        
@@ -199,6 +211,8 @@ class SchdController(SchdScheduleMixin):
         print(f'Calling handler:{handler}, payload:{payload}')
         
         try:
+            payload = payload or {}
+            include_stack = self._pop_reserved_flag(payload, '_stack')
             resolved_extension = self._resolve_extension_handle(portfolio, extension)
 
             # We override portfolio, org and extension that might come in the payload.
@@ -235,14 +249,13 @@ class SchdController(SchdScheduleMixin):
                             'error': error_msg
                         }
                         
-                        return {
+                        return self._maybe_stack({
                             'success': False,
                             'action': action,
                             'handler': handler,
                             'input': payload,
                             'output': formatted_output.get('output', [error_msg]),
-                            'stack': response
-                        }
+                        }, response, include_stack)
                     else:
                         # External handler succeeded - convert to SchdLoader format
                         external_output = response.get('output', {})
@@ -264,15 +277,14 @@ class SchdController(SchdScheduleMixin):
                             canonical = external_output
                             interface = None
                         
-                        return {
+                        return self._maybe_stack({
                             'success': True,
                             'action': action,
                             'handler': handler,
                             'input': payload,
                             'interface': interface,
                             'output': canonical,
-                            'stack': {'success': True, 'output': formatted_output}
-                        }
+                        }, {'success': True, 'output': formatted_output}, include_stack)
                 else:
                     # External handlers are deactivated - fall back to internal
                     print(f'External handlers for {resolved_extension} are deactivated, using internal handler')
@@ -286,22 +298,34 @@ class SchdController(SchdScheduleMixin):
             out = response.get('output')
             if not isinstance(out, dict):
                 canonical = [out] if out is not None else [response.get('error', 'Handler failed')]
-                return {
+                return self._maybe_stack({
                     'success': False,
                     'action': action,
                     'handler': handler,
                     'input': payload,
                     'output': canonical,
-                    'stack': response,
-                }
+                }, response, include_stack)
             if not response.get('success'):
                 canonical = out.get('output', out)
                 if not isinstance(canonical, list):
                     canonical = [canonical] if canonical is not None else []
-                return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
+                return self._maybe_stack({
+                    'success': False,
+                    'action': action,
+                    'handler': handler,
+                    'input': payload,
+                    'output': canonical,
+                }, response, include_stack)
             canonical = out.get('output', out)
             interface = out.get('interface') if isinstance(out, dict) else None
-            return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+            return self._maybe_stack({
+                'success': True,
+                'action': action,
+                'handler': handler,
+                'input': payload,
+                'interface': interface,
+                'output': canonical,
+            }, response, include_stack)
 
         except Exception as e:
             print(f'Error @handler_call:: {e}')
@@ -315,6 +339,8 @@ class SchdController(SchdScheduleMixin):
         print(f'Calling handler check:{handler}, payload:{payload}')
         
         try:
+            payload = payload or {}
+            include_stack = self._pop_reserved_flag(payload, '_stack')
             resolved_extension = self._resolve_extension_handle(portfolio, extension)
 
             # We override portfolio, org and extension that might come in the payload.
@@ -329,13 +355,32 @@ class SchdController(SchdScheduleMixin):
             out = response.get('output')
             if not isinstance(out, dict):
                 canonical = out if out is not None else response.get('error', 'Handler check failed')
-                return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
+                return self._maybe_stack({
+                    'success': False,
+                    'action': action,
+                    'handler': handler,
+                    'input': payload,
+                    'output': canonical,
+                }, response, include_stack)
             if not response.get('success'):
                 canonical = out.get('output', out)
-                return {'success': False, 'action': action, 'handler': handler, 'input': payload, 'output': canonical, 'stack': response}
+                return self._maybe_stack({
+                    'success': False,
+                    'action': action,
+                    'handler': handler,
+                    'input': payload,
+                    'output': canonical,
+                }, response, include_stack)
             canonical = out.get('output', out)
             interface = out.get('interface') if isinstance(out, dict) else None
-            return {'success': True, 'action': action, 'handler': handler, 'input': payload, 'interface': interface, 'output': canonical, 'stack': response}
+            return self._maybe_stack({
+                'success': True,
+                'action': action,
+                'handler': handler,
+                'input': payload,
+                'interface': interface,
+                'output': canonical,
+            }, response, include_stack)
 
         except Exception as e:
             print(f'Error @handler_check: {e}')
