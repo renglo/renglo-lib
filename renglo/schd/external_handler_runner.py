@@ -30,7 +30,60 @@ from renglo.schd.external_handlers_config import (
     is_ecs_handler,
     get_ecs_config,
     get_batch_s3_config,
+    prefer_local_docker_tag,
 )
+
+
+_docker_image_exists_cache: dict[str, bool] = {}
+
+
+def _docker_image_exists(img: str) -> bool:
+    # Docker Desktop 29 on Windows: `docker image inspect NAME:TAG` can
+    # return "No such image" while `docker images` / `docker run` see the tag.
+    if _docker_image_exists_cache.get(img):
+        return True
+    result = subprocess.run(
+        ['docker', 'images', '-q', img],
+        capture_output=True,
+        text=True,
+    )
+    found = result.returncode == 0 and bool(result.stdout.strip())
+    if found:
+        _docker_image_exists_cache[img] = True
+    return found
+
+
+def _select_local_docker_image(
+    image_latest: str,
+    image_local: str,
+    *,
+    build_hint: str,
+) -> tuple[str, str] | tuple[None, None]:
+    """Pick :local vs :latest. Linux prefers :local (arm); Windows prefers :latest (amd64)."""
+    has_local = _docker_image_exists(image_local)
+    has_latest = _docker_image_exists(image_latest)
+    if prefer_local_docker_tag():
+        if has_local:
+            return image_local, 'linux/arm64'
+        if has_latest:
+            return image_latest, 'linux/amd64'
+    else:
+        if has_latest:
+            return image_latest, 'linux/amd64'
+        if has_local:
+            return None, None  # signal Windows-only :local mismatch below
+    return None, None
+
+
+def _windows_local_only_error(image_local: str, image_latest: str, build_hint: str) -> Dict[str, Any]:
+    return {
+        'success': False,
+        'error': (
+            f'Found {image_local} but not {image_latest}. On Windows, prefer the amd64 '
+            f':latest image to avoid exec format errors. Rebuild without --local, or: '
+            f'{build_hint}'
+        ),
+    }
 
 
 def _ecs_run_task_params(ecs_cfg: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
@@ -191,10 +244,12 @@ def call_local_docker_handler(
     # Use ECS (large) image for handlers in ECS list, else Lambda (small) image
     if is_ecs_handler(extension_name, handler_name):
         image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
-        image_local = f"{extension_name}-ecs-builder:local"
+        base = image_latest.rsplit(':', 1)[0]
+        image_local = f"{base}:local"
     else:
         image_latest = config['docker_image']
-        image_local = f"{extension_name}-lambda-builder:local"
+        base = image_latest.rsplit(':', 1)[0]
+        image_local = f"{base}:local"
 
     # Check if Docker is available
     try:
@@ -205,27 +260,20 @@ def call_local_docker_handler(
             'error': 'Docker is not available or not in PATH'
         }
 
-    def _image_exists(img: str) -> bool:
-        result = subprocess.run(
-            ['docker', 'image', 'inspect', img],
-            capture_output=True,
-        )
-        return result.returncode == 0
-
-    # Prefer :local if it exists (from "build --local"), else use :latest. Same as run_handler_local.sh.
-    if _image_exists(image_local):
-        docker_image = image_local
-        run_platform = 'linux/arm64'
-    elif _image_exists(image_latest):
-        docker_image = image_latest
-        run_platform = 'linux/amd64'
-    else:
+    build_hint = (
+        f'python run.py <env> build --extensions … --no-ecs'
+    )
+    docker_image, run_platform = _select_local_docker_image(
+        image_latest, image_local, build_hint=build_hint
+    )
+    if docker_image is None:
+        if not prefer_local_docker_tag() and _docker_image_exists(image_local):
+            return _windows_local_only_error(image_local, image_latest, build_hint)
         return {
             'success': False,
             'error': (
-                f'Docker image not found. Build one with: '
-                f'python3 dev/extension-service/run.py {extension_name} build '
-                f'(or build --local for ARM).'
+                f'Docker image not found ({image_latest} / {image_local}). Build with: '
+                f'{build_hint}'
             )
         }
     
@@ -859,24 +907,21 @@ def call_local_docker_handler_batch_start(
 
     # Use ECS image so container uses S3 entrypoint (read payload from S3, write result to S3)
     image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
-    image_local = f"{extension_name}-ecs-builder:local"
+    base = image_latest.rsplit(':', 1)[0]
+    image_local = f"{base}:local"
 
     try:
         subprocess.run(['docker', '--version'], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return {'success': False, 'error': 'Docker not available or not in PATH'}
 
-    def _image_exists(img: str) -> bool:
-        result = subprocess.run(['docker', 'image', 'inspect', img], capture_output=True)
-        return result.returncode == 0
-
-    if _image_exists(image_local):
-        docker_image = image_local
-        run_platform = 'linux/arm64'
-    elif _image_exists(image_latest):
-        docker_image = image_latest
-        run_platform = 'linux/amd64'
-    else:
+    build_hint = f'python run.py <env> build --large --no-ecs'
+    docker_image, run_platform = _select_local_docker_image(
+        image_latest, image_local, build_hint=build_hint
+    )
+    if docker_image is None:
+        if not prefer_local_docker_tag() and _docker_image_exists(image_local):
+            return _windows_local_only_error(image_local, image_latest, build_hint)
         return {
             'success': False,
             'error': f'Docker image not found. Build ECS image: {image_latest} or {image_local}',

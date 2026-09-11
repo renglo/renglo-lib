@@ -110,6 +110,58 @@ def resolve_invite_fe_base_url(config):
     return fe_base
 
 
+# Keys that SSM / Lambda / Docker flatten to strings. Env still wins the value;
+# types are restored after the merge so controllers see bool/int.
+BOOL_CONFIG_KEYS = frozenset(
+    {
+        "GRAPH_DB_ENABLED",
+        "ALLOW_DEV_ORIGINS",
+        "COGNITO_CHECK_TOKEN_EXPIRATION",
+    }
+)
+INT_CONFIG_KEYS = frozenset({"PREVIEW_LAYER"})
+
+
+def _coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off", ""):
+        return False
+    raise ValueError(f"cannot coerce {value!r} to bool")
+
+
+def _coerce_int(value):
+    if isinstance(value, bool):
+        raise ValueError("bool is not an int config value")
+    if isinstance(value, int):
+        return value
+    return int(str(value).strip())
+
+
+def coerce_config_types(config: dict) -> dict:
+    """In-place: restore bool/int after env-var merge. Unknown strings stay as-is."""
+    for key in BOOL_CONFIG_KEYS:
+        if key not in config or config[key] is None or config[key] == "":
+            continue
+        try:
+            config[key] = _coerce_bool(config[key])
+        except ValueError:
+            pass
+    for key in INT_CONFIG_KEYS:
+        if key not in config or config[key] is None or config[key] == "":
+            continue
+        try:
+            config[key] = _coerce_int(config[key])
+        except (TypeError, ValueError):
+            pass
+    return config
+
+
 def load_config():
     """
     Load configuration for handlers from env_config.py or environment variables.
@@ -272,5 +324,5 @@ def load_config():
             "Please set these as environment variables or provide env_config.py "
             "via RENGLO_CONFIG_PATH"
         )
-    
-    return config
+
+    return coerce_config_types(config)

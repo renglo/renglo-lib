@@ -1,4 +1,5 @@
 from renglo.logger import get_logger
+from renglo.runtime import apply_handler_invocation_context
 import importlib
 import os
 import sys
@@ -189,7 +190,8 @@ class SchdLoader:
                 return {'success':False,'action':func_name,'error':error,'output':error,'status':500}
             
             print(f'Class Loaded:{class_name}')
-            
+            payload = apply_handler_invocation_context(instance, payload)
+
             if check:
                 if hasattr(instance, "check"):       
                     result = instance.check(payload)  # Pass payload to run
