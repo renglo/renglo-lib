@@ -63,25 +63,6 @@ def _get_workspace_root() -> Optional[Path]:
     return None
 
 
-def _load_ecs_deploy_config(extension_name: str) -> Optional[Dict[str, Any]]:
-    """
-    Load ECS deploy config from extensions/<name>/installer/service/ecs_deploy_config.json
-    if present. Written by deploy_ecs.sh. Keys: s3_bucket, cluster, task_definition,
-    launch_type (fargate|ec2), network_mode (awsvpc|bridge|host), subnets[], security_groups[].
-    """
-    root = _get_workspace_root()
-    if not root:
-        return None
-    path = root / "extensions" / extension_name / "installer" / "service" / "ecs_deploy_config.json"
-    if not path.is_file():
-        return None
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
 def _get_default_vpc_network_config(region: str) -> Dict[str, Any]:
     """
     Get default VPC subnets and default security group for Fargate.
@@ -153,6 +134,61 @@ def _resolve_handlers_lambda_function_name(extension_name: str) -> str:
     return f"{extension_name}-handlers"
 
 
+def _handlers_image_stem_from_function_name(fn: str) -> str:
+    name = (fn or "").strip()
+    if name.endswith("-handlers"):
+        return name[: -len("-handlers")] or name
+    return name
+
+
+def _external_handlers_names() -> list[str]:
+    raw = os.getenv("EXTERNAL_HANDLERS", "")
+    if not raw:
+        try:
+            from renglo.common import load_config
+            raw = load_config().get("EXTERNAL_HANDLERS", "") or ""
+        except Exception:
+            raw = ""
+    return [ext.strip().lower() for ext in str(raw).split(",") if ext.strip()]
+
+
+def resolve_handlers_docker_image_base(extension_name: str) -> str:
+    """Shared Docker image base for all external handlers (mirrors shared Lambda ARN).
+
+    Priority:
+      1. Stem of LAMBDA_EXTERNAL_HANDLERS_ARN / LAMBDA_HANDLERS_FUNCTION_NAME
+      2. First name in EXTERNAL_HANDLERS
+      3. Legacy {call_extension}-lambda-builder
+    """
+    arn = (os.getenv("LAMBDA_EXTERNAL_HANDLERS_ARN") or "").strip()
+    if arn:
+        stem = _handlers_image_stem_from_function_name(_function_name_from_lambda_arn(arn))
+        if stem:
+            return f"{stem}-lambda-builder"
+    explicit = (os.getenv("LAMBDA_HANDLERS_FUNCTION_NAME") or "").strip()
+    if explicit:
+        stem = _handlers_image_stem_from_function_name(explicit)
+        if stem:
+            return f"{stem}-lambda-builder"
+    names = _external_handlers_names()
+    if names:
+        return f"{names[0]}-lambda-builder"
+    return f"{extension_name}-lambda-builder"
+
+
+def resolve_handlers_ecs_image_base(extension_name: str) -> str:
+    """ECS image base paired with resolve_handlers_docker_image_base."""
+    base = resolve_handlers_docker_image_base(extension_name)
+    if base.endswith("-lambda-builder"):
+        return f"{base[: -len('-lambda-builder')]}-ecs-builder"
+    return f"{extension_name}-ecs-builder"
+
+
+def prefer_local_docker_tag() -> bool:
+    """Linux (default): prefer :local (arm). Windows: prefer :latest (amd64)."""
+    return os.name != "nt"
+
+
 def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
     """
     Load configuration for a specific extension.
@@ -171,7 +207,7 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
     - Lambda function name: LAMBDA_EXTERNAL_HANDLERS_ARN, else LAMBDA_HANDLERS_FUNCTION_NAME,
       else {extension}-handlers
     - Lambda region: Same as system Lambda (AWS_REGION)
-    - Docker image: {extension}-lambda-builder:latest
+    - Docker image: shared handlers builder (ARN / EXTERNAL_HANDLERS primary), else {extension}-lambda-builder
     - Enabled: true (if in list)
     - Active: true (if in list)
     
@@ -185,32 +221,22 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
     
     # Try 1: Environment variables (production - system-level config)
     # Primary method: EXTERNAL_HANDLERS comma-separated list (convention-based)
-    # Check os.environ first, then load_config() (which reads env_config.py or env vars)
-    external_handlers_list = os.getenv("EXTERNAL_HANDLERS", "")
-    if not external_handlers_list:
-        # Try to get from load_config() (reads from env_config.py or environment variables)
-        try:
-            from renglo.common import load_config
-            config = load_config()
-            external_handlers_list = config.get('EXTERNAL_HANDLERS', '') or external_handlers_list
-        except Exception:
-            # If config can't be loaded, just use empty string (will fall back to defaults)
-            pass
+    extensions = _external_handlers_names()
     
-    if external_handlers_list:
-        # Parse comma-separated list (handle spaces)
-        extensions = [ext.strip().lower() for ext in external_handlers_list.split(",") if ext.strip()]
+    if extensions:
         if extension_name.lower() in extensions:
             # Extension is in the list - use conventions
             # Get region from system Lambda's region
             lambda_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+            image_base = resolve_handlers_docker_image_base(extension_name)
             
             config = {
                 "has_external_handlers": True,
                 "active": True,
                 "lambda_function_name": _resolve_handlers_lambda_function_name(extension_name),
                 "lambda_region": lambda_region,  # Same as system Lambda
-                "docker_image": f"{extension_name}-lambda-builder:latest",  # Convention
+                "docker_image": f"{image_base}:latest",
+                "ecs_docker_image": f"{resolve_handlers_ecs_image_base(extension_name)}:latest",
                 "extension_name": extension_name
             }
             return config
@@ -223,6 +249,8 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
     # Check if external handlers are configured via individual env vars
     if env_enabled in ["true", "false"]:
         lambda_region = os.getenv(f"{env_prefix}LAMBDA_REGION") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+        image_base = resolve_handlers_docker_image_base(extension_name)
+        default_docker = f"{image_base}:latest"
         config = {
             "has_external_handlers": env_enabled == "true",
             "active": os.getenv(f"{env_prefix}ACTIVE", "true").lower() == "true",
@@ -231,7 +259,8 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
                 or _resolve_handlers_lambda_function_name(extension_name)
             ),
             "lambda_region": lambda_region,
-            "docker_image": os.getenv(f"{env_prefix}DOCKER_IMAGE", f"{extension_name}-lambda-builder:latest"),
+            "docker_image": os.getenv(f"{env_prefix}DOCKER_IMAGE", default_docker),
+            "ecs_docker_image": f"{resolve_handlers_ecs_image_base(extension_name)}:latest",
             "extension_name": extension_name
         }
         return config
@@ -320,9 +349,11 @@ def get_local_config(extension_name: str) -> Optional[Dict[str, Any]]:
     if not package_path:
         package_path = f"extensions/{extension_name}/package"
     
+    image_base = resolve_handlers_docker_image_base(extension_name)
+    ecs_base = resolve_handlers_ecs_image_base(extension_name)
     return {
-        "docker_image": config.get("docker_image", f"{extension_name}-lambda-builder:latest"),
-        "ecs_docker_image": config.get("ecs_docker_image", f"{extension_name}-ecs-builder:latest"),
+        "docker_image": config.get("docker_image", f"{image_base}:latest"),
+        "ecs_docker_image": config.get("ecs_docker_image", f"{ecs_base}:latest"),
         "package_path": package_path
     }
 
@@ -354,11 +385,33 @@ def _get_ecs_handlers_list_from_env() -> Dict[str, list]:
     return result
 
 
+def _get_ecs_handlers_from_package(extension_name: str) -> list:
+    """Read ``ecs_handlers`` from extensions/<name>/package/handlers_config.json."""
+    root = _get_workspace_root()
+    if not root:
+        return []
+    path = root / "extensions" / extension_name / "package" / "handlers_config.json"
+    if not path.is_file():
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    raw = data.get("ecs_handlers") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(h).strip().lower() for h in raw if str(h).strip()]
+
+
 def get_ecs_handlers(extension_name: str) -> list:
     """
     Return list of handler names that run on ECS for this extension.
-    Empty list if none or extension not configured.
+    Prefers package handlers_config.json ``ecs_handlers``; falls back to env string.
     """
+    from_pkg = _get_ecs_handlers_from_package(extension_name)
+    if from_pkg:
+        return from_pkg
     mapping = _get_ecs_handlers_list_from_env()
     return mapping.get(extension_name.lower(), [])
 
@@ -379,14 +432,13 @@ def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
     """
     Get ECS invocation config for an extension (cluster, task definition, S3 bucket, network).
     Used when invoking handlers via ECS run_task + S3 results.
-    Reads from extensions/<name>/installer/service/ecs_deploy_config.json if present (written by deploy),
-    then falls back to env ECS_RESULTS_BUCKET, ECS_CLUSTER, ECS_TASK_DEFINITION, ECS_SUBNETS, ECS_SECURITY_GROUPS.
+    Reads ECS_* env vars / deploy_input (no laptop ecs_deploy_config.json).
     """
     config = load_extension_config(extension_name)
     if not config or not config.get("has_external_handlers", False):
         return None
     region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
-    file_cfg = _load_ecs_deploy_config(extension_name) or {}
+    file_cfg: Dict[str, Any] = {}
 
     def _str(key: str, env_key: str, default: str = "") -> str:
         return (file_cfg.get(key) or os.getenv(env_key, default)) or ""

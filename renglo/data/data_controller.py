@@ -277,6 +277,10 @@ class DataController:
         if self.GRC is not None:
             self.GRC.AUC = self.AUC
 
+    def set_invocation_jwt_claims(self, jwt_claims):
+        """Forward Docker/Lambda JWT so @authorize on writes sees the caller."""
+        self.AUC.set_invocation_jwt_claims(jwt_claims)
+
     def _sync_saved_document(self, result, portfolio, org, ring, doc_id, item, verb):
         """Index and graph-sync a document that is already stored.
 
