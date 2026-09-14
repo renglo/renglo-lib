@@ -107,7 +107,7 @@ def attach_auth_roles_to_payload(
     return payload
 
 
-_HANDLER_JWT_ATTRS = ("AUC", "CHC", "SHC", "DAC", "BPC", "DCC")
+_HANDLER_JWT_ATTRS = ("AUC", "CHC", "SHC", "DAC", "BPC", "DCC", "GRC")
 
 
 def stamp_invocation_jwt_claims(target: Any, claims: Optional[Dict[str, Any]]) -> None:
