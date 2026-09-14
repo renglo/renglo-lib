@@ -9,6 +9,7 @@ import uuid
 from decimal import Decimal
 from renglo.auth.auth_model import AuthModel
 from renglo.common import sanitize_entity_tags
+from renglo.wl import invite_inline_images, render_invite_email
 import re
 import time
 from validate_email import validate_email
@@ -2305,7 +2306,6 @@ class AuthController:
         # Invite links open the console (/invite), not the API BASE_URL.
         from_email = (self.config.get('FROM_EMAIL') or '').strip()
         fe_base_url = resolve_invite_fe_base_url(self.config)
-        wl_name = (self.config.get('WL_NAME') or '').strip() or 'Renglo'
         invite_hash = bridge['hash']
         invite_link = f"{fe_base_url}/invite?code={invite_hash}&email={kwargs['email']}"
 
@@ -2333,24 +2333,19 @@ class AuthController:
             bridge['portfoliodoc']['name'] + '/' + bridge['teamdoc']['name']
         )
         inviter = self._inviter_display_name(bridge['senderdoc'])
+        invite_email = render_invite_email(
+            inviter=inviter,
+            team=team_label,
+            code=invite_hash,
+            link=invite_link,
+        )
         response_4 = self.AUM.send_email(
             sender=from_email,
             recipient=kwargs['email'],
-            subject='You have been invited to team ' + team_label,
-            body_text=(
-                f'You have been invited by {inviter} to team {team_label}. '
-                f'Your invite code is: {invite_hash}. '
-                f'Follow this link: {invite_link}'
-            ),
-            body_html=(
-                '<html><body>'
-                f'<h1>Hello from {wl_name}</h1>'
-                f'<h2>You have been invited by {inviter} to team {team_label}</h2>'
-                f'<div>Your invite code is: {invite_hash}</div>'
-                '<div>Follow this link:</div>'
-                f'<div><a href="{invite_link}">{invite_link}</a></div>'
-                '</body></html>'
-            ),
+            subject=invite_email.subject,
+            body_text=invite_email.body_text,
+            body_html=invite_email.body_html,
+            inline_images=invite_inline_images(invite_email),
         )
         response_4['message'] = (
             'Sent invite to team ' + kwargs['team_id'] + ' via email to ' + kwargs['email']

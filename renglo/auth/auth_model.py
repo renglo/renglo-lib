@@ -1,11 +1,14 @@
 import logging
 import secrets
 import string
+
 import boto3
 from botocore.exceptions import ClientError
 from datetime import datetime
 import uuid
 from decimal import Decimal
+
+from renglo.wl import build_raw_email
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +325,15 @@ class AuthModel:
 
 
 
-    def send_email(self, sender, recipient, subject, body_text, body_html):
+    def send_email(
+        self,
+        sender,
+        recipient,
+        subject,
+        body_text,
+        body_html,
+        inline_images=None,
+    ):
         region = (
             self.config.get('AWS_REGION')
             or self.config.get('AWS_DEFAULT_REGION')
@@ -331,35 +342,33 @@ class AuthModel:
         )
         ses_client = boto3.client('ses', region_name=region)
 
-        # Email details
-        email_data = {
-            'Source': sender,
-            'Destination': {
-                'ToAddresses': [
-                    recipient,
-                ],
-            },
-            'Message': {
-                'Subject': {
-                    'Data': subject,
-                    'Charset': 'UTF-8'
-                },
-                'Body': {
-                    'Text': {
-                        'Data': body_text,
-                        'Charset': 'UTF-8'
-                    },
-                    'Html': {
-                        'Data': body_html,
-                        'Charset': 'UTF-8'
-                    }
-                }
-            }
-        }
-
         try:
-            # Send the email
-            response = ses_client.send_email(**email_data)
+            if inline_images:
+                raw = build_raw_email(
+                    sender=sender,
+                    recipient=recipient,
+                    subject=subject,
+                    body_text=body_text,
+                    body_html=body_html,
+                    inline_images=inline_images,
+                )
+                response = ses_client.send_raw_email(
+                    Source=sender,
+                    Destinations=[recipient],
+                    RawMessage={'Data': raw},
+                )
+            else:
+                response = ses_client.send_email(
+                    Source=sender,
+                    Destination={'ToAddresses': [recipient]},
+                    Message={
+                        'Subject': {'Data': subject, 'Charset': 'UTF-8'},
+                        'Body': {
+                            'Text': {'Data': body_text, 'Charset': 'UTF-8'},
+                            'Html': {'Data': body_html, 'Charset': 'UTF-8'},
+                        },
+                    },
+                )
 
             if response['MessageId']:
                 return{

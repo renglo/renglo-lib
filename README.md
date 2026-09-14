@@ -37,6 +37,17 @@ result = dc.get_document('portfolio', 'org', 'ring', 'idx')
 
 This library contains NO Flask routes. Routes are in `renglo-api`.
 
+## White-label (`import wl`)
+
+Invite emails and product name come from the tenant **`<tenant>-wl`** pack
+(import name always `wl`). This library does **not** depend on that pack.
+
+- **Local:** install it into the API venv (`pip install -e ../<tenant>-wl` from
+  `renglo-api`), then restart the server. See `dev/renglo-api/README.md`.
+- **Staging / production:** the backend image installs the BOM `python` pin
+  (`<tenant>-wl`). No extra env var. If `wl` is not installed, copy falls back
+  to `Renglo` — never `WL_NAME`.
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt) for details.
