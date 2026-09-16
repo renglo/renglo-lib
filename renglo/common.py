@@ -277,6 +277,7 @@ def load_config():
         'COGNITO_CHECK_TOKEN_EXPIRATION',
         'PREVIEW_LAYER', 'S3_BUCKET_NAME',
         'OPENAI_API_KEY', 'WEBSOCKET_CONNECTIONS',
+        'BEDROCK_API_KEY', 'BEDROCK_MODEL', 'BEDROCK_BASE_URL', 'OPENAI_BASE_URL',
         'ALLOW_DEV_ORIGINS', 'EXTERNAL_HANDLERS',
         'OPENSEARCH_ENDPOINT', 'OPENSEARCH_INDEX', 'OPENSEARCH_REFRESH',
         # Generic RAG / vectors platform knobs (values & index names are extension-owned)
