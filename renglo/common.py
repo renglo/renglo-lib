@@ -279,6 +279,8 @@ def load_config():
         'OPENAI_API_KEY', 'WEBSOCKET_CONNECTIONS',
         'ALLOW_DEV_ORIGINS', 'EXTERNAL_HANDLERS',
         'OPENSEARCH_ENDPOINT', 'OPENSEARCH_INDEX', 'OPENSEARCH_REFRESH',
+        # Bedrock AI / Mantle
+        'BEDROCK_API_KEY', 'BEDROCK_MODEL', 'BEDROCK_BASE_URL', 'OPENAI_BASE_URL',
         # Generic RAG / vectors platform knobs (values & index names are extension-owned)
         'KB_ID', 'RAG_MODEL_ARN', 'RAG_DATA_SOURCE_ID', 'RAG_DOCS_BUCKET', 'RAG_DOCS_PREFIX',
         'S3_VECTORS_BUCKET', 'EMBEDDING_MODEL_ID',
