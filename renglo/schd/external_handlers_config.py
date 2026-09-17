@@ -29,7 +29,7 @@ Conventions (if extension is in EXTERNAL_HANDLERS list):
 
 For Production (Lambda - System):
     - Simple: Set EXTERNAL_HANDLERS in zappa_settings.json environment_variables:
-        "EXTERNAL_HANDLERS": "arbitium,other-extension"
+        "EXTERNAL_HANDLERS": "arbitiumlab,other-extension"
     
     - Or use individual vars (legacy):
         "ARBITIUM_EXTERNAL_HANDLERS_ENABLED": "true",
@@ -40,7 +40,7 @@ For Production (Lambda - System):
 
 For Development:
     - Add to dev/renglo-api/env_config.py (or set RENGLO_CONFIG_PATH):
-        EXTERNAL_HANDLERS = 'arbitium'
+        EXTERNAL_HANDLERS = 'extensionname'
     
     This uses the same mechanism as other environment variables and works
     automatically when load_config() reads env_config.py.
@@ -107,6 +107,95 @@ DEFAULT_CONFIG = {
 }
 
 
+PEER_MAP_ENV = "EXTERNAL_HANDLERS_PEER_MAP"
+PEER_ROUTING_ENV = "EXTERNAL_HANDLERS_PEER_ROUTING"
+_OFF_VALUES = frozenset({"off", "0", "false", "no"})
+
+
+def peer_routing_enabled() -> bool:
+    """Kill-switch: ``EXTERNAL_HANDLERS_PEER_ROUTING=off`` forces overflow singleton for every handle."""
+    raw = (os.getenv(PEER_ROUTING_ENV) or "on").strip().lower()
+    if not raw:
+        return True
+    return raw not in _OFF_VALUES
+
+
+def _peer_map_from_mapping(data: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for handle, row in data.items():
+        key = str(handle).strip().lower()
+        if not key or not isinstance(row, dict):
+            continue
+        out[key] = dict(row)
+    return out
+
+
+def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
+    """Optional runtime SSM so the map can change without a backend BOM deploy."""
+    path = (os.getenv("EXTERNAL_HANDLERS_PEER_ROUTES_SSM") or "").strip()
+    if not path:
+        wl = (os.getenv("WL_NAME") or "").strip()
+        if wl:
+            path = f"/{wl}/bootstrap/peer-routes"
+    if not path:
+        return {}
+    try:
+        import boto3
+
+        region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+        raw = boto3.client("ssm", region_name=region).get_parameter(Name=path, WithDecryption=True)
+        value = str(raw["Parameter"]["Value"]).strip()
+        if not value:
+            return {}
+        parsed = json.loads(value)
+        if isinstance(parsed, dict) and "routes" in parsed and isinstance(parsed["routes"], dict):
+            parsed = parsed["routes"]
+        return _peer_map_from_mapping(parsed)
+    except Exception:
+        return {}
+
+
+def load_peer_map() -> Dict[str, Dict[str, Any]]:
+    """Handle → peer route. JSON object in env, else load_config(), else SSM peer-routes."""
+    raw = (os.getenv(PEER_MAP_ENV) or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        mapped = _peer_map_from_mapping(parsed)
+        if mapped:
+            return mapped
+    try:
+        from renglo.common import load_config
+
+        cfg = load_config()
+        value = cfg.get(PEER_MAP_ENV)
+        if isinstance(value, dict):
+            mapped = _peer_map_from_mapping(value)
+            if mapped:
+                return mapped
+        if isinstance(value, str) and value.strip():
+            mapped = _peer_map_from_mapping(json.loads(value))
+            if mapped:
+                return mapped
+    except Exception:
+        pass
+    return _peer_map_from_ssm()
+
+
+def get_peer_route(extension_name: str) -> Optional[Dict[str, Any]]:
+    """Return the peer route for this handle, or None (overflow fallback / kill-switch)."""
+    if not peer_routing_enabled():
+        return None
+    handle = (extension_name or "").strip().lower()
+    if not handle:
+        return None
+    return load_peer_map().get(handle)
+
+
 def _function_name_from_lambda_arn(arn: str) -> str:
     """Extract function name from arn:aws:lambda:...:function:name[:qualifier]."""
     arn = arn.strip()
@@ -116,15 +205,8 @@ def _function_name_from_lambda_arn(arn: str) -> str:
     return tail.split(":")[0] if tail else arn
 
 
-def _resolve_handlers_lambda_function_name(extension_name: str) -> str:
-    """
-    Resolve handlers Lambda name for invoke.
-
-    Priority (backend env):
-      1. LAMBDA_EXTERNAL_HANDLERS_ARN
-      2. LAMBDA_HANDLERS_FUNCTION_NAME
-      3. {extension_name}-handlers (legacy convention)
-    """
+def _overflow_handlers_lambda_function_name(extension_name: str) -> str:
+    """Singleton overflow node (``{env}-handlers``), ignoring the peer map."""
     arn = (os.getenv("LAMBDA_EXTERNAL_HANDLERS_ARN") or "").strip()
     if arn:
         return _function_name_from_lambda_arn(arn)
@@ -132,6 +214,34 @@ def _resolve_handlers_lambda_function_name(extension_name: str) -> str:
     if explicit:
         return explicit
     return f"{extension_name}-handlers"
+
+
+def _peer_lambda_function_name(route: Dict[str, Any]) -> str:
+    fn = str(route.get("lambda_function_name") or "").strip()
+    if fn:
+        return fn
+    arn = str(route.get("lambda_arn") or "").strip()
+    if arn:
+        return _function_name_from_lambda_arn(arn)
+    return ""
+
+
+def _resolve_handlers_lambda_function_name(extension_name: str) -> str:
+    """
+    Resolve handlers Lambda name for invoke.
+
+    Priority:
+      1. Peer map entry for this handle (when routing is on)
+      2. Overflow singleton LAMBDA_EXTERNAL_HANDLERS_ARN
+      3. LAMBDA_HANDLERS_FUNCTION_NAME
+      4. {extension_name}-handlers (legacy convention)
+    """
+    route = get_peer_route(extension_name)
+    if route:
+        fn = _peer_lambda_function_name(route)
+        if fn:
+            return fn
+    return _overflow_handlers_lambda_function_name(extension_name)
 
 
 def _handlers_image_stem_from_function_name(fn: str) -> str:
@@ -153,13 +263,21 @@ def _external_handlers_names() -> list[str]:
 
 
 def resolve_handlers_docker_image_base(extension_name: str) -> str:
-    """Shared Docker image base for all external handlers (mirrors shared Lambda ARN).
+    """Docker image base for this handle (peer image when mapped; else overflow).
 
     Priority:
-      1. Stem of LAMBDA_EXTERNAL_HANDLERS_ARN / LAMBDA_HANDLERS_FUNCTION_NAME
-      2. First name in EXTERNAL_HANDLERS
-      3. Legacy {call_extension}-lambda-builder
+      1. Peer route function name (``{env}-peer-{peerId}-lambda-builder``)
+      2. Stem of overflow LAMBDA_EXTERNAL_HANDLERS_ARN / LAMBDA_HANDLERS_FUNCTION_NAME
+      3. ``{extension_name}-lambda-builder`` (do not use the first EXTERNAL_HANDLERS name)
     """
+    route = get_peer_route(extension_name)
+    if route:
+        fn = _peer_lambda_function_name(route)
+        if fn:
+            return f"{fn}-lambda-builder"
+        image = str(route.get("docker_image_base") or "").strip()
+        if image:
+            return image
     arn = (os.getenv("LAMBDA_EXTERNAL_HANDLERS_ARN") or "").strip()
     if arn:
         stem = _handlers_image_stem_from_function_name(_function_name_from_lambda_arn(arn))
@@ -170,9 +288,6 @@ def resolve_handlers_docker_image_base(extension_name: str) -> str:
         stem = _handlers_image_stem_from_function_name(explicit)
         if stem:
             return f"{stem}-lambda-builder"
-    names = _external_handlers_names()
-    if names:
-        return f"{names[0]}-lambda-builder"
     return f"{extension_name}-lambda-builder"
 
 
@@ -228,6 +343,9 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
             # Extension is in the list - use conventions
             # Get region from system Lambda's region
             lambda_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+            route = get_peer_route(extension_name)
+            if route and str(route.get("region") or "").strip():
+                lambda_region = str(route.get("region")).strip()
             image_base = resolve_handlers_docker_image_base(extension_name)
             
             config = {
@@ -343,11 +461,8 @@ def get_local_config(extension_name: str) -> Optional[Dict[str, Any]]:
     if not config or not config.get("has_external_handlers", False):
         return None
     
-    # Auto-detect package_path - it's always extensions/{extension_name}/package
-    # Only use config if explicitly provided (for non-standard layouts)
-    package_path = config.get("package_path")
-    if not package_path:
-        package_path = f"extensions/{extension_name}/package"
+    # Resolve package_path without assuming extensions/{handle}/ folder name.
+    package_path = config.get("package_path") or resolve_extension_package_path(extension_name)
     
     image_base = resolve_handlers_docker_image_base(extension_name)
     ecs_base = resolve_handlers_ecs_image_base(extension_name)
@@ -385,12 +500,80 @@ def _get_ecs_handlers_list_from_env() -> Dict[str, list]:
     return result
 
 
-def _get_ecs_handlers_from_package(extension_name: str) -> list:
-    """Read ``ecs_handlers`` from extensions/<name>/package/handlers_config.json."""
+def _package_path_env_key(extension_name: str) -> str:
+    return f"EXTERNAL_HANDLERS_PACKAGE_{extension_name.upper().replace('-', '_')}"
+
+
+def _read_extension_handle_marker(package_dir: Path) -> str:
+    """Optional ``extension_handle`` file in package dir decouples handle from folder name."""
+    marker = package_dir / "extension_handle"
+    if not marker.is_file():
+        return ""
+    try:
+        return marker.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return ""
+
+
+def resolve_extension_package_dir(extension_name: str) -> Optional[Path]:
+    """Locate handler package source for local dev without assuming folder == handle.
+
+    Resolution order:
+      1. ``EXTERNAL_HANDLERS_PACKAGE_{HANDLE}`` env (absolute or workspace-relative)
+      2. ``extensions/{handle}/package`` when present
+      3. Scan ``extensions/*/package/extension_handle`` for a matching handle
+    """
+    handle = (extension_name or "").strip().lower()
+    if not handle:
+        return None
     root = _get_workspace_root()
     if not root:
+        return None
+
+    override = (os.getenv(_package_path_env_key(handle)) or "").strip()
+    if override:
+        candidate = Path(override)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        if candidate.is_dir():
+            return candidate
+
+    direct = root / "extensions" / handle / "package"
+    if direct.is_dir():
+        return direct
+
+    ext_root = root / "extensions"
+    if not ext_root.is_dir():
+        return None
+    for child in sorted(ext_root.iterdir()):
+        if not child.is_dir():
+            continue
+        package_dir = child / "package"
+        if not package_dir.is_dir():
+            continue
+        if _read_extension_handle_marker(package_dir) == handle:
+            return package_dir
+    return None
+
+
+def resolve_extension_package_path(extension_name: str) -> str:
+    """Workspace-relative path to handler package dir, or legacy ``extensions/{handle}/package``."""
+    found = resolve_extension_package_dir(extension_name)
+    root = _get_workspace_root()
+    if found and root:
+        try:
+            return found.relative_to(root).as_posix()
+        except ValueError:
+            return str(found)
+    return f"extensions/{extension_name}/package"
+
+
+def _get_ecs_handlers_from_package(extension_name: str) -> list:
+    """Read ``ecs_handlers`` from the resolved handler package dir."""
+    package_dir = resolve_extension_package_dir(extension_name)
+    if not package_dir:
         return []
-    path = root / "extensions" / extension_name / "package" / "handlers_config.json"
+    path = package_dir / "handlers_config.json"
     if not path.is_file():
         return []
     try:
@@ -439,6 +622,24 @@ def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
         return None
     region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
     file_cfg: Dict[str, Any] = {}
+    route = get_peer_route(extension_name)
+    if route:
+        region = str(route.get("region") or region).strip() or region
+        for src_key, dst_key in (
+            ("ecs_cluster", "cluster"),
+            ("cluster", "cluster"),
+            ("ecs_task_definition", "task_definition"),
+            ("task_definition", "task_definition"),
+            ("ecs_results_bucket", "s3_bucket"),
+            ("s3_bucket", "s3_bucket"),
+            ("launch_type", "launch_type"),
+            ("network_mode", "network_mode"),
+            ("subnets", "subnets"),
+            ("security_groups", "security_groups"),
+        ):
+            val = route.get(src_key)
+            if val not in (None, ""):
+                file_cfg.setdefault(dst_key, val)
 
     def _str(key: str, env_key: str, default: str = "") -> str:
         return (file_cfg.get(key) or os.getenv(env_key, default)) or ""
