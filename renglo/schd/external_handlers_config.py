@@ -473,22 +473,16 @@ def get_local_config(extension_name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _get_ecs_handlers_list_from_env() -> Dict[str, list]:
-    """
-    Parse EXTERNAL_HANDLERS_ECS_HANDLERS env/config.
-    Format: "ext1:handler1,handler2;ext2:handler3" or "ext1:handler1,handler2"
-    Returns dict: { "ext1": ["handler1", "handler2"], "ext2": ["handler3"] }
-    """
-    raw = os.getenv("EXTERNAL_HANDLERS_ECS_HANDLERS", "")
-    if not raw:
-        try:
-            from renglo.common import load_config
-            cfg = load_config()
-            raw = cfg.get("EXTERNAL_HANDLERS_ECS_HANDLERS", "") or raw
-        except Exception:
-            pass
-    result = {}
-    for part in raw.split(";"):
+HEAVY_HANDLERS_ENV = "EXTERNAL_HANDLERS_HEAVY"
+HEAVY_HANDLERS_ENV_LEGACY = "EXTERNAL_HANDLERS_ECS_HANDLERS"
+HEAVY_HANDLERS_CONFIG_KEY = "heavy_handlers"
+HEAVY_HANDLERS_CONFIG_KEY_LEGACY = "ecs_handlers"
+
+
+def _parse_heavy_handlers_env_blob(raw: str) -> Dict[str, list]:
+    """Parse ``handle:name,name;handle2:name`` into {handle: [names]}."""
+    result: Dict[str, list] = {}
+    for part in str(raw or "").split(";"):
         part = part.strip()
         if ":" not in part:
             continue
@@ -498,6 +492,41 @@ def _get_ecs_handlers_list_from_env() -> Dict[str, list]:
         if ext:
             result[ext] = handlers
     return result
+
+
+def _heavy_handler_names_from_config(data: Any) -> list:
+    """Prefer ``heavy_handlers``, accept legacy ``ecs_handlers``. Union, first-seen order."""
+    if not isinstance(data, dict):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in (HEAVY_HANDLERS_CONFIG_KEY, HEAVY_HANDLERS_CONFIG_KEY_LEGACY):
+        raw = data.get(key) or []
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            name = str(item).strip().lower()
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
+def _get_heavy_handlers_list_from_env() -> Dict[str, list]:
+    """Hub overlay: ``EXTERNAL_HANDLERS_HEAVY``, then legacy ``EXTERNAL_HANDLERS_ECS_HANDLERS``."""
+    raw = os.getenv(HEAVY_HANDLERS_ENV, "") or os.getenv(HEAVY_HANDLERS_ENV_LEGACY, "")
+    if not raw:
+        try:
+            from renglo.common import load_config
+            cfg = load_config()
+            raw = cfg.get(HEAVY_HANDLERS_ENV, "") or cfg.get(HEAVY_HANDLERS_ENV_LEGACY, "") or raw
+        except Exception:
+            pass
+    return _parse_heavy_handlers_env_blob(str(raw or ""))
+
+
+def _get_ecs_handlers_list_from_env() -> Dict[str, list]:
+    return _get_heavy_handlers_list_from_env()
 
 
 def _package_path_env_key(extension_name: str) -> str:
@@ -568,8 +597,8 @@ def resolve_extension_package_path(extension_name: str) -> str:
     return f"extensions/{extension_name}/package"
 
 
-def _get_ecs_handlers_from_package(extension_name: str) -> list:
-    """Read ``ecs_handlers`` from the resolved handler package dir."""
+def _get_heavy_handlers_from_package(extension_name: str) -> list:
+    """Read ``heavy_handlers`` (or legacy ``ecs_handlers``) from the package dir."""
     package_dir = resolve_extension_package_dir(extension_name)
     if not package_dir:
         return []
@@ -581,34 +610,33 @@ def _get_ecs_handlers_from_package(extension_name: str) -> list:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
         return []
-    raw = data.get("ecs_handlers") or []
-    if not isinstance(raw, list):
-        return []
-    return [str(h).strip().lower() for h in raw if str(h).strip()]
+    return _heavy_handler_names_from_config(data)
 
 
-def get_ecs_handlers(extension_name: str) -> list:
-    """
-    Return list of handler names that run on ECS for this extension.
-    Prefers package handlers_config.json ``ecs_handlers``; falls back to env string.
-    """
-    from_pkg = _get_ecs_handlers_from_package(extension_name)
+def get_heavy_handlers(extension_name: str) -> list:
+    """Handler names that use the heavy runtime (peer ECS task today)."""
+    from_pkg = _get_heavy_handlers_from_package(extension_name)
     if from_pkg:
         return from_pkg
-    mapping = _get_ecs_handlers_list_from_env()
+    mapping = _get_heavy_handlers_list_from_env()
     return mapping.get(extension_name.lower(), [])
 
 
-def is_ecs_handler(extension_name: str, handler_name: str) -> bool:
-    """
-    Return True if this (extension, handler) should run on ECS (large container).
-    handler_name can be "helper_iam" or "helper_iam/ls"; we match by base handler name.
-    """
-    ecs_list = get_ecs_handlers(extension_name)
-    if not ecs_list:
+def is_heavy_handler(extension_name: str, handler_name: str) -> bool:
+    """True if this (extension, handler) is heavy. ``handler/sub`` matches on the base name."""
+    heavy = get_heavy_handlers(extension_name)
+    if not heavy:
         return False
     base = handler_name.split("/")[0].strip().lower()
-    return base in ecs_list
+    return base in heavy
+
+
+def get_ecs_handlers(extension_name: str) -> list:
+    return get_heavy_handlers(extension_name)
+
+
+def is_ecs_handler(extension_name: str, handler_name: str) -> bool:
+    return is_heavy_handler(extension_name, handler_name)
 
 
 def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
@@ -705,12 +733,12 @@ def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def get_batch_s3_config(extension_name: str) -> Optional[Dict[str, Any]]:
+def get_async_s3_config(extension_name: str) -> Optional[Dict[str, Any]]:
     """
-    Get S3 config for batch payload/result storage (bucket, region, prefixes).
-    Used by batch start/result/status when running locally (in-process or dev Docker)
+    Get S3 config for async payload/result storage (bucket, region, prefixes).
+    Used by async start/result/status when running locally (in-process or dev Docker)
     without full ECS. Prefer get_ecs_config when available; otherwise use global
-    ECS_RESULTS_BUCKET + AWS_REGION so any handler can run in batch mode.
+    ECS_RESULTS_BUCKET + AWS_REGION so any handler can run in async mode.
     """
     cfg = get_ecs_config(extension_name)
     if cfg:
@@ -736,3 +764,6 @@ def get_batch_s3_config(extension_name: str) -> Optional[Dict[str, Any]]:
         "payload_prefix": "payloads",
         "result_prefix": "results",
     }
+
+
+get_batch_s3_config = get_async_s3_config

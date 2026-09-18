@@ -27,9 +27,9 @@ from renglo.schd.external_handlers_config import (
     get_lambda_config,
     get_local_config,
     is_external_handler_active,
-    is_ecs_handler,
+    is_heavy_handler,
     get_ecs_config,
-    get_batch_s3_config,
+    get_async_s3_config,
     prefer_local_docker_tag,
 )
 
@@ -242,7 +242,7 @@ def call_local_docker_handler(
     package_path = config['package_path']
     full_package_path = os.path.join(workspace_root, package_path)
     # Use ECS (large) image for handlers in ECS list, else Lambda (small) image
-    if is_ecs_handler(extension_name, handler_name):
+    if is_heavy_handler(extension_name, handler_name):
         image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
         base = image_latest.rsplit(':', 1)[0]
         image_local = f"{base}:local"
@@ -855,20 +855,23 @@ def call_ecs_handler_async(
         }
 
 
-def call_local_docker_handler_batch_start(
+call_heavy_handler_async = call_ecs_handler_async
+
+
+def call_local_docker_handler_async_start(
     extension_name: str,
     handler_name: str,
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Start a handler in local Docker in batch mode: write payload to S3, run container
+    Start a handler in local Docker in async mode: write payload to S3, run container
     in background with REQUEST_ID and S3 env vars (same as ECS). Container reads
     payload from S3 and writes result/status to S3. Uses same bucket as ECS/local.
     """
     import uuid
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available'}
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch (set ECS_RESULTS_BUCKET or ECS config)'}
     config = get_local_config(extension_name)
@@ -967,9 +970,9 @@ def call_local_docker_handler_batch_start(
     return {'success': True, 'request_id': request_id, 'task_id': None}
 
 
-def write_batch_payload(extension_name: str, request_id: str, event: Dict[str, Any]) -> None:
-    """Write batch payload to S3 (payloads/<request_id>.json). Raises on failure."""
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+def write_async_payload(extension_name: str, request_id: str, event: Dict[str, Any]) -> None:
+    """Write async payload to S3 (payloads/<request_id>.json). Raises on failure."""
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg or not BOTO3_AVAILABLE:
         raise RuntimeError('No S3 config or boto3 for batch payload')
     prefix = s3_cfg.get('payload_prefix', 'payloads')
@@ -983,12 +986,12 @@ def write_batch_payload(extension_name: str, request_id: str, event: Dict[str, A
     )
 
 
-def write_batch_result(extension_name: str, request_id: str, run_response: Dict[str, Any]) -> None:
+def write_async_result(extension_name: str, request_id: str, run_response: Dict[str, Any]) -> None:
     """
-    Write batch result to S3 (results/<request_id>.json) in ECS-compatible format.
+    Write async result to S3 (results/<request_id>.json) in ECS-compatible format.
     run_response: dict from SchdLoader.load_and_run (success, output, ...).
     """
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg or not BOTO3_AVAILABLE:
         raise RuntimeError('No S3 config or boto3 for batch result')
     success = run_response.get('success', False)
@@ -1006,14 +1009,14 @@ def write_batch_result(extension_name: str, request_id: str, run_response: Dict[
     )
 
 
-def get_batch_result(extension_name: str, request_id: str) -> Dict[str, Any]:
+def get_async_result(extension_name: str, request_id: str) -> Dict[str, Any]:
     """
-    Read batch result from S3 (results/<request_id>.json). Returns pending if not found.
-    Uses get_ecs_config or get_batch_s3_config so local and dev Docker batch results work.
+    Read async result from S3 (results/<request_id>.json). Returns pending if not found.
+    Uses get_ecs_config or get_async_s3_config so local and dev Docker async results work.
     """
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available', 'status': 'error'}
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch results', 'status': 'error'}
     bucket = s3_cfg['s3_bucket']
@@ -1040,14 +1043,14 @@ def get_batch_result(extension_name: str, request_id: str) -> Dict[str, Any]:
         return {'success': False, 'error': str(e), 'status': 'error'}
 
 
-def get_batch_status(extension_name: str, request_id: str) -> Dict[str, Any]:
+def get_async_status(extension_name: str, request_id: str) -> Dict[str, Any]:
     """
-    Read batch progress from S3 (status/<request_id>.json). Returns pending if not found.
-    Uses get_ecs_config or get_batch_s3_config so local and dev Docker batch status works.
+    Read async progress from S3 (status/<request_id>.json). Returns pending if not found.
+    Uses get_ecs_config or get_async_s3_config so local and dev Docker async status works.
     """
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available', 'status': 'error', 'step': None}
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch status', 'status': 'error', 'step': None}
     bucket = s3_cfg['s3_bucket']
@@ -1101,8 +1104,8 @@ def run_external_handler(
         print(f'Response >> {response}')
         return response
 
-    # Remote: ECS (large) vs Lambda (light) by list
-    if is_ecs_handler(extension_name, handler_name):
+    # Remote: heavy (ECS task) vs light (zip Lambda)
+    if is_heavy_handler(extension_name, handler_name):
         print(f'Calling external handler: {extension_name}/{handler_name} in ECS. Payload:{payload}')
         response = call_ecs_handler(extension_name, handler_name, payload)
     else:
@@ -1110,3 +1113,10 @@ def run_external_handler(
         response = call_lambda_handler(extension_name, handler_name, payload)
     print(f'Response >> {response}')
     return response
+
+
+call_local_docker_handler_batch_start = call_local_docker_handler_async_start
+write_batch_payload = write_async_payload
+write_batch_result = write_async_result
+get_batch_result = get_async_result
+get_batch_status = get_async_status
