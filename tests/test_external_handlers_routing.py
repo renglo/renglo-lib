@@ -100,6 +100,30 @@ class PeerRoutingTests(unittest.TestCase):
             "arbitium0813-lambda-builder",
         )
 
+    def test_peer_ecs_ignores_overflow_launch_type(self) -> None:
+        os.environ["ECS_LAUNCH_TYPE"] = "ec2"
+        os.environ["ECS_NETWORK_MODE"] = "bridge"
+        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = json.dumps(
+            {
+                "arbitiumtriage": {
+                    "lambda_arn": TRIAGE_ARN,
+                    "ecs_cluster": "arbitium0813-peer-lab",
+                    "ecs_task_definition": "arbitium0813-peer-lab-ecs",
+                    "ecs_results_bucket": "arbitium0813-peer-lab-ecs-123",
+                    "region": "us-east-1",
+                    "subnets": ["subnet-peer"],
+                    "security_groups": ["sg-peer"],
+                }
+            }
+        )
+        ecs = get_ecs_config("arbitiumtriage")
+        self.assertIsNotNone(ecs)
+        assert ecs is not None
+        self.assertEqual(ecs["launch_type"], "fargate")
+        self.assertEqual(ecs["network_mode"], "awsvpc")
+        self.assertEqual(ecs["subnets"], ["subnet-peer"])
+        self.assertEqual(ecs["security_groups"], ["sg-peer"])
+
     def test_two_handles_two_peers(self) -> None:
         os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = TWO_PEERS
         self.assertEqual(

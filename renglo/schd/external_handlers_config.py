@@ -669,8 +669,19 @@ def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
             if val not in (None, ""):
                 file_cfg.setdefault(dst_key, val)
 
+    peer_ecs_route = bool(
+        route
+        and str(route.get("ecs_cluster") or route.get("cluster") or "").strip()
+    )
+    # Overflow hub env (ECS_LAUNCH_TYPE=ec2 / bridge) must not override a Fargate peer.
+    _PEER_LAUNCH_KEYS = frozenset({"launch_type", "network_mode"})
+
     def _str(key: str, env_key: str, default: str = "") -> str:
-        return (file_cfg.get(key) or os.getenv(env_key, default)) or ""
+        if key in file_cfg and file_cfg.get(key) not in (None, ""):
+            return str(file_cfg[key]).strip()
+        if peer_ecs_route and key in _PEER_LAUNCH_KEYS:
+            return default
+        return (os.getenv(env_key, default) or "").strip() or default
 
     def _list(key: str, env_key: str) -> list:
         from_file = file_cfg.get(key)
