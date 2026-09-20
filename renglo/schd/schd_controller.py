@@ -193,9 +193,9 @@ class SchdController(SchdScheduleMixin):
             return value
 
         try:
-            response = self.AUC.get_entity('tool', portfolio_id=portfolio, tool_id=value)
-            if response.get('success'):
-                document = response.get('document') or {}
+            found = self.AUC.get_installable(portfolio, value)
+            if found:
+                document = found.get('document') or {}
                 handle = str(document.get('handle') or '').strip()
                 if handle:
                     self.logger.debug(f"Resolved tool id '{value}' to handle '{handle}'")
