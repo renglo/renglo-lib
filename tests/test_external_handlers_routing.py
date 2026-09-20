@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Handle → peer routing (dual-run fallback + kill-switch)."""
+"""Handle → peer routing (peer-routes only; overflow fallback removed)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from renglo.schd.external_handlers_config import (  # noqa: E402
     _resolve_handlers_lambda_function_name,
 )
 
-OVERFLOW_ARN = "arn:aws:lambda:us-east-1:123:function:arbitium0813-handlers"
 LAB_ARN = "arn:aws:lambda:us-east-1:123:function:arbitium0813-peer-lab"
 TRIAGE_ARN = "arn:aws:lambda:eu-west-1:123:function:arbitium0813-peer-triage"
 
@@ -35,6 +34,8 @@ TWO_PEERS = json.dumps(
             "ecs_task_definition": "arbitium0813-peer-lab-ecs",
             "ecs_results_bucket": "arbitium0813-peer-lab-ecs-123",
             "region": "us-east-1",
+            "subnets": ["subnet-lab"],
+            "security_groups": ["sg-lab"],
         },
         "arbitiumtriage": {
             "lambda_arn": TRIAGE_ARN,
@@ -42,14 +43,28 @@ TWO_PEERS = json.dumps(
             "ecs_task_definition": "arbitium0813-peer-triage-ecs",
             "ecs_results_bucket": "arbitium0813-peer-triage-ecs-123",
             "region": "eu-west-1",
+            "subnets": ["subnet-triage"],
+            "security_groups": ["sg-triage"],
         },
     }
 )
 
 SAME_PEER = json.dumps(
     {
-        "arbitiumlab": {"lambda_arn": LAB_ARN, "ecs_cluster": "shared-lab", "ecs_results_bucket": "b"},
-        "other": {"lambda_arn": LAB_ARN, "ecs_cluster": "shared-lab", "ecs_results_bucket": "b"},
+        "arbitiumlab": {
+            "lambda_arn": LAB_ARN,
+            "ecs_cluster": "shared-lab",
+            "ecs_results_bucket": "b",
+            "subnets": ["subnet-shared"],
+            "security_groups": ["sg-shared"],
+        },
+        "other": {
+            "lambda_arn": LAB_ARN,
+            "ecs_cluster": "shared-lab",
+            "ecs_results_bucket": "b",
+            "subnets": ["subnet-shared"],
+            "security_groups": ["sg-shared"],
+        },
     }
 )
 
@@ -60,13 +75,7 @@ class PeerRoutingTests(unittest.TestCase):
             os.environ,
             {
                 "EXTERNAL_HANDLERS": "arbitiumlab,arbitiumtriage",
-                "LAMBDA_EXTERNAL_HANDLERS_ARN": OVERFLOW_ARN,
                 "AWS_REGION": "us-east-1",
-                "ECS_CLUSTER": "arbitium0813-handlers",
-                "ECS_TASK_DEFINITION": "arbitium0813-handlers-ecs",
-                "ECS_RESULTS_BUCKET": "overflow-bucket",
-                "ECS_SUBNETS": "subnet-1",
-                "ECS_SECURITY_GROUPS": "sg-1",
             },
             clear=False,
         )
@@ -80,29 +89,29 @@ class PeerRoutingTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._env.stop()
 
-    def test_empty_map_falls_back_to_overflow(self) -> None:
+    def test_empty_map_uses_handle_convention(self) -> None:
         self.assertTrue(peer_routing_enabled())
         self.assertIsNone(get_peer_route("arbitiumlab"))
         self.assertEqual(
             _resolve_handlers_lambda_function_name("arbitiumlab"),
-            "arbitium0813-handlers",
+            "arbitiumlab-handlers",
         )
         self.assertEqual(
             _resolve_handlers_lambda_function_name("arbitiumtriage"),
-            "arbitium0813-handlers",
+            "arbitiumtriage-handlers",
         )
         cfg = get_lambda_config("arbitiumlab")
-        self.assertEqual(cfg["function_name"], "arbitium0813-handlers")
-        ecs = get_ecs_config("arbitiumlab")
-        self.assertEqual(ecs["cluster"], "arbitium0813-handlers")
+        self.assertEqual(cfg["function_name"], "arbitiumlab-handlers")
+        self.assertIsNone(get_ecs_config("arbitiumlab"))
         self.assertEqual(
             resolve_handlers_docker_image_base("arbitiumlab"),
-            "arbitium0813-lambda-builder",
+            "arbitiumlab-lambda-builder",
         )
 
     def test_peer_ecs_ignores_overflow_launch_type(self) -> None:
         os.environ["ECS_LAUNCH_TYPE"] = "ec2"
         os.environ["ECS_NETWORK_MODE"] = "bridge"
+        os.environ["ECS_CLUSTER"] = "overflow-handlers"
         os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = json.dumps(
             {
                 "arbitiumtriage": {
@@ -157,30 +166,29 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertEqual(get_ecs_config("arbitiumlab")["cluster"], "shared-lab")
         self.assertEqual(get_ecs_config("other")["cluster"], "shared-lab")
 
-    def test_partial_map_unmapped_handle_uses_overflow(self) -> None:
+    def test_partial_map_unmapped_handle_uses_convention(self) -> None:
         os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = json.dumps(
             {"arbitiumlab": {"lambda_arn": LAB_ARN, "ecs_cluster": "lab", "ecs_results_bucket": "b"}}
         )
         self.assertEqual(_resolve_handlers_lambda_function_name("arbitiumlab"), "arbitium0813-peer-lab")
         self.assertEqual(
             _resolve_handlers_lambda_function_name("arbitiumtriage"),
-            "arbitium0813-handlers",
+            "arbitiumtriage-handlers",
         )
+        self.assertIsNone(get_ecs_config("arbitiumtriage"))
 
-    def test_kill_switch_forces_overflow(self) -> None:
+    def test_kill_switch_fails_closed(self) -> None:
         os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = TWO_PEERS
         os.environ["EXTERNAL_HANDLERS_PEER_ROUTING"] = "off"
         self.assertFalse(peer_routing_enabled())
         self.assertIsNone(get_peer_route("arbitiumlab"))
         self.assertEqual(
             _resolve_handlers_lambda_function_name("arbitiumlab"),
-            "arbitium0813-handlers",
+            "arbitiumlab-handlers",
         )
-        self.assertEqual(get_ecs_config("arbitiumlab")["cluster"], "arbitium0813-handlers")
+        self.assertIsNone(get_ecs_config("arbitiumlab"))
 
     def test_docker_stem_not_first_external_handlers_name(self) -> None:
-        os.environ.pop("LAMBDA_EXTERNAL_HANDLERS_ARN", None)
-        os.environ.pop("LAMBDA_HANDLERS_FUNCTION_NAME", None)
         self.assertEqual(
             resolve_handlers_docker_image_base("arbitiumtriage"),
             "arbitiumtriage-lambda-builder",

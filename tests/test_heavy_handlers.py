@@ -60,6 +60,24 @@ class HeavyHandlersTests(unittest.TestCase):
             else:
                 os.environ["EXTERNAL_HANDLERS_ECS_HANDLERS"] = old_legacy
 
+    def test_peer_route_heavy_handlers_wins(self) -> None:
+        old = os.environ.get("EXTERNAL_HANDLERS_PEER_MAP")
+        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = (
+            '{"acmewidget":{"lambda_arn":"arn:aws:lambda:us-east-1:1:function:peer",'
+            '"heavy_handlers":["from_route"]}}'
+        )
+        try:
+            with unittest.mock.patch(
+                "renglo.schd.external_handlers_config._get_workspace_root",
+                return_value=None,
+            ):
+                self.assertEqual(get_heavy_handlers("acmewidget"), ["from_route"])
+        finally:
+            if old is None:
+                os.environ.pop("EXTERNAL_HANDLERS_PEER_MAP", None)
+            else:
+                os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = old
+
 
 if __name__ == "__main__":
     unittest.main()
