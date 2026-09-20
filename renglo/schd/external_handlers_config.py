@@ -447,62 +447,6 @@ def get_local_config(extension_name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-HEAVY_HANDLERS_ENV = "EXTERNAL_HANDLERS_HEAVY"
-HEAVY_HANDLERS_ENV_LEGACY = "EXTERNAL_HANDLERS_ECS_HANDLERS"
-HEAVY_HANDLERS_CONFIG_KEY = "heavy_handlers"
-HEAVY_HANDLERS_CONFIG_KEY_LEGACY = "ecs_handlers"
-
-
-def _parse_heavy_handlers_env_blob(raw: str) -> Dict[str, list]:
-    """Parse ``handle:name,name;handle2:name`` into {handle: [names]}."""
-    result: Dict[str, list] = {}
-    for part in str(raw or "").split(";"):
-        part = part.strip()
-        if ":" not in part:
-            continue
-        ext, handlers_str = part.split(":", 1)
-        ext = ext.strip().lower()
-        handlers = [h.strip().lower() for h in handlers_str.split(",") if h.strip()]
-        if ext:
-            result[ext] = handlers
-    return result
-
-
-def _heavy_handler_names_from_config(data: Any) -> list:
-    """Prefer ``heavy_handlers``, accept legacy ``ecs_handlers``. Union, first-seen order."""
-    if not isinstance(data, dict):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for key in (HEAVY_HANDLERS_CONFIG_KEY, HEAVY_HANDLERS_CONFIG_KEY_LEGACY):
-        raw = data.get(key) or []
-        if not isinstance(raw, list):
-            continue
-        for item in raw:
-            name = str(item).strip().lower()
-            if name and name not in seen:
-                seen.add(name)
-                out.append(name)
-    return out
-
-
-def _get_heavy_handlers_list_from_env() -> Dict[str, list]:
-    """Hub overlay: ``EXTERNAL_HANDLERS_HEAVY``, then legacy ``EXTERNAL_HANDLERS_ECS_HANDLERS``."""
-    raw = os.getenv(HEAVY_HANDLERS_ENV, "") or os.getenv(HEAVY_HANDLERS_ENV_LEGACY, "")
-    if not raw:
-        try:
-            from renglo.common import load_config
-            cfg = load_config()
-            raw = cfg.get(HEAVY_HANDLERS_ENV, "") or cfg.get(HEAVY_HANDLERS_ENV_LEGACY, "") or raw
-        except Exception:
-            pass
-    return _parse_heavy_handlers_env_blob(str(raw or ""))
-
-
-def _get_ecs_handlers_list_from_env() -> Dict[str, list]:
-    return _get_heavy_handlers_list_from_env()
-
-
 def _package_path_env_key(extension_name: str) -> str:
     return f"EXTERNAL_HANDLERS_PACKAGE_{extension_name.upper().replace('-', '_')}"
 
@@ -569,51 +513,6 @@ def resolve_extension_package_path(extension_name: str) -> str:
         except ValueError:
             return str(found)
     return f"extensions/{extension_name}/package"
-
-
-def _get_heavy_handlers_from_package(extension_name: str) -> list:
-    """Read ``heavy_handlers`` (or legacy ``ecs_handlers``) from the package dir."""
-    package_dir = resolve_extension_package_dir(extension_name)
-    if not package_dir:
-        return []
-    path = package_dir / "handlers_config.json"
-    if not path.is_file():
-        return []
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-    return _heavy_handler_names_from_config(data)
-
-
-def get_heavy_handlers(extension_name: str) -> list:
-    """Handler names that use the heavy runtime (peer ECS task today)."""
-    route = get_peer_route(extension_name)
-    if route and "heavy_handlers" in route:
-        return _heavy_handler_names_from_config(route)
-    from_pkg = _get_heavy_handlers_from_package(extension_name)
-    if from_pkg:
-        return from_pkg
-    mapping = _get_heavy_handlers_list_from_env()
-    return mapping.get(extension_name.lower(), [])
-
-
-def is_heavy_handler(extension_name: str, handler_name: str) -> bool:
-    """True if this (extension, handler) is heavy. ``handler/sub`` matches on the base name."""
-    heavy = get_heavy_handlers(extension_name)
-    if not heavy:
-        return False
-    base = handler_name.split("/")[0].strip().lower()
-    return base in heavy
-
-
-def get_ecs_handlers(extension_name: str) -> list:
-    return get_heavy_handlers(extension_name)
-
-
-def is_ecs_handler(extension_name: str, handler_name: str) -> bool:
-    return is_heavy_handler(extension_name, handler_name)
 
 
 def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:

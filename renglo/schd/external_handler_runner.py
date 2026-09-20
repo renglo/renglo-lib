@@ -27,7 +27,6 @@ from renglo.schd.external_handlers_config import (
     get_lambda_config,
     get_local_config,
     is_external_handler_active,
-    is_heavy_handler,
     get_ecs_config,
     get_async_s3_config,
     prefer_local_docker_tag,
@@ -241,15 +240,9 @@ def call_local_docker_handler(
     
     package_path = config['package_path']
     full_package_path = os.path.join(workspace_root, package_path)
-    # Use ECS (large) image for handlers in ECS list, else Lambda (small) image
-    if is_heavy_handler(extension_name, handler_name):
-        image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
-        base = image_latest.rsplit(':', 1)[0]
-        image_local = f"{base}:local"
-    else:
-        image_latest = config['docker_image']
-        base = image_latest.rsplit(':', 1)[0]
-        image_local = f"{base}:local"
+    image_latest = config['docker_image']
+    base = image_latest.rsplit(':', 1)[0]
+    image_local = f"{base}:local"
 
     # Check if Docker is available
     try:
@@ -1104,13 +1097,10 @@ def run_external_handler(
         print(f'Response >> {response}')
         return response
 
-    # Remote: heavy (ECS task) vs light (zip Lambda)
-    if is_heavy_handler(extension_name, handler_name):
-        print(f'Calling external handler: {extension_name}/{handler_name} in ECS. Payload:{payload}')
-        response = call_ecs_handler(extension_name, handler_name, payload)
-    else:
-        print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload}')
-        response = call_lambda_handler(extension_name, handler_name, payload)
+    # Remote sync always hits the peer zip. The peer owns light vs heavy;
+    # /start is the hub's only ECS path (see handler_call_async_start).
+    print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload}')
+    response = call_lambda_handler(extension_name, handler_name, payload)
     print(f'Response >> {response}')
     return response
 

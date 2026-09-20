@@ -9,7 +9,7 @@ from renglo.auth.authorize import authorize
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
 from renglo.schd.schd_schedule import SchdScheduleMixin
-from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, is_heavy_handler, get_ecs_config, get_async_s3_config
+from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, get_ecs_config, get_async_s3_config
 from renglo.schd.external_handler_runner import (
     run_external_handler,
     call_heavy_handler_async,
@@ -422,11 +422,7 @@ class SchdController(SchdScheduleMixin):
                     payload=payload,
                 )
             else:
-                if not is_heavy_handler(resolved_extension, handler):
-                    return {
-                        'success': False,
-                        'error': 'Async in production only for heavy handlers; use the sync endpoint for this handler',
-                    }
+                # Hub does not classify handlers. /start means the peer ECS path.
                 response = call_heavy_handler_async(
                     extension_name=resolved_extension,
                     handler_name=handler,
