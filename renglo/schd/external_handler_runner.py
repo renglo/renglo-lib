@@ -27,10 +27,62 @@ from renglo.schd.external_handlers_config import (
     get_lambda_config,
     get_local_config,
     is_external_handler_active,
-    is_ecs_handler,
     get_ecs_config,
-    get_batch_s3_config,
+    get_async_s3_config,
+    prefer_local_docker_tag,
 )
+
+
+_docker_image_exists_cache: dict[str, bool] = {}
+
+
+def _docker_image_exists(img: str) -> bool:
+    # Docker Desktop 29 on Windows: `docker image inspect NAME:TAG` can
+    # return "No such image" while `docker images` / `docker run` see the tag.
+    if _docker_image_exists_cache.get(img):
+        return True
+    result = subprocess.run(
+        ['docker', 'images', '-q', img],
+        capture_output=True,
+        text=True,
+    )
+    found = result.returncode == 0 and bool(result.stdout.strip())
+    if found:
+        _docker_image_exists_cache[img] = True
+    return found
+
+
+def _select_local_docker_image(
+    image_latest: str,
+    image_local: str,
+    *,
+    build_hint: str,
+) -> tuple[str, str] | tuple[None, None]:
+    """Pick :local vs :latest. Linux prefers :local (arm); Windows prefers :latest (amd64)."""
+    has_local = _docker_image_exists(image_local)
+    has_latest = _docker_image_exists(image_latest)
+    if prefer_local_docker_tag():
+        if has_local:
+            return image_local, 'linux/arm64'
+        if has_latest:
+            return image_latest, 'linux/amd64'
+    else:
+        if has_latest:
+            return image_latest, 'linux/amd64'
+        if has_local:
+            return None, None  # signal Windows-only :local mismatch below
+    return None, None
+
+
+def _windows_local_only_error(image_local: str, image_latest: str, build_hint: str) -> Dict[str, Any]:
+    return {
+        'success': False,
+        'error': (
+            f'Found {image_local} but not {image_latest}. On Windows, prefer the amd64 '
+            f':latest image to avoid exec format errors. Rebuild without --local, or: '
+            f'{build_hint}'
+        ),
+    }
 
 
 def _ecs_run_task_params(ecs_cfg: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
@@ -188,13 +240,9 @@ def call_local_docker_handler(
     
     package_path = config['package_path']
     full_package_path = os.path.join(workspace_root, package_path)
-    # Use ECS (large) image for handlers in ECS list, else Lambda (small) image
-    if is_ecs_handler(extension_name, handler_name):
-        image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
-        image_local = f"{extension_name}-ecs-builder:local"
-    else:
-        image_latest = config['docker_image']
-        image_local = f"{extension_name}-lambda-builder:local"
+    image_latest = config['docker_image']
+    base = image_latest.rsplit(':', 1)[0]
+    image_local = f"{base}:local"
 
     # Check if Docker is available
     try:
@@ -205,27 +253,20 @@ def call_local_docker_handler(
             'error': 'Docker is not available or not in PATH'
         }
 
-    def _image_exists(img: str) -> bool:
-        result = subprocess.run(
-            ['docker', 'image', 'inspect', img],
-            capture_output=True,
-        )
-        return result.returncode == 0
-
-    # Prefer :local if it exists (from "build --local"), else use :latest. Same as run_handler_local.sh.
-    if _image_exists(image_local):
-        docker_image = image_local
-        run_platform = 'linux/arm64'
-    elif _image_exists(image_latest):
-        docker_image = image_latest
-        run_platform = 'linux/amd64'
-    else:
+    build_hint = (
+        f'python run.py <env> build --extensions … --no-ecs'
+    )
+    docker_image, run_platform = _select_local_docker_image(
+        image_latest, image_local, build_hint=build_hint
+    )
+    if docker_image is None:
+        if not prefer_local_docker_tag() and _docker_image_exists(image_local):
+            return _windows_local_only_error(image_local, image_latest, build_hint)
         return {
             'success': False,
             'error': (
-                f'Docker image not found. Build one with: '
-                f'python3 dev/extension-service/run.py {extension_name} build '
-                f'(or build --local for ARM).'
+                f'Docker image not found ({image_latest} / {image_local}). Build with: '
+                f'{build_hint}'
             )
         }
     
@@ -807,20 +848,23 @@ def call_ecs_handler_async(
         }
 
 
-def call_local_docker_handler_batch_start(
+call_heavy_handler_async = call_ecs_handler_async
+
+
+def call_local_docker_handler_async_start(
     extension_name: str,
     handler_name: str,
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Start a handler in local Docker in batch mode: write payload to S3, run container
+    Start a handler in local Docker in async mode: write payload to S3, run container
     in background with REQUEST_ID and S3 env vars (same as ECS). Container reads
     payload from S3 and writes result/status to S3. Uses same bucket as ECS/local.
     """
     import uuid
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available'}
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch (set ECS_RESULTS_BUCKET or ECS config)'}
     config = get_local_config(extension_name)
@@ -859,24 +903,21 @@ def call_local_docker_handler_batch_start(
 
     # Use ECS image so container uses S3 entrypoint (read payload from S3, write result to S3)
     image_latest = config.get('ecs_docker_image', f"{extension_name}-ecs-builder:latest")
-    image_local = f"{extension_name}-ecs-builder:local"
+    base = image_latest.rsplit(':', 1)[0]
+    image_local = f"{base}:local"
 
     try:
         subprocess.run(['docker', '--version'], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return {'success': False, 'error': 'Docker not available or not in PATH'}
 
-    def _image_exists(img: str) -> bool:
-        result = subprocess.run(['docker', 'image', 'inspect', img], capture_output=True)
-        return result.returncode == 0
-
-    if _image_exists(image_local):
-        docker_image = image_local
-        run_platform = 'linux/arm64'
-    elif _image_exists(image_latest):
-        docker_image = image_latest
-        run_platform = 'linux/amd64'
-    else:
+    build_hint = f'python run.py <env> build --large --no-ecs'
+    docker_image, run_platform = _select_local_docker_image(
+        image_latest, image_local, build_hint=build_hint
+    )
+    if docker_image is None:
+        if not prefer_local_docker_tag() and _docker_image_exists(image_local):
+            return _windows_local_only_error(image_local, image_latest, build_hint)
         return {
             'success': False,
             'error': f'Docker image not found. Build ECS image: {image_latest} or {image_local}',
@@ -922,9 +963,9 @@ def call_local_docker_handler_batch_start(
     return {'success': True, 'request_id': request_id, 'task_id': None}
 
 
-def write_batch_payload(extension_name: str, request_id: str, event: Dict[str, Any]) -> None:
-    """Write batch payload to S3 (payloads/<request_id>.json). Raises on failure."""
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+def write_async_payload(extension_name: str, request_id: str, event: Dict[str, Any]) -> None:
+    """Write async payload to S3 (payloads/<request_id>.json). Raises on failure."""
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg or not BOTO3_AVAILABLE:
         raise RuntimeError('No S3 config or boto3 for batch payload')
     prefix = s3_cfg.get('payload_prefix', 'payloads')
@@ -938,12 +979,12 @@ def write_batch_payload(extension_name: str, request_id: str, event: Dict[str, A
     )
 
 
-def write_batch_result(extension_name: str, request_id: str, run_response: Dict[str, Any]) -> None:
+def write_async_result(extension_name: str, request_id: str, run_response: Dict[str, Any]) -> None:
     """
-    Write batch result to S3 (results/<request_id>.json) in ECS-compatible format.
+    Write async result to S3 (results/<request_id>.json) in ECS-compatible format.
     run_response: dict from SchdLoader.load_and_run (success, output, ...).
     """
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg or not BOTO3_AVAILABLE:
         raise RuntimeError('No S3 config or boto3 for batch result')
     success = run_response.get('success', False)
@@ -961,14 +1002,14 @@ def write_batch_result(extension_name: str, request_id: str, run_response: Dict[
     )
 
 
-def get_batch_result(extension_name: str, request_id: str) -> Dict[str, Any]:
+def get_async_result(extension_name: str, request_id: str) -> Dict[str, Any]:
     """
-    Read batch result from S3 (results/<request_id>.json). Returns pending if not found.
-    Uses get_ecs_config or get_batch_s3_config so local and dev Docker batch results work.
+    Read async result from S3 (results/<request_id>.json). Returns pending if not found.
+    Uses get_ecs_config or get_async_s3_config so local and dev Docker async results work.
     """
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available', 'status': 'error'}
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch results', 'status': 'error'}
     bucket = s3_cfg['s3_bucket']
@@ -995,14 +1036,14 @@ def get_batch_result(extension_name: str, request_id: str) -> Dict[str, Any]:
         return {'success': False, 'error': str(e), 'status': 'error'}
 
 
-def get_batch_status(extension_name: str, request_id: str) -> Dict[str, Any]:
+def get_async_status(extension_name: str, request_id: str) -> Dict[str, Any]:
     """
-    Read batch progress from S3 (status/<request_id>.json). Returns pending if not found.
-    Uses get_ecs_config or get_batch_s3_config so local and dev Docker batch status works.
+    Read async progress from S3 (status/<request_id>.json). Returns pending if not found.
+    Uses get_ecs_config or get_async_s3_config so local and dev Docker async status works.
     """
     if not BOTO3_AVAILABLE:
         return {'success': False, 'error': 'boto3 not available', 'status': 'error', 'step': None}
-    s3_cfg = get_ecs_config(extension_name) or get_batch_s3_config(extension_name)
+    s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch status', 'status': 'error', 'step': None}
     bucket = s3_cfg['s3_bucket']
@@ -1056,12 +1097,16 @@ def run_external_handler(
         print(f'Response >> {response}')
         return response
 
-    # Remote: ECS (large) vs Lambda (light) by list
-    if is_ecs_handler(extension_name, handler_name):
-        print(f'Calling external handler: {extension_name}/{handler_name} in ECS. Payload:{payload}')
-        response = call_ecs_handler(extension_name, handler_name, payload)
-    else:
-        print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload}')
-        response = call_lambda_handler(extension_name, handler_name, payload)
+    # Remote sync always hits the peer zip. The peer owns light vs heavy;
+    # /start is the hub's only ECS path (see handler_call_async_start).
+    print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload}')
+    response = call_lambda_handler(extension_name, handler_name, payload)
     print(f'Response >> {response}')
     return response
+
+
+call_local_docker_handler_batch_start = call_local_docker_handler_async_start
+write_batch_payload = write_async_payload
+write_batch_result = write_async_result
+get_batch_result = get_async_result
+get_batch_status = get_async_status

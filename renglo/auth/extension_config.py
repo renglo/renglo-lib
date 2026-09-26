@@ -23,10 +23,10 @@ def _portfolio_id_for_team(auc, team_id):
 
 
 def _tool_handle(auc, portfolio_id, tool_id):
-    response = auc.get_entity("tool", portfolio_id=portfolio_id, tool_id=tool_id)
-    if not response.get("success"):
+    found = auc.get_installable(portfolio_id, tool_id)
+    if not found:
         return None
-    handle = str((response.get("document") or {}).get("handle") or "").strip()
+    handle = str((found.get("document") or {}).get("handle") or "").strip()
     return handle or None
 
 

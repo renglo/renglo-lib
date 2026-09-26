@@ -4,6 +4,7 @@ Declarative authorization decorator for renglo controllers.
 Usage:
     @authorize()                              # org access (default)
     @authorize(resource="tool", tool_id_param="extension")
+    @authorize(resource="extension", tool_id_param="extension")
     @authorize(resource="org", action="delete")
     @authorize(return_status=True)            # deny as (dict, status) for tuple APIs
 

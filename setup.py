@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="renglo-lib",
-    version="1.0.0",
+    version="0.0.3",
     description="Core Renglo functionality - controllers, models, and utilities",
     author="Renglo Team",
     license="MIT",

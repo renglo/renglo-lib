@@ -14,6 +14,7 @@ from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
 from renglo.search.search_controller import SearchController
 from renglo.graph.graph_controller import GraphController
+from renglo.vector import VectorController, VectorIndexService
 from renglo.logger import get_logger
 from renglo.logger import get_logger
 
@@ -242,6 +243,57 @@ class DataController:
         out.setdefault('table', table)
         return out
 
+    def _run_vector_operation(self, op_name, operation):
+        """Best-effort Vector DB write. Never raises. Does not fail the document."""
+        if not self.vector_controller or not self.vector_index_service:
+            return {'success': True, 'skipped': True, 'reason': 'Vector controller not configured'}
+        try:
+            result = operation()
+        except Exception as exc:
+            self.logger.error(f"Vector operation '{op_name}' failed: {exc}")
+            return {
+                'success': False,
+                'skipped': True,
+                'reason': 'Vector operation failed',
+                'error': str(exc),
+            }
+        if not isinstance(result, dict):
+            return {'success': True}
+        if result.get('success') is False:
+            message = result.get('error') or result.get('message') or 'Vector operation failed'
+            self.logger.error(f"Vector operation '{op_name}' failed: {message}")
+            return {
+                'success': False,
+                'skipped': True,
+                'reason': message,
+                'error': message,
+            }
+        return result
+
+    def _extract_blueprint_handle(self, item):
+        if not isinstance(item, dict):
+            return None
+        uri = item.get('blueprint') or (item.get('attributes') or {}).get('blueprint')
+        if not isinstance(uri, str) or '/_blueprint/' not in uri:
+            return None
+        tail = uri.split('/_blueprint/', 1)[1]
+        parts = [p for p in tail.split('/') if p]
+        if len(parts) < 2:
+            return None
+        return parts[0]
+
+    def _sync_document_vector(self, portfolio, org, ring, doc_id, attributes, verb, item=None):
+        return self.vector_index_service.sync_document(
+            self.vector_controller,
+            portfolio=portfolio,
+            org=org,
+            ring=ring,
+            doc_id=doc_id,
+            attributes=attributes,
+            verb=verb,
+            blueprint_handle=self._extract_blueprint_handle(item or {}),
+        )
+
     def _note_side_effect_warnings(self, result):
         """Surface a failed index or graph sync without failing the document write."""
         warnings = []
@@ -263,6 +315,15 @@ class DataController:
                 or 'unknown error'
             )
             warnings.append(f"Graph edges were not updated: {detail}")
+        vector = result.get('vector')
+        if isinstance(vector, dict) and vector.get('success') is False:
+            detail = (
+                vector.get('error')
+                or vector.get('reason')
+                or vector.get('message')
+                or 'unknown error'
+            )
+            warnings.append(f"Vector index was not updated: {detail}")
         if warnings:
             result['warnings'] = warnings
             self.logger.warning(
@@ -271,11 +332,20 @@ class DataController:
         return result
 
     def _share_auth_controller(self):
-        """Give search and graph the same AuthController as the document write."""
-        if self.search_controller is not None:
-            self.search_controller.AUC = self.AUC
-        if self.GRC is not None:
-            self.GRC.AUC = self.AUC
+        """Give search, graph, and vector the same AuthController as the document write."""
+        search_controller = getattr(self, "search_controller", None)
+        if search_controller is not None:
+            search_controller.AUC = self.AUC
+        graph_controller = getattr(self, "GRC", None)
+        if graph_controller is not None:
+            graph_controller.AUC = self.AUC
+        vector_controller = getattr(self, "vector_controller", None)
+        if vector_controller is not None:
+            vector_controller.AUC = self.AUC
+
+    def set_invocation_jwt_claims(self, jwt_claims):
+        """Forward Docker/Lambda JWT so @authorize on writes sees the caller."""
+        self.AUC.set_invocation_jwt_claims(jwt_claims)
 
     def _sync_saved_document(self, result, portfolio, org, ring, doc_id, item, verb):
         """Index and graph-sync a document that is already stored.
@@ -302,6 +372,12 @@ class DataController:
                     portfolio, org, ring, doc_id, attributes,
                 ),
             )
+            result['vector'] = self._run_vector_operation(
+                'sync_document_vector (DELETE)',
+                lambda: self._sync_document_vector(
+                    portfolio, org, ring, doc_id, attributes, 'DELETE', item,
+                ),
+            )
         else:
             result['search'] = self._run_search_operation(
                 f'index_document ({verb})',
@@ -313,19 +389,30 @@ class DataController:
                     portfolio, org, ring, doc_id, attributes,
                 ),
             )
+            result['vector'] = self._run_vector_operation(
+                f'sync_document_vector ({verb})',
+                lambda: self._sync_document_vector(
+                    portfolio, org, ring, doc_id, attributes, verb, item,
+                ),
+            )
         return self._note_side_effect_warnings(result)
 
     def __init__(self, config=None, tid=None, ip=None):
         self.config = config or {}
         self.logger = get_logger()
+        self.search_controller = None
+        self.vector_controller = None
+        self.vector_index_service = None
+        self.GRC = None
         self.DAM = DataModel(config=self.config, tid=tid, ip=ip)
         self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         self.search_controller = SearchController(config=self.config)
+        self.vector_controller = VectorController(config=self.config)
+        self.vector_index_service = VectorIndexService(config=self.config)
         self.graph_db_enabled = self.config.get('GRAPH_DB_ENABLED', True)
         if not isinstance(self.graph_db_enabled, bool):
             raise ValueError("GRAPH_DB_ENABLED must be a boolean (True/False)")
-        self.GRC = None
         if self.graph_db_enabled and self.config.get('DYNAMODB_GRAPH_TABLE'):
             self.GRC = GraphController(config=self.config)
         # One auth identity for the document, the index, and the edges.

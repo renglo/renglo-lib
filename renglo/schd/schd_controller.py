@@ -9,16 +9,16 @@ from renglo.auth.authorize import authorize
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
 from renglo.schd.schd_schedule import SchdScheduleMixin
-from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, is_ecs_handler, get_ecs_config, get_batch_s3_config
+from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, get_ecs_config, get_async_s3_config
 from renglo.schd.external_handler_runner import (
     run_external_handler,
-    call_ecs_handler_async,
-    call_local_docker_handler_batch_start,
-    get_batch_result as run_get_batch_result,
-    get_batch_status as run_get_batch_status,
+    call_heavy_handler_async,
+    call_local_docker_handler_async_start,
+    get_async_result as run_get_async_result,
+    get_async_status as run_get_async_status,
     use_dev_docker,
-    write_batch_payload,
-    write_batch_result,
+    write_async_payload,
+    write_async_result,
 )
 from renglo.runtime import attach_auth_roles_to_payload, attach_jwt_claims_to_payload
 
@@ -193,9 +193,9 @@ class SchdController(SchdScheduleMixin):
             return value
 
         try:
-            response = self.AUC.get_entity('tool', portfolio_id=portfolio, tool_id=value)
-            if response.get('success'):
-                document = response.get('document') or {}
+            found = self.AUC.get_installable(portfolio, value)
+            if found:
+                document = found.get('document') or {}
                 handle = str(document.get('handle') or '').strip()
                 if handle:
                     self.logger.debug(f"Resolved tool id '{value}' to handle '{handle}'")
@@ -386,18 +386,18 @@ class SchdController(SchdScheduleMixin):
             print(f'Error @handler_check: {e}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call: {e}'}
 
-    def _run_batch_local_worker(self, extension: str, handler: str, payload: dict, request_id: str) -> None:
+    def _run_async_local_worker(self, extension: str, handler: str, payload: dict, request_id: str) -> None:
         """Background worker: run handler in-process and write result to S3."""
         try:
             response = self.SHL.load_and_run(f'{extension}/{handler}', payload=payload)
-            write_batch_result(extension, request_id, response)
+            write_async_result(extension, request_id, response)
         except Exception as e:
-            write_batch_result(extension, request_id, {'success': False, 'output': str(e), 'error': str(e)})
+            write_async_result(extension, request_id, {'success': False, 'output': str(e), 'error': str(e)})
 
     @authorize(resource="tool", tool_id_param="extension")
-    def handler_call_batch_start(self, portfolio, org, extension, handler, payload):
-        """Start batch handler (any handler). Supports: local in-process, external dev Docker, or ECS."""
-        action = 'handler_call_batch_start'
+    def handler_call_async_start(self, portfolio, org, extension, handler, payload):
+        """Start an async handler job (any handler). Local in-process, dev Docker, or heavy ECS."""
+        action = 'handler_call_async_start'
         payload = dict(payload or {})
         # Re-stamp roles after copying payload (decorator stamped the original dict).
         auth_ctx = getattr(self, "_auth_context", None) or {}
@@ -409,25 +409,21 @@ class SchdController(SchdScheduleMixin):
 
         s3_cfg = get_ecs_config(resolved_extension) if has_external_handlers(resolved_extension) else None
         if not s3_cfg:
-            s3_cfg = get_batch_s3_config(resolved_extension)
+            s3_cfg = get_async_s3_config(resolved_extension)
         if not s3_cfg:
-            return {'success': False, 'error': 'Batch requires ECS_RESULTS_BUCKET or ECS config for result storage'}
+            return {'success': False, 'error': 'Async requires ECS_RESULTS_BUCKET or ECS config for result storage'}
 
         if has_external_handlers(resolved_extension) and is_external_handler_active(resolved_extension):
             attach_jwt_claims_to_payload(payload)
             if use_dev_docker(resolved_extension):
-                response = call_local_docker_handler_batch_start(
+                response = call_local_docker_handler_async_start(
                     extension_name=resolved_extension,
                     handler_name=handler,
                     payload=payload,
                 )
             else:
-                if not is_ecs_handler(resolved_extension, handler):
-                    return {
-                        'success': False,
-                        'error': 'Batch in production only for ECS handlers; use sync endpoint for this handler',
-                    }
-                response = call_ecs_handler_async(
+                # Hub does not classify handlers. /start means the peer ECS path.
+                response = call_heavy_handler_async(
                     extension_name=resolved_extension,
                     handler_name=handler,
                     payload=payload,
@@ -436,7 +432,7 @@ class SchdController(SchdScheduleMixin):
                 return {
                     'success': False,
                     'action': action,
-                    'error': response.get('error', 'Batch start failed'),
+                    'error': response.get('error', 'Async start failed'),
                     'request_id': None,
                     'task_id': None,
                 }
@@ -451,11 +447,11 @@ class SchdController(SchdScheduleMixin):
         request_id = str(uuid.uuid4())
         event = {'handler': handler, 'payload': payload}
         try:
-            write_batch_payload(resolved_extension, request_id, event)
+            write_async_payload(resolved_extension, request_id, event)
         except Exception as e:
-            return {'success': False, 'error': f'Failed to write batch payload: {e}'}
+            return {'success': False, 'error': f'Failed to write async payload: {e}'}
         thread = threading.Thread(
-            target=self._run_batch_local_worker,
+            target=self._run_async_local_worker,
             args=(resolved_extension, handler, payload, request_id),
             daemon=True,
         )
@@ -467,23 +463,29 @@ class SchdController(SchdScheduleMixin):
             'task_id': None,
         }
 
+    handler_call_batch_start = handler_call_async_start
+
     @authorize()
-    def get_batch_result(self, portfolio, org, extension, request_id):
-        """Return batch result from S3 or pending."""
-        result = run_get_batch_result(extension_name=extension, request_id=request_id)
+    def get_async_result(self, portfolio, org, extension, request_id):
+        """Return async result from S3 or pending."""
+        result = run_get_async_result(extension_name=extension, request_id=request_id)
         result['portfolio'] = portfolio
         result['org'] = org
         result['extension'] = extension
         return result
 
+    get_batch_result = get_async_result
+
     @authorize()
-    def get_batch_status(self, portfolio, org, extension, request_id):
-        """Return batch progress from S3 (status/<request_id>.json)."""
-        result = run_get_batch_status(extension_name=extension, request_id=request_id)
+    def get_async_status(self, portfolio, org, extension, request_id):
+        """Return async progress from S3 (status/<request_id>.json)."""
+        result = run_get_async_status(extension_name=extension, request_id=request_id)
         result['portfolio'] = portfolio
         result['org'] = org
         result['extension'] = extension
         return result
+
+    get_batch_status = get_async_status
 
     def delete_rule(self, rule_name):
         try:

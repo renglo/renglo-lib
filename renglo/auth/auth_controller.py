@@ -9,6 +9,7 @@ import uuid
 from decimal import Decimal
 from renglo.auth.auth_model import AuthModel
 from renglo.common import sanitize_entity_tags
+from renglo.wl import invite_inline_images, render_invite_email
 import re
 import time
 from validate_email import validate_email
@@ -19,6 +20,8 @@ class AuthController:
     # Sentinel org id for portfolio-scoped data rings (config, schd_tools, etc.).
     # Not a real org entity — must never be treated as "any org".
     PORTFOLIO_SCOPE_ORG = "_all"
+    # New installs write 'extension'. Legacy 'tool' rows stay readable until retired.
+    INSTALLABLE_TYPES = ("extension", "tool")
 
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
@@ -159,26 +162,113 @@ class AuthController:
         return out
 
     @staticmethod
+    def _installable_entity_index(kind, portfolio_id, archived=False):
+        prefix = "unentity" if archived else "entity"
+        return f"irn:{prefix}:portfolio/{kind}:{portfolio_id}/*"
+
+    @staticmethod
+    def _installable_rel_types(kind):
+        return {
+            "assign": f"team:{kind}",
+            "role": f"team/{kind}:role",
+            "org": f"team/{kind}:org",
+        }
+
+    @staticmethod
+    def _installable_id(data):
+        return (data or {}).get("extension_id") or (data or {}).get("tool_id")
+
+    def get_installable(self, portfolio_id, entity_id):
+        """Look up an installable by id, preferring extension over legacy tool."""
+        if not portfolio_id or not entity_id:
+            return None
+        for kind in self.INSTALLABLE_TYPES:
+            response = self.get_entity(
+                kind,
+                portfolio_id=portfolio_id,
+                tool_id=entity_id,
+                extension_id=entity_id,
+            )
+            if response.get("success"):
+                return {"kind": kind, "document": response.get("document") or {}}
+        return None
+
+    def find_installable_by_handle(self, portfolio_id, handle):
+        """Look up an installable by handle, preferring extension over legacy tool."""
+        handle = str(handle or "").strip()
+        if not portfolio_id or not handle:
+            return None
+        for kind in self.INSTALLABLE_TYPES:
+            response = self.list_entity(kind, portfolio_id=portfolio_id)
+            items = ((response or {}).get("document") or {}).get("items") or []
+            for item in items:
+                if str((item or {}).get("handle") or "").strip() == handle:
+                    return {"kind": kind, "document": item}
+        return None
+
+    def _portfolio_id_for_team(self, team_id):
+        if not team_id:
+            return None
+        index = f"irn:rel:team:portfolio:{team_id}:*"
+        items = ((self.AUM.list_rel(index) or {}).get("document") or {}).get("items") or []
+        if not items:
+            return None
+        return items[0].get("rel")
+
+    def _rel_item_rels(self, index):
+        items = ((self.AUM.list_rel(index) or {}).get("document") or {}).get("items") or []
+        return [item.get("rel") for item in items if item.get("rel")]
+
+    @classmethod
+    def _tool_handle_catalog(cls, portfolio_node):
+        catalog = []
+        seen = set()
+        for bag_name in ("tools", "extensions"):
+            bag = (portfolio_node or {}).get(bag_name) or {}
+            for tid, tdoc in bag.items():
+                if tid in seen:
+                    continue
+                seen.add(tid)
+                catalog.append({
+                    "tool_id": tid,
+                    "handle": str((tdoc or {}).get("handle") or "").strip(),
+                    "name": str((tdoc or {}).get("name") or "").strip(),
+                    "entity_type": str((tdoc or {}).get("entity_type") or bag_name.rstrip("s")),
+                })
+        return catalog
+
+    @staticmethod
     def _resolve_tool_ref(portfolio_node, tool_ref):
         """
-        Resolve a tool id or handle to tool_id using the portfolio tree node.
-        Returns tool_id or None if not found.
+        Resolve a tool/extension id or handle using the portfolio tree node.
+        Returns the entity id or None if not found.
         """
         if not portfolio_node or not tool_ref:
             return None
-        tools = portfolio_node.get("tools") or {}
         ref = str(tool_ref).strip()
-        if ref in tools:
-            return ref
-        for tid, tdoc in tools.items():
-            if str((tdoc or {}).get("handle") or "").strip() == ref:
-                return tid
+        for bag_name in ("tools", "extensions"):
+            bag = portfolio_node.get(bag_name) or {}
+            if ref in bag:
+                return ref
+            for tid, tdoc in bag.items():
+                if str((tdoc or {}).get("handle") or "").strip() == ref:
+                    return tid
         return None
 
     @classmethod
     def is_portfolio_scope_org(cls, org) -> bool:
         """True when org is the portfolio-scoped pseudo-org (_all)."""
         return str(org or "").strip() == cls.PORTFOLIO_SCOPE_ORG
+
+    @staticmethod
+    def _team_installable_access(team, entity_id):
+        """Grant node for an id on a team (extension first, then legacy tool)."""
+        if not team or not entity_id:
+            return {}
+        return (
+            ((team.get("extensions") or {}).get(entity_id) or {})
+            or ((team.get("tools") or {}).get(entity_id) or {})
+        )
 
     def _ensure_portfolio_scope_org(self, portfolio_node):
         """
@@ -190,12 +280,13 @@ class AuthController:
         org_id = self.PORTFOLIO_SCOPE_ORG
         active = False
         tools_for_all = []
+        extensions_for_all = []
         for team in (portfolio_node.get("teams") or {}).values():
-            for tool_id, tool_access in ((team or {}).get("tools") or {}).items():
-                orgs = tool_access.get("orgs") or []
-                if org_id in orgs:
-                    active = True
-                    tools_for_all.append(tool_id)
+            for bag, dest in (("tools", tools_for_all), ("extensions", extensions_for_all)):
+                for entity_id, access in ((team or {}).get(bag) or {}).items():
+                    if org_id in (access.get("orgs") or []):
+                        active = True
+                        dest.append(entity_id)
 
         if "orgs" not in portfolio_node:
             portfolio_node["orgs"] = {}
@@ -206,6 +297,7 @@ class AuthController:
             "handle": org_id,
             "tags": {},
             "tools": list(set(tools_for_all)),
+            "extensions": list(set(extensions_for_all)),
             "active": active,
             "portfolio_scope": True,
         }
@@ -239,7 +331,7 @@ class AuthController:
         seen = set()
         teams = portfolio_node.get("teams") or {}
         for team in teams.values():
-            tool_access = ((team or {}).get("tools") or {}).get(tool_id) or {}
+            tool_access = AuthController._team_installable_access(team, tool_id)
             orgs = tool_access.get("orgs") or []
             if org not in orgs:
                 continue
@@ -301,7 +393,7 @@ class AuthController:
                 "roles": [],
             }
 
-        if resource not in ("org", "tool"):
+        if resource not in ("org", "tool", "extension"):
             return {
                 "success": False,
                 "message": f"Authorization for resource '{resource}' is not implemented",
@@ -388,9 +480,26 @@ class AuthController:
         resolved_tool_id = None
         roles = []
         if tool_id:
+            catalog = self._tool_handle_catalog(portfolio_node)
             resolved_tool_id = self._resolve_tool_ref(portfolio_node, tool_id)
-            if resource == "tool":
+            self.logger.info(
+                "Auth tool resolve: user=%s portfolio=%s org=%s ref=%s resolved=%s catalog=%s",
+                resolved_user_id,
+                portfolio,
+                org_key,
+                tool_id,
+                resolved_tool_id,
+                catalog,
+            )
+            if resource in ("tool", "extension"):
                 if not resolved_tool_id:
+                    self.logger.info(
+                        "Auth deny: user %s tool ref %r did not match any tool in portfolio %s (catalog=%s)",
+                        resolved_user_id,
+                        tool_id,
+                        portfolio,
+                        catalog,
+                    )
                     return {
                         "success": False,
                         "message": "Access denied to tool",
@@ -399,18 +508,22 @@ class AuthController:
                         "roles": [],
                     }
                 has_tool_org = False
-                for team in (portfolio_node.get("teams") or {}).values():
-                    tool_access = ((team or {}).get("tools") or {}).get(resolved_tool_id) or {}
-                    if org_key in (tool_access.get("orgs") or []):
+                granted_orgs = []
+                for team_id, team in (portfolio_node.get("teams") or {}).items():
+                    tool_access = self._team_installable_access(team, resolved_tool_id)
+                    team_orgs = tool_access.get("orgs") or []
+                    granted_orgs.append({"team": team_id, "orgs": team_orgs})
+                    if org_key in team_orgs:
                         has_tool_org = True
                         break
                 if not has_tool_org:
-                    self.logger.debug(
-                        "Auth deny: user %s has no tool %s access in org %s/%s",
+                    self.logger.info(
+                        "Auth deny: user %s has no tool %s access in org %s/%s (grants=%s)",
                         resolved_user_id,
                         resolved_tool_id,
                         portfolio,
                         org_key,
+                        granted_orgs,
                     )
                     return {
                         "success": False,
@@ -682,6 +795,66 @@ class AuthController:
             
 
 
+    def _project_installables_for_team(
+        self, portfolio_id, team_id, kind, tree, org_grants, active_orgs
+    ):
+        """
+        Project one installable type into its own tree bag.
+
+        tool → portfolios[p].tools / teams[t].tools / orgs[o].tools
+        extension → portfolios[p].extensions / teams[t].extensions / orgs[o].extensions
+        """
+        bag = "extensions" if kind == "extension" else "tools"
+        index = self._installable_entity_index(kind, portfolio_id)
+        items = ((self.AUM.list_entity(index) or {}).get("document") or {}).get("items") or []
+        rels = self._installable_rel_types(kind)
+        portfolio_node = tree["portfolios"][portfolio_id]
+        portfolio_node.setdefault(bag, {})
+        org_grants.setdefault(bag, {})
+
+        for entity in items:
+            entity_id = entity["_id"]
+            node = {
+                "name": entity.get("name"),
+                "handle": entity.get("handle"),
+                "roles": self._normalize_roles_list(entity.get("roles")),
+                "entity_type": kind,
+            }
+            if kind == "extension":
+                node["extension_id"] = entity_id
+            else:
+                node["tool_id"] = entity_id
+            existing = portfolio_node[bag].get(entity_id) or {}
+            merged = {**existing, **node}
+            if existing.get("active"):
+                merged["active"] = True
+            portfolio_node[bag][entity_id] = merged
+
+            team_node = portfolio_node["teams"][team_id]
+            team_node.setdefault(bag, {}).setdefault(entity_id, {})
+
+            roles = self._rel_item_rels(
+                f"irn:rel:{rels['role']}:{team_id}/{entity_id}:*"
+            )
+            prev_roles = team_node[bag][entity_id].get("roles") or []
+            team_node[bag][entity_id]["roles"] = list(
+                dict.fromkeys(prev_roles + roles)
+            )
+
+            granted_orgs = self._rel_item_rels(
+                f"irn:rel:{rels['org']}:{team_id}/{entity_id}:*"
+            )
+            for org_id in granted_orgs:
+                active_orgs.append(org_id)
+                portfolio_node[bag][entity_id]["active"] = True
+                org_grants[bag].setdefault(org_id, [])
+                if entity_id not in org_grants[bag][org_id]:
+                    org_grants[bag][org_id].append(entity_id)
+            prev_orgs = team_node[bag][entity_id].get("orgs") or []
+            team_node[bag][entity_id]["orgs"] = list(
+                dict.fromkeys(prev_orgs + granted_orgs)
+            )
+
     def get_tree_full(self,**kwargs):
         # Auth Tree after resolving each document ID 
         # Instead of creating a function to query each entity separately (many functions), 
@@ -740,6 +913,8 @@ class AuthController:
                             portfolio_doc['name'] = portfolio_entity['document']['name']
                             portfolio_doc['teams'] = {}
                             portfolio_doc['orgs'] = {}
+                            portfolio_doc['tools'] = {}
+                            portfolio_doc['extensions'] = {}
 
                             #self.logger.debug('Tree: '+str(tree))
 
@@ -767,144 +942,34 @@ class AuthController:
                         team_doc = {}
                         team_doc['team_id'] = team_id
                         team_doc['name'] = team_entity['document']['name']
-                        #team_doc['orgs_access'] = []
                         team_doc['tools'] = {}
+                        team_doc['extensions'] = {}
 
                         #self.logger.debug('Inserting Team '+team_id+'in portfolio '+portfolio_id+':'+str(team_doc))
                         tree['portfolios'][portfolio_id]['teams'][team_id] = team_doc
 
 
-                        
-                        #Team to Tools rel
-                        index = 'irn:rel:team:tool:' + team_id + ':*'
-                        rels_team_tool = self.AUM.list_rel(index)
-                        #self.logger.debug('Team Tool rels:'+str(rels_team_org))
+                        tree['portfolios'][portfolio_id]['teams'][team_id]['tools_access'] = (
+                            self._rel_item_rels('irn:rel:team:tool:' + team_id + ':*')
+                        )
+                        tree['portfolios'][portfolio_id]['teams'][team_id]['extensions_access'] = (
+                            self._rel_item_rels('irn:rel:team:extension:' + team_id + ':*')
+                        )
 
-                        tools = []
-                        # Check if rels_team_tool has the expected structure and is not empty
-                        if (rels_team_tool and 
-                            'document' in rels_team_tool and 
-                            'items' in rels_team_tool['document'] and 
-                            rels_team_tool['document']['items']):
-                            for tool in rels_team_tool['document']['items']:
-                                tools.append(tool['rel'])
-
-                        #self.logger.debug('Inserting tool into team '+team_id+' from portfolio '+portfolio_id+':'+str(tools))
-                        tree['portfolios'][portfolio_id]['teams'][team_id]['tools_access'] = tools
-
-
-                         
-
-                        #Tools
-
-                        # RESOLVE: Get App entity document
-                        index = 'irn:entity:portfolio/tool:'+portfolio_id+'/*'
-                        entities_tools = self.AUM.list_entity(index)
                         active_orgs = []
-                        
-                        
+                        org_grants = {'tools': {}, 'extensions': {}}
+                        for kind in self.INSTALLABLE_TYPES:
+                            self._project_installables_for_team(
+                                portfolio_id,
+                                team_id,
+                                kind,
+                                tree,
+                                org_grants,
+                                active_orgs,
+                            )
 
-                        #self.logger.debug('ENTITIES:'+str(entities_tools))
-                        org_tools = {}
-                        
-                        # Check if entities_tools has the expected structure and is not empty
-                        if (entities_tools and 
-                            'document' in entities_tools and 
-                            'items' in entities_tools['document'] and 
-                            entities_tools['document']['items']):
-                            
-                            for tool in entities_tools['document']['items']:
-
-                                tool_id = tool['_id'] 
-                                self.logger.debug('FLAG2>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id+'TOOL:'+tool_id) 
-                               
-                                # Tool list at portfolio level
-                                if 'tools' not in tree['portfolios'][portfolio_id]:
-                                    tree['portfolios'][portfolio_id]['tools'] = {}  # Create 'tools' as an empty dictionary
-                                    
-                                if tool_id not in tree['portfolios'][portfolio_id]['tools']:
-                                    tree['portfolios'][portfolio_id]['tools'][tool_id] = {}
-                                    
-                                
-                                tree['portfolios'][portfolio_id]['tools'][tool_id]['tool_id'] = tool_id
-                                tree['portfolios'][portfolio_id]['tools'][tool_id]['name'] = tool['name']
-                                tree['portfolios'][portfolio_id]['tools'][tool_id]['handle'] = tool['handle']
-                                # Catalog of roles this tool supports (from tool entity).
-                                # Assigned roles live under teams[t].tools[tool].roles.
-                                tree['portfolios'][portfolio_id]['tools'][tool_id]['roles'] = self._normalize_roles_list(
-                                    tool.get('roles')
-                                )
-
-                                
-                                if 'tools' not in tree['portfolios'][portfolio_id]['teams'][team_id]:
-                                    tree['portfolios'][portfolio_id]['teams'][team_id]['tools'] = {}
-                                    
-                                if tool_id not in tree['portfolios'][portfolio_id]['teams'][team_id]['tools']:
-                                    tree['portfolios'][portfolio_id]['teams'][team_id]['tools'][tool_id] = {}
-                                    
-                                           
-                                #Team Tool Roles
-                                index = 'irn:rel:team/tool:role:' + team_id + '/' + tool_id + ':*'
-                                rels_team_tool_role = self.AUM.list_rel(index)
-                                
-                                roles = []
-                                # Check if rels_team_tool_role has the expected structure and is not empty
-                                if (rels_team_tool_role and 
-                                    'document' in rels_team_tool_role and 
-                                    'items' in rels_team_tool_role['document'] and 
-                                    rels_team_tool_role['document']['items']):
-                                    for role in rels_team_tool_role['document']['items']:
-                                        roles.append(role['rel'])
-                                        
-                                  
-                                tree['portfolios'][portfolio_id]['teams'][team_id]['tools'][tool_id]['roles'] = roles
-                                
-                                #Team Tool Orgs
-                                index = 'irn:rel:team/tool:org:' + team_id + '/' + tool_id + ':*'
-                                rels_team_tool_org = self.AUM.list_rel(index)
-                                
-                                toolorgs = []
-                                
-                                # Check if rels_team_tool_org has the expected structure and is not empty
-                                if (rels_team_tool_org and 
-                                    'document' in rels_team_tool_org and 
-                                    'items' in rels_team_tool_org['document'] and 
-                                    rels_team_tool_org['document']['items']):
-                                    
-                                    for toolorg in rels_team_tool_org['document']['items']:
-                                        
-                                        self.logger.debug('FLAG3>>TEAM:'+team_id+'PORTFOLIO:'+portfolio_id+'TOOL:'+tool_id+'TORG:'+toolorg['rel']) 
-                                        
-                                        
-                                        #self.logger.debug('TOOORG:'+toolorg['rel']) 
-                                        
-                                        
-                                        toolorgs.append(toolorg['rel'])
-                                        #If there is a team/tool:org rel, the building is active, 
-                                        active_orgs.append(toolorg['rel'])
-                                         
-                                        tree['portfolios'][portfolio_id]['tools'][tool_id]['active'] = True
-                                        
-                                        #Strategy: 
-                                        # 1. Each iteration here tells you whether a team is using a specific tool in a specific organization
-                                        # 2. We are going to accumulate that in org_tools and then put it in the tree
-                                        
-                                        # 3. We check if the org array already exists. We create it if it doesn't
-                                        if toolorg['rel'] not in org_tools:
-                                            org_tools[toolorg['rel']] = []
-                                        #4. We append the tool to the org
-                                        org_tools[toolorg['rel']].append(tool_id)
-                                        
-                                        
-                                        
-                                        
-                                    
-                                        
-                                tree['portfolios'][portfolio_id]['teams'][team_id]['tools'][tool_id]['orgs'] = toolorgs
-                                
-                            
-                        self.logger.debug('ORG_TOOLS:') 
-                        self.logger.debug(org_tools) 
+                        self.logger.debug('ORG_GRANTS:')
+                        self.logger.debug(org_grants) 
                         
                           
                         #Orgs
@@ -931,12 +996,13 @@ class AuthController:
                                     tree['portfolios'][portfolio_id]['orgs'][org_id] = {}
                                     
                                 
-                                if 'tools' not in tree['portfolios'][portfolio_id]['orgs'][org_id]:
-                                    tree['portfolios'][portfolio_id]['orgs'][org_id]['tools'] = []
-                                
-                                if org_id in org_tools:    
-                                    # Combine the existing tools with the new tools from org_tools
-                                    tree['portfolios'][portfolio_id]['orgs'][org_id]['tools'] = list(set(tree['portfolios'][portfolio_id]['orgs'][org_id]['tools'] + org_tools[org_id]))
+                                org_node = tree['portfolios'][portfolio_id]['orgs'][org_id]
+                                org_node.setdefault('tools', [])
+                                org_node.setdefault('extensions', [])
+                                for bag in ('tools', 'extensions'):
+                                    extra = (org_grants.get(bag) or {}).get(org_id) or []
+                                    if extra:
+                                        org_node[bag] = list(set(org_node[bag] + extra))
                                 
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['org_id'] = org_id
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['name'] = org['name']
@@ -1003,8 +1069,8 @@ class AuthController:
         if(type =='app'):         
             index = 'irn:entity:team/app:'+kwargs['team_id']+'/*'
             
-        if(type =='tool'):         
-            index = 'irn:entity:portfolio/tool:'+kwargs['portfolio_id']+'/*'   
+        if type in self.INSTALLABLE_TYPES:
+            index = self._installable_entity_index(type, kwargs['portfolio_id'])
 
         response = self.AUM.list_entity(index) 
         return response
@@ -1051,10 +1117,11 @@ class AuthController:
         # are met, it sets the `index` variable to a specific value based on the 'portfolio_id' key,
         # and assigns the value of the 'tool_id' key to the `id` variable. If the conditions are not
         # met, it sets the `missing` variable to True.
-        elif type == 'tool':
-            if all(key in kwargs for key in ['portfolio_id','tool_id']):        
-                index = 'irn:entity:portfolio/tool:'+kwargs['portfolio_id']+'/*'
-                id = kwargs['tool_id']
+        elif type in self.INSTALLABLE_TYPES:
+            entity_id = self._installable_id(kwargs)
+            if kwargs.get('portfolio_id') and entity_id:
+                index = self._installable_entity_index(type, kwargs['portfolio_id'])
+                id = entity_id
             else:
                 missing = True
      
@@ -1110,10 +1177,10 @@ class AuthController:
             sk = new_id
             irn = 'irn:entity:portfolio/team:'+kwargs['portfolio_id']+'/'+ new_id
 
-        elif(type =='tool'):         
-            pk = 'irn:entity:portfolio/tool:'+kwargs['portfolio_id']+'/*'
+        elif type in self.INSTALLABLE_TYPES:
+            pk = self._installable_entity_index(type, kwargs['portfolio_id'])
             sk = new_id
-            irn = 'irn:entity:portfolio/tool:'+kwargs['portfolio_id']+'/'+ new_id
+            irn = 'irn:entity:portfolio/'+type+':'+kwargs['portfolio_id']+'/'+ new_id
  
         '''elif(type =='action'):         
             pk = 'irn:entity:tool/action:'+kwargs['tool_id']+'/*'
@@ -1147,7 +1214,7 @@ class AuthController:
             'tags': kwargs.get('tags') if isinstance(kwargs.get('tags'), dict) else {},           
         }
 
-        if type == 'tool':
+        if type in self.INSTALLABLE_TYPES:
             data['roles'] = self._normalize_roles_list(kwargs.get('roles'))
 
     
@@ -1366,6 +1433,30 @@ class AuthController:
             index = 'irn:rel:team/tool:org:' + data['team_id'] + '/' + data['tool_id'] + ':*'
             rel = data['org_id']
 
+        elif reltype == 'team:extension':
+            index = 'irn:rel:team:extension:' + data['team_id'] + ':*'
+            rel = self._installable_id(data)
+
+        elif reltype == 'team/extension:role':
+            index = (
+                'irn:rel:team/extension:role:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
+            rel = data['role_id']
+
+        elif reltype == 'team/extension:org':
+            index = (
+                'irn:rel:team/extension:org:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
+            rel = data['org_id']
+
         elif reltype == 'team:org': #One to Many
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
             rel = data['org_id']
@@ -1420,8 +1511,30 @@ class AuthController:
         elif reltype == 'team/tool:org': #One to Many
             index = 'irn:rel:team/tool:org:' + data['team_id'] + '/' + data['tool_id'] + ':*'
             rel = data['org_id']
-            
-            
+
+        elif reltype == 'team:extension':
+            index = 'irn:rel:team:extension:' + data['team_id'] + ':*'
+            rel = self._installable_id(data)
+
+        elif reltype == 'team/extension:role':
+            index = (
+                'irn:rel:team/extension:role:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
+            rel = data['role_id']
+
+        elif reltype == 'team/extension:org':
+            index = (
+                'irn:rel:team/extension:org:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
+            rel = data['org_id']
 
         elif reltype == 'team:org': #One to Many
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
@@ -1479,7 +1592,30 @@ class AuthController:
         elif reltype == 'team/tool:org': #One to Many
             index = 'irn:rel:team/tool:org:' + data['team_id'] + '/' + data['tool_id'] + ':*'
             rel = data['org_id']
-             
+
+        elif reltype == 'team:extension':
+            index = 'irn:rel:team:extension:' + data['team_id'] + ':*'
+            rel = self._installable_id(data)
+
+        elif reltype == 'team/extension:role':
+            index = (
+                'irn:rel:team/extension:role:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
+            rel = data['role_id']
+
+        elif reltype == 'team/extension:org':
+            index = (
+                'irn:rel:team/extension:org:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
+            rel = data['org_id']
 
         elif reltype == 'team:org': #One to Many
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
@@ -1527,7 +1663,27 @@ class AuthController:
             
         elif reltype == 'team/tool:org': #One to Many
             index = 'irn:rel:team/tool:org:' + data['team_id'] + '/' + data['tool_id'] + ':*'
-            
+
+        elif reltype == 'team:extension':
+            index = 'irn:rel:team:extension:' + data['team_id'] + ':*'
+
+        elif reltype == 'team/extension:role':
+            index = (
+                'irn:rel:team/extension:role:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
+
+        elif reltype == 'team/extension:org':
+            index = (
+                'irn:rel:team/extension:org:'
+                + data['team_id']
+                + '/'
+                + self._installable_id(data)
+                + ':*'
+            )
 
         elif reltype == 'team:org': #One to Many
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
@@ -2305,7 +2461,6 @@ class AuthController:
         # Invite links open the console (/invite), not the API BASE_URL.
         from_email = (self.config.get('FROM_EMAIL') or '').strip()
         fe_base_url = resolve_invite_fe_base_url(self.config)
-        wl_name = (self.config.get('WL_NAME') or '').strip() or 'Renglo'
         invite_hash = bridge['hash']
         invite_link = f"{fe_base_url}/invite?code={invite_hash}&email={kwargs['email']}"
 
@@ -2333,36 +2488,31 @@ class AuthController:
             bridge['portfoliodoc']['name'] + '/' + bridge['teamdoc']['name']
         )
         inviter = self._inviter_display_name(bridge['senderdoc'])
+        invite_email = render_invite_email(
+            inviter=inviter,
+            team=team_label,
+            code=invite_hash,
+            link=invite_link,
+        )
         response_4 = self.AUM.send_email(
             sender=from_email,
             recipient=kwargs['email'],
-            subject='You have been invited to team ' + team_label,
-            body_text=(
-                f'You have been invited by {inviter} to team {team_label}. '
-                f'Your invite code is: {invite_hash}. '
-                f'Follow this link: {invite_link}'
-            ),
-            body_html=(
-                '<html><body>'
-                f'<h1>Hello from {wl_name}</h1>'
-                f'<h2>You have been invited by {inviter} to team {team_label}</h2>'
-                f'<div>Your invite code is: {invite_hash}</div>'
-                '<div>Follow this link:</div>'
-                f'<div><a href="{invite_link}">{invite_link}</a></div>'
-                '</body></html>'
-            ),
-        )
-        response_4['message'] = (
-            'Sent invite to team ' + kwargs['team_id'] + ' via email to ' + kwargs['email']
+            subject=invite_email.subject,
+            body_text=invite_email.body_text,
+            body_html=invite_email.body_html,
+            inline_images=invite_inline_images(invite_email),
         )
 
         if not response_4['success']:
-            # Keep SES error detail (e.g. unverified identity / sandbox) for operators.
             ses_msg = response_4.get('message') or 'Could not send the invite'
+            self.logger.debug('Invite User Funnel > SES send failed: %s', response_4)
             response_4['message'] = f'Could not send the invite: {ses_msg}'
             return response_4
-        else:
-            transaction.append(response_4)
+
+        response_4['message'] = (
+            'Sent invite to team ' + kwargs['team_id'] + ' via email to ' + kwargs['email']
+        )
+        transaction.append(response_4)
 
 
         
@@ -2798,39 +2948,207 @@ class AuthController:
         return result
 
 
-    def create_tool_funnel(self,**kwargs):
+    def create_extension_funnel(self,**kwargs):
         result = {}
         transaction = []
 
-        self.logger.debug('Initiating CREATE TOOL FUNNEL')
+        self.logger.debug('Initiating CREATE EXTENSION FUNNEL')
 
-        #1. Create a Tool instance entity
-        response_1 = self.create_entity('tool',**kwargs)
+        response_1 = self.create_entity('extension',**kwargs)
 
-        self.logger.debug('Step 1: Installing tool in team')
+        self.logger.debug('Step 1: Installing extension in portfolio')
         self.logger.debug(response_1)
-        
+
         if not response_1['success']:
-            response_1['message'] = 'Could not install Tool'                
-            return response_1 
-        else:
-            transaction.append(response_1)
-
-
-        #All went good, Summarize Transaction Success 
-        self.logger.debug('End of Funnel ')
+            response_1['message'] = 'Could not install Extension'
+            return response_1
+        transaction.append(response_1)
 
         result['success'] = True
-        result['message'] = 'Create Tool Funnel completed, Ok'
+        result['message'] = 'Create Extension Funnel completed, Ok'
         result['status'] = 200
         result['document'] = transaction
-
-        self.logger.debug(result)
         return result
+
+    def create_tool_funnel(self,**kwargs):
+        # New installs write the extension entity. Legacy create_tool callers
+        # keep the same funnel name until that API is retired.
+        return self.create_extension_funnel(**kwargs)
     
     
+    @staticmethod
+    def _response_items(response):
+        document = (response or {}).get("document")
+        if isinstance(document, list):
+            return document
+        if isinstance(document, dict):
+            return document.get("items") or []
+        return []
+
+    def _delete_tool_entity_rows(self, portfolio_id, tool_id):
+        """
+        Hard-delete the installable from the entity table.
+
+        Checks both extension and legacy tool partitions, live and unentity.
+        Dynamo delete_item is idempotent, so we get first and only delete
+        rows that exist. Does not touch data rings.
+        """
+        deleted_rows = []
+        for kind in self.INSTALLABLE_TYPES:
+            for archived in (False, True):
+                index = self._installable_entity_index(
+                    kind, portfolio_id, archived=archived
+                )
+                existing = self.AUM.get_entity(index, tool_id)
+                if not existing.get("success"):
+                    continue
+                deleted = self.AUM.delete_entity(index=index, _id=tool_id)
+                if deleted.get("success"):
+                    deleted_rows.append(deleted)
+                    self.logger.info(
+                        "Deleted %s %s row %s in %s",
+                        "archived" if archived else "live",
+                        kind,
+                        tool_id,
+                        portfolio_id,
+                    )
+        if deleted_rows:
+            return {
+                "success": True,
+                "message": "Entity deleted",
+                "document": {"items": [row.get("document") for row in deleted_rows]},
+                "status": 200,
+            }
+        return {
+            "success": False,
+            "message": "Nothing to delete",
+            "status": 404,
+        }
+
+    def _apply_installable_rels(self, method, rel_key, team_id, entity_id, kinds=None, **extra):
+        """
+        Create or delete a grant on one or both installable rel families.
+
+        DELETE always hits tool and extension. POST writes the detected kind,
+        or both when the entity is not found (mixed leftover grants).
+        """
+        payload = {
+            "team_id": team_id,
+            "tool_id": entity_id,
+            "extension_id": entity_id,
+        }
+        payload.update(extra)
+        last = None
+        for kind in kinds or self.INSTALLABLE_TYPES:
+            reltype = self._installable_rel_types(kind)[rel_key]
+            if method == "POST":
+                last = self.create_rel(reltype, **payload)
+            elif method == "DELETE":
+                last = self.delete_rel(reltype, **payload)
+            else:
+                return {
+                    "success": False,
+                    "message": "Unsupported method",
+                    "status": 400,
+                }
+            if not last.get("success"):
+                return last
+        return last or {
+            "success": False,
+            "message": "No installable rel applied",
+            "status": 400,
+        }
+
+    def _installable_write_kinds(self, portfolio_id, entity_id):
+        found = self.get_installable(portfolio_id, entity_id)
+        if found:
+            return found, [found["kind"]]
+        return None, list(self.INSTALLABLE_TYPES)
+
+    def _remove_tool_rels(self, portfolio_id, tool_id, transaction):
+        """Drop assign/role/org rels for both tool and extension families."""
+        teams = self._response_items(
+            self.list_entity("team", portfolio_id=portfolio_id)
+        )
+        for team in teams:
+            team_id = (team or {}).get("_id") or (team or {}).get("team_id")
+            if not team_id:
+                continue
+
+            for kind in self.INSTALLABLE_TYPES:
+                rels = self._installable_rel_types(kind)
+                existing = self.get_rel(
+                    rels["assign"],
+                    team_id=team_id,
+                    tool_id=tool_id,
+                    extension_id=tool_id,
+                )
+                if existing.get("success"):
+                    team_tool = self.delete_rel(
+                        rels["assign"],
+                        team_id=team_id,
+                        tool_id=tool_id,
+                        extension_id=tool_id,
+                    )
+                    if not team_tool.get("success"):
+                        team_tool["message"] = (
+                            "Could not remove Team-installable relationship"
+                        )
+                        return team_tool
+                    transaction.append(team_tool)
+
+                for role in self._response_items(
+                    self.list_rel(
+                        rels["role"],
+                        team_id=team_id,
+                        tool_id=tool_id,
+                        extension_id=tool_id,
+                    )
+                ):
+                    role_id = (role or {}).get("rel")
+                    if not role_id:
+                        continue
+                    deleted = self.delete_rel(
+                        rels["role"],
+                        team_id=team_id,
+                        tool_id=tool_id,
+                        extension_id=tool_id,
+                        role_id=role_id,
+                    )
+                    if not deleted.get("success"):
+                        deleted["message"] = (
+                            "Could not remove Team-installable-Role relationship"
+                        )
+                        return deleted
+                    transaction.append(deleted)
+
+                for org in self._response_items(
+                    self.list_rel(
+                        rels["org"],
+                        team_id=team_id,
+                        tool_id=tool_id,
+                        extension_id=tool_id,
+                    )
+                ):
+                    org_id = (org or {}).get("rel")
+                    if not org_id:
+                        continue
+                    deleted = self.delete_rel(
+                        rels["org"],
+                        team_id=team_id,
+                        tool_id=tool_id,
+                        extension_id=tool_id,
+                        org_id=org_id,
+                    )
+                    if not deleted.get("success"):
+                        deleted["message"] = (
+                            "Could not remove Team-installable-Org relationship"
+                        )
+                        return deleted
+                    transaction.append(deleted)
+        return None
+
     def remove_tool_funnel(self,**kwargs):
-        bridge = {}
         result = {}
         transaction = []
 
@@ -2838,111 +3156,33 @@ class AuthController:
 
 
         #0. Check minimum requirements
-        required_keys = ['portfolio_id','tool_id'] 
-        if not all(key in kwargs for key in required_keys):
+        portfolio_id = kwargs.get('portfolio_id')
+        tool_id = kwargs.get('tool_id') or kwargs.get('extension_id')
+        if not portfolio_id or not tool_id:
             return{
             "success":False, 
             "message": "Missing attributes", 
             "status" :400
             }
-        
-        #1. Unlink document
 
-        #1a. Retrieve document to be unlinked
-        response_1a = self.get_entity(
-                    'tool',
-                    portfolio_id=kwargs['portfolio_id'],
-                    tool_id=kwargs['tool_id']
-                    )
-            
-        if not response_1a['success']:
-            return{
-            "success":False, 
-            "message": "Tool not found", 
-            "status" :400
-            }
-                
-        #1b. Send document to unlink function
-        tooldoc = response_1a['document'] 
-        response_1b = self.unlink_entity(**tooldoc)  
-        if not response_1b['success']:
-            return response_1b
-         
-        transaction.append(response_1b)
+        #1. Delete the tool entity row (live and any unentity archive).
+        #   Data rings are not touched. Missing entity is ok: still drop rels.
+        response_1b = self._delete_tool_entity_rows(portfolio_id, tool_id)
+        if response_1b.get('success'):
+            transaction.append(response_1b)
+        else:
+            self.logger.debug(
+                'Tool entity %s already absent in %s; removing leftover rels',
+                tool_id,
+                portfolio_id,
+            )
 
-
-        '''
-        #2. Remove team-tool rels
-        # You need to list the rels first and then eliminate one at a time
-        response_2a = self.list_rel(
-                'team:tool',
-                team_id=kwargs['team_id']
-                )
-        
-        for item in response_2a['document']['items']:
-
-            response_2aa = self.delete_rel(
-                    'team:tool',
-                    team_id=kwargs['team_id'],
-                    tool_id=item['rel']
-                    )
-            if not response_2aa['success']:
-                response_2aa['message'] = 'Could not remove Team-Tool relationship'
-                return response_2aa                 
-            else:
-                transaction.append(response_2aa)
-        '''
-
-
-        '''
-        #3. Remove team-tool-role rel
-        # You need to list the rels first and then eliminate one at a time
-        response_3 = self.list_rel(
-                'team/tool:role',
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id']
-                )
-        
-        for item in response_3['document']['items']:
-
-            response_3a = self.delete_rel(
-                    'team/tool:role',
-                    team_id=kwargs['team_id'],
-                    tool_id=kwargs['tool_id'],
-                    role_id=item['rel']
-                    )   
-            if not response_3a['success']:
-                response_3a['message'] = 'Could not remove Team-Tool-Role relationship'
-                return response_3a                 
-            else:
-                transaction.append(response_3a)
-        '''
-
-
-        '''
-        #4. Remove team-tool-org rels
-        response_4 = self.list_rel(
-                'team/tool:org',
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id']
-                )
-        
-        for item in response_4['document']['items']:
-
-            response_4a = self.delete_rel(
-                    'team/tool:org',
-                    team_id=kwargs['team_id'],
-                    tool_id=kwargs['tool_id'],
-                    org_id=item['rel']
-                    )   
-            if not response_4a['success']:
-                response_4a['message'] = 'Could not remove Team-Tool-Org relationship'
-                return response_4a                 
-            else:
-                transaction.append(response_4a)
-        '''
-
-
+        #2. Remove team-tool / role / org rels for every team in the portfolio.
+        #   The DELETE route has no team_id; the old commented cleanup could
+        #   not run even if it were enabled.
+        rels_error = self._remove_tool_rels(portfolio_id, tool_id, transaction)
+        if rels_error:
+            return rels_error
 
         #All went good, Summarize Transaction Success 
         self.logger.debug('End of Funnel ')
@@ -2967,23 +3207,21 @@ class AuthController:
             result['message'] = 'Missing attributes' 
             result['status'] = 400             
             return result
-        
-            
-        reltype = 'team:tool'
-        if kwargs['method'] == 'POST':
-            response = self.create_rel(
-                reltype,
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id']
-                )
-        elif kwargs['method'] == 'DELETE':
-            response = self.delete_rel(
-                reltype,
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id']
-                )
-            
-        return response
+
+        method = kwargs.get('method')
+        entity_id = kwargs['tool_id']
+        _found, write_kinds = self._installable_write_kinds(
+            self._portfolio_id_for_team(kwargs['team_id']),
+            entity_id,
+        )
+        kinds = list(self.INSTALLABLE_TYPES) if method == 'DELETE' else write_kinds
+        return self._apply_installable_rels(
+            method,
+            'assign',
+            kwargs['team_id'],
+            entity_id,
+            kinds=kinds,
+        )
     
     
     def assign_team_tool_roles(self,**kwargs):
@@ -3005,54 +3243,33 @@ class AuthController:
                 "status": 400,
             }
 
-        # When assigning, validate role_id against the tool entity catalog (if present).
-        if kwargs.get('method') == 'POST':
-            portfolio_id = None
-            index = 'irn:rel:team:portfolio:' + kwargs['team_id'] + ':*'
-            rels = self.AUM.list_rel(index)
-            items = ((rels or {}).get('document') or {}).get('items') or []
-            if items:
-                portfolio_id = items[0].get('rel')
-            if portfolio_id:
-                tool_entity = self.get_entity(
-                    'tool',
-                    portfolio_id=portfolio_id,
-                    tool_id=kwargs['tool_id'],
-                )
-                if tool_entity.get('success'):
-                    catalog = self._normalize_roles_list(
-                        (tool_entity.get('document') or {}).get('roles')
-                    )
-                    if catalog and role_id not in catalog:
-                        return {
-                            "success": False,
-                            "message": f"Role '{role_id}' is not defined for this tool",
-                            "status": 400,
-                        }
-        
-        reltype = 'team/tool:role'
-        if kwargs['method'] == 'POST':
-            response = self.create_rel(
-                reltype,
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id'],
-                role_id=role_id
-                )
-        elif kwargs['method'] == 'DELETE':
-            response = self.delete_rel(
-                reltype,
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id'],
-                role_id=role_id
-                )
-        else:
-            return {
-                "success": False,
-                "message": "Unsupported method",
-                "status": 400,
-            }
-            
-        return response
+        method = kwargs.get('method')
+        entity_id = kwargs['tool_id']
+        found, write_kinds = self._installable_write_kinds(
+            self._portfolio_id_for_team(kwargs['team_id']),
+            entity_id,
+        )
+
+        if method == 'POST' and found:
+            catalog = self._normalize_roles_list(
+                (found.get('document') or {}).get('roles')
+            )
+            if catalog and role_id not in catalog:
+                return {
+                    "success": False,
+                    "message": f"Role '{role_id}' is not defined for this {found['kind']}",
+                    "status": 400,
+                }
+
+        kinds = list(self.INSTALLABLE_TYPES) if method == 'DELETE' else write_kinds
+        return self._apply_installable_rels(
+            method,
+            'role',
+            kwargs['team_id'],
+            entity_id,
+            kinds=kinds,
+            role_id=role_id,
+        )
     
     
     def assign_team_tool_orgs(self,**kwargs):
@@ -3065,25 +3282,34 @@ class AuthController:
             result['message'] = 'Missing attributes' 
             result['status'] = 400             
             return result
-        
-        
-        reltype = 'team/tool:org'
-        if kwargs['method'] == 'POST':
-            response = self.create_rel(
-                reltype,
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id'],
-                org_id=kwargs['org_id']
-                )
-        elif kwargs['method'] == 'DELETE':
-            response = self.delete_rel(
-                reltype,
-                team_id=kwargs['team_id'],
-                tool_id=kwargs['tool_id'],
-                org_id=kwargs['org_id']
-                )
-            
-        return response
+
+        method = kwargs.get('method')
+        entity_id = kwargs['tool_id']
+        _found, write_kinds = self._installable_write_kinds(
+            self._portfolio_id_for_team(kwargs['team_id']),
+            entity_id,
+        )
+        kinds = list(self.INSTALLABLE_TYPES) if method == 'DELETE' else write_kinds
+        return self._apply_installable_rels(
+            method,
+            'org',
+            kwargs['team_id'],
+            entity_id,
+            kinds=kinds,
+            org_id=kwargs['org_id'],
+        )
+
+    def create_installable_org_rel(self, portfolio_id, team_id, entity_id, org_id):
+        """Create team/<kind>:org using whichever catalog the id lives in."""
+        _found, write_kinds = self._installable_write_kinds(portfolio_id, entity_id)
+        return self._apply_installable_rels(
+            "POST",
+            "org",
+            team_id,
+            entity_id,
+            kinds=write_kinds,
+            org_id=org_id,
+        )
 
 
 

@@ -107,6 +107,21 @@ def attach_auth_roles_to_payload(
     return payload
 
 
+_HANDLER_JWT_ATTRS = ("AUC", "CHC", "SHC", "DAC", "BPC", "DCC", "GRC")
+
+
+def stamp_invocation_jwt_claims(target: Any, claims: Optional[Dict[str, Any]]) -> None:
+    """Set invocation JWT on a controller, or on its nested AuthController."""
+    if target is None:
+        return
+    if hasattr(target, "set_invocation_jwt_claims"):
+        target.set_invocation_jwt_claims(claims)
+        return
+    auc = getattr(target, "AUC", None)
+    if auc is not None and hasattr(auc, "set_invocation_jwt_claims"):
+        auc.set_invocation_jwt_claims(claims)
+
+
 def apply_handler_invocation_context(handler: Any, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Apply forwarded JWT claims to handler controllers before run().
@@ -118,8 +133,6 @@ def apply_handler_invocation_context(handler: Any, payload: Optional[Dict[str, A
     if not isinstance(payload, dict):
         return payload if isinstance(payload, dict) else {}
     claims = payload.pop(JWT_CLAIMS_PAYLOAD_KEY, None)
-    for attr in ("AUC", "CHC", "SHC"):
-        controller = getattr(handler, attr, None)
-        if controller is not None and hasattr(controller, "set_invocation_jwt_claims"):
-            controller.set_invocation_jwt_claims(claims)
+    for attr in _HANDLER_JWT_ATTRS:
+        stamp_invocation_jwt_claims(getattr(handler, attr, None), claims)
     return payload
