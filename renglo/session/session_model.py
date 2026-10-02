@@ -238,6 +238,53 @@ class SessionModel:
         
         
         
+    def _for_append(self, obj):
+        """Drop None and turn floats into strings. DynamoDB rejects both."""
+        if isinstance(obj, list):
+            return [self._for_append(item) for item in obj]
+        if isinstance(obj, dict):
+            return {
+                key: self._for_append(value)
+                for key, value in obj.items()
+                if value is not None
+            }
+        if isinstance(obj, float):
+            return str(obj)
+        if isinstance(obj, Decimal):
+            return int(obj) if obj % 1 == 0 else str(obj)
+        return obj
+
+    def append_events(self, index, entity_index, documents):
+        """Append documents onto a turn without rewriting the rest of the item.
+
+        A full put loses events another writer added after this process read
+        the turn. list_append keeps both.
+        """
+        if isinstance(documents, dict):
+            documents = [documents]
+        cleaned = self._for_append(list(documents or []))
+        try:
+            self.session_table.update_item(
+                Key={"index": index, "entity_index": entity_index},
+                UpdateExpression=(
+                    "SET #events = list_append(if_not_exists(#events, :empty), :new)"
+                ),
+                ExpressionAttributeNames={"#events": "events"},
+                ExpressionAttributeValues={":empty": [], ":new": cleaned},
+            )
+            return {
+                "success": True,
+                "message": "Session updated",
+                "document": cleaned,
+            }
+        except ClientError as e:
+            return {
+                "success": False,
+                "message": e.response["Error"]["Message"],
+                "document": cleaned,
+                "status": e.response["ResponseMetadata"]["HTTPStatusCode"],
+            }
+
     def update_session(self,data):
 
 

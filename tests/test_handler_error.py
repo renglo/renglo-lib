@@ -56,3 +56,35 @@ def test_reported_flag_nests_through_the_handler_envelope():
 
 def test_plain_exception_text():
     assert failure_message("socket handler crashed", 500) == "socket handler crashed"
+
+
+def test_persist_appends_to_the_requested_turn():
+    from renglo.session.handler_error import persist_handler_error
+
+    class FakeSessions:
+        def __init__(self):
+            self.calls = []
+
+        def update_turn(self, portfolio, org, entity_type, entity_id, thread, turn_id, document):
+            self.calls.append(turn_id)
+            return {"success": True}
+
+        def list_turns(self, *args, **kwargs):
+            raise AssertionError("a named turn must not fall through to the latest turn")
+
+    sessions = FakeSessions()
+    payload = {
+        "portfolio": "p",
+        "org": "o",
+        "entity_type": "dumbo-chat",
+        "entity_id": "dumbo-o",
+        "thread": "main",
+    }
+    assert persist_handler_error(
+        {},
+        payload,
+        {"_type": "tool_result"},
+        turn_id="turn-9",
+        sessions=sessions,
+    )
+    assert sessions.calls == ["turn-9"]

@@ -96,16 +96,16 @@ def _run_initialize_extension(handle, payload):
     The caller already authorized the team/tool:org assignment.
     """
     from renglo.runtime import attach_jwt_claims_to_payload
-    from renglo.schd.external_handler_runner import run_external_handler
-    from renglo.schd.external_handlers_config import (
-        has_external_handlers,
-        is_external_handler_active,
+    from renglo.schd.peer_runner import run_peer_handler
+    from renglo.schd.peer_config import (
+        placed_on_peer,
+        peer_is_active,
     )
     from renglo.schd.schd_loader import SchdLoader
 
-    if has_external_handlers(handle) and is_external_handler_active(handle):
+    if placed_on_peer(handle) and peer_is_active(handle):
         attach_jwt_claims_to_payload(payload)
-        return run_external_handler(
+        return run_peer_handler(
             extension_name=handle,
             handler_name=INITIALIZE_EXTENSION_HANDLER,
             payload=payload,

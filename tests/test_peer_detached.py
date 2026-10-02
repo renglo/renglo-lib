@@ -1,0 +1,92 @@
+"""Detached peer completion frames. No AWS."""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import renglo.runtime  # noqa: E402
+import renglo.session.handler_error  # noqa: E402
+from renglo.schd.peer_detached import complete_detached, frames_for_result  # noqa: E402
+
+
+EVENT = {
+    "handler": "agencies_info_reports",
+    "payload": {
+        "portfolio": "p",
+        "org": "o",
+        "entity_type": "dumbo-chat",
+        "entity_id": "dumbo-o",
+        "thread": "main",
+        "connectionId": "conn",
+    },
+    "completion": {
+        "call_id": "call-1",
+        "tool": "tourbotlink/agencies_info_reports",
+        "session_id": "dumbo-chat|dumbo-o|main",
+        "when": "Open search (name only)",
+    },
+    "detached": True,
+}
+
+
+class DetachedFrameTests(unittest.TestCase):
+    def test_success_writes_result_then_assistant(self) -> None:
+        frames = frames_for_result(EVENT, {"success": True, "output": {"match_count": 1}})
+        self.assertEqual([frame["_type"] for frame in frames], ["tool_result", "assistant_message"])
+        self.assertTrue(frames[0]["_out"]["content"]["success"])
+        self.assertEqual(frames[0]["_out"]["content"]["call_id"], "call-1")
+        self.assertIn("ready", frames[1]["_out"]["content"])
+        self.assertIn("Open search", frames[1]["_out"]["content"])
+
+    def test_failure_is_a_tool_result(self) -> None:
+        frames = frames_for_result(EVENT, {"success": False, "message": "catalog down"})
+        self.assertEqual(len(frames), 1)
+        self.assertFalse(frames[0]["_out"]["content"]["success"])
+        self.assertEqual(frames[0]["_out"]["content"]["error"], "catalog down")
+
+    def test_timeout_says_it_did_not_finish(self) -> None:
+        frames = frames_for_result(EVENT, None, timed_out=True)
+        self.assertEqual(frames[0]["_out"]["content"]["error"], "The report did not finish.")
+
+    def test_completion_writes_the_turn_that_started_the_call(self) -> None:
+        import sys
+        import types
+
+        event = {
+            **EVENT,
+            "completion": {**EVENT["completion"], "turn_id": "turn-9"},
+        }
+        fake = types.ModuleType("renglo.session.session_controller")
+
+        class FakeController:
+            def __init__(self, config=None):
+                self.config = config
+
+        fake.SessionController = FakeController
+        previous = sys.modules.get("renglo.session.session_controller")
+        sys.modules["renglo.session.session_controller"] = fake
+        try:
+            with patch("renglo.runtime.stamp_invocation_jwt_claims") as stamp, patch(
+                "renglo.session.handler_error.persist_handler_error", return_value=True
+            ) as persist, patch("renglo.session.handler_error.push_handler_error", return_value=True):
+                complete_detached(event, {"success": True}, config={}, claims={"sub": "user"})
+        finally:
+            if previous is None:
+                sys.modules.pop("renglo.session.session_controller", None)
+            else:
+                sys.modules["renglo.session.session_controller"] = previous
+        self.assertGreaterEqual(persist.call_count, 1)
+        for call in persist.call_args_list:
+            self.assertEqual(call.kwargs["turn_id"], "turn-9")
+        stamp.assert_called_once()
+        self.assertEqual(stamp.call_args.args[1], {"sub": "user"})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -96,15 +96,36 @@ def _payload_ids(payload: dict[str, Any]) -> Optional[dict[str, str]]:
     }
 
 
-def persist_handler_error(config: dict[str, Any], payload: dict[str, Any], document: dict[str, Any]) -> bool:
-    """Append ``document`` to the latest turn, or open a turn when none exists."""
+def persist_handler_error(
+    config: dict[str, Any],
+    payload: dict[str, Any],
+    document: dict[str, Any],
+    turn_id: Optional[str] = None,
+    sessions: Any = None,
+) -> bool:
+    """Append ``document`` to ``turn_id``, or to the latest turn when it is omitted."""
     ids = _payload_ids(payload if isinstance(payload, dict) else {})
     if not ids:
         return False
 
-    from renglo.session.session_controller import SessionController
+    if sessions is None:
+        from renglo.session.session_controller import SessionController
 
-    sessions = SessionController(config=config or {})
+        sessions = SessionController(config=config or {})
+
+    chosen = str(turn_id or "").strip()
+    if chosen:
+        saved = sessions.update_turn(
+            ids["portfolio"],
+            ids["org"],
+            ids["entity_type"],
+            ids["entity_id"],
+            ids["thread"],
+            chosen,
+            document,
+        )
+        return bool(isinstance(saved, dict) and saved.get("success"))
+
     listed = sessions.list_turns(
         ids["portfolio"],
         ids["org"],

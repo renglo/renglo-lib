@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from renglo.schd.external_handlers_config import (  # noqa: E402
+from renglo.schd.peer_config import (  # noqa: E402
     resolve_extension_package_dir,
     resolve_extension_package_path,
 )
@@ -27,7 +27,7 @@ class ExtensionPackageDirTests(unittest.TestCase):
             pkg.mkdir(parents=True)
             (pkg / "handlers_config.json").write_text('{"handlers": {}}', encoding="utf-8")
             with unittest.mock.patch(
-                "renglo.schd.external_handlers_config._get_workspace_root",
+                "renglo.schd.peer_config._get_workspace_root",
                 return_value=root,
             ):
                 found = resolve_extension_package_dir("arbitiumlab")
@@ -41,7 +41,7 @@ class ExtensionPackageDirTests(unittest.TestCase):
             (pkg / "extension_handle").write_text("arbitiumlab\n", encoding="utf-8")
             (pkg / "handlers_config.json").write_text('{"handlers": {}}', encoding="utf-8")
             with unittest.mock.patch(
-                "renglo.schd.external_handlers_config._get_workspace_root",
+                "renglo.schd.peer_config._get_workspace_root",
                 return_value=root,
             ):
                 found = resolve_extension_package_dir("arbitiumlab")
@@ -53,7 +53,7 @@ class ExtensionPackageDirTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pkg = Path(tmp) / "custom" / "package"
             pkg.mkdir(parents=True)
-            key = "EXTERNAL_HANDLERS_PACKAGE_ARBITIUMLAB"
+            key = "PEER_PACKAGE_ARBITIUMLAB"
             old = os.environ.get(key)
             os.environ[key] = str(pkg)
             try:

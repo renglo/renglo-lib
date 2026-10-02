@@ -1,49 +1,18 @@
 """
-Configuration for extensions with external handlers (Lambda functions)
+Placement for extensions that run on a peer.
 
-This module manages configuration for extensions that have handlers deployed
-as external Lambda functions vs internal handlers loaded via SchdLoader.
+An extension is on the hub or on exactly one peer. This module tells the hub
+which handles are placed on a peer and how to call that peer's Lambda. Handlers
+for a hub-placed extension stay in-process via SchdLoader.
 
-Configuration can be:
-1. Centralized in this file (for system-wide config)
-2. Per-extension config files (discovered automatically)
-3. Environment variables
+Loading order:
+    1. Peer route map (``PEER_ROUTES``, else SSM ``/{wl}/bootstrap/peer-routes``)
+    2. ``PEER_EXTENSIONS`` comma-separated handles (laptop / catalog)
+    3. ``{HANDLE}_PEER_*`` fields
+    4. ``DEFAULT_CONFIG`` in this file
 
-Configuration Loading Order:
-    1. Environment variables: EXTERNAL_HANDLERS (production - convention-based)
-    2. Environment variables: {EXTENSION_NAME}_EXTERNAL_HANDLERS_{FIELD} (legacy support)
-    3. File system: extensions/{extension_name}/extension_config.json (development only)
-    4. Default config: DEFAULT_CONFIG in this file
-
-IMPORTANT: This is SYSTEM-LEVEL configuration, not package-level.
-The system Lambda needs to know which extensions have external handlers
-and how to call them. The extension package itself doesn't need this config
-(it's installed in a different Lambda).
-
-Conventions (if extension is in EXTERNAL_HANDLERS list):
-    - Lambda function name: {extension}-handlers
-    - Lambda region: Same as system Lambda (from AWS_REGION)
-    - Docker image: {extension}-lambda-builder:latest
-    - Enabled: true (if in list)
-    - Active: true (if in list)
-
-For Production (Lambda - System):
-    - Simple: Set EXTERNAL_HANDLERS in zappa_settings.json environment_variables:
-        "EXTERNAL_HANDLERS": "arbitiumlab,other-extension"
-    
-    - Or use individual vars (legacy):
-        "ARBITIUM_EXTERNAL_HANDLERS_ENABLED": "true",
-        "ARBITIUM_EXTERNAL_HANDLERS_ACTIVE": "true",
-        "ARBITIUM_EXTERNAL_HANDLERS_LAMBDA_FUNCTION": "arbitium-handlers",
-        "ARBITIUM_EXTERNAL_HANDLERS_LAMBDA_REGION": "us-east-1",
-        "ARBITIUM_EXTERNAL_HANDLERS_DOCKER_IMAGE": "arbitium-lambda-builder:latest"
-
-For Development:
-    - Add to dev/renglo-api/env_config.py (or set RENGLO_CONFIG_PATH):
-        EXTERNAL_HANDLERS = 'extensionname'
-    
-    This uses the same mechanism as other environment variables and works
-    automatically when load_config() reads env_config.py.
+Names from before this rename (``EXTERNAL_HANDLERS*``) are still read so a
+running deploy keeps routing until its env is rewritten.
 """
 
 import json
@@ -96,7 +65,7 @@ def _get_default_vpc_network_config(region: str) -> Dict[str, Any]:
 DEFAULT_CONFIG = {
     "extensions": {
         # Example: "arbitium": {
-        #     "has_external_handlers": True,
+        #     "on_peer": True,
         #     "active": True,
         #     "lambda_function_name": "arbitium-handlers",
         #     "lambda_region": "us-east-1",
@@ -107,14 +76,46 @@ DEFAULT_CONFIG = {
 }
 
 
-PEER_MAP_ENV = "EXTERNAL_HANDLERS_PEER_MAP"
-PEER_ROUTING_ENV = "EXTERNAL_HANDLERS_PEER_ROUTING"
+PEER_ROUTES_ENV = "PEER_ROUTES"
+PEER_ROUTES_ENV_PREV = "EXTERNAL_HANDLERS_PEER_MAP"
+PEER_ROUTING_ENV = "PEER_ROUTING"
+PEER_ROUTING_ENV_PREV = "EXTERNAL_HANDLERS_PEER_ROUTING"
+PEER_EXTENSIONS_ENV = "PEER_EXTENSIONS"
+PEER_EXTENSIONS_ENV_PREV = "EXTERNAL_HANDLERS"
+PEER_ROUTES_SSM_ENV = "PEER_ROUTES_SSM"
+PEER_ROUTES_SSM_ENV_PREV = "EXTERNAL_HANDLERS_PEER_ROUTES_SSM"
 _OFF_VALUES = frozenset({"off", "0", "false", "no"})
 
 
+def _first_setting(*keys: str) -> str:
+    """First non-empty environment or config value. Later keys are previous deploy names."""
+    for key in keys:
+        raw = (os.getenv(key) or "").strip()
+        if raw:
+            return raw
+    try:
+        from renglo.common import load_config
+
+        cfg = load_config()
+    except Exception:
+        return ""
+    if not isinstance(cfg, dict):
+        return ""
+    for key in keys:
+        raw = cfg.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    return ""
+
+
 def peer_routing_enabled() -> bool:
-    """Kill-switch: ``EXTERNAL_HANDLERS_PEER_ROUTING=off`` ignores the peer map (fail closed)."""
-    raw = (os.getenv(PEER_ROUTING_ENV) or "on").strip().lower()
+    """Kill-switch: ``PEER_ROUTING=off`` ignores the peer map (fail closed)."""
+    raw = (
+        os.getenv(PEER_ROUTING_ENV) or os.getenv(PEER_ROUTING_ENV_PREV) or "on"
+    ).strip().lower()
     if not raw:
         return True
     return raw not in _OFF_VALUES
@@ -134,7 +135,7 @@ def _peer_map_from_mapping(data: Any) -> Dict[str, Dict[str, Any]]:
 
 def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
     """Optional runtime SSM so the map can change without a backend BOM deploy."""
-    path = (os.getenv("EXTERNAL_HANDLERS_PEER_ROUTES_SSM") or "").strip()
+    path = (os.getenv(PEER_ROUTES_SSM_ENV) or os.getenv(PEER_ROUTES_SSM_ENV_PREV) or "").strip()
     if not path:
         wl = (os.getenv("WL_NAME") or "").strip()
         if wl:
@@ -157,30 +158,33 @@ def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
         return {}
 
 
-def load_peer_map() -> Dict[str, Dict[str, Any]]:
-    """Handle → peer route. JSON object in env, else load_config(), else SSM peer-routes."""
-    raw = (os.getenv(PEER_MAP_ENV) or "").strip()
-    if raw:
+def _peer_map_from_raw(raw: Any) -> Dict[str, Dict[str, Any]]:
+    if isinstance(raw, dict):
+        return _peer_map_from_mapping(raw)
+    if isinstance(raw, str) and raw.strip():
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
-            parsed = {}
-        mapped = _peer_map_from_mapping(parsed)
+            return {}
+        return _peer_map_from_mapping(parsed)
+    return {}
+
+
+def load_peer_map() -> Dict[str, Dict[str, Any]]:
+    """Handle → peer route. JSON in env, else load_config(), else SSM peer-routes."""
+    for key in (PEER_ROUTES_ENV, PEER_ROUTES_ENV_PREV):
+        mapped = _peer_map_from_raw(os.getenv(key) or "")
         if mapped:
             return mapped
     try:
         from renglo.common import load_config
 
         cfg = load_config()
-        value = cfg.get(PEER_MAP_ENV)
-        if isinstance(value, dict):
-            mapped = _peer_map_from_mapping(value)
-            if mapped:
-                return mapped
-        if isinstance(value, str) and value.strip():
-            mapped = _peer_map_from_mapping(json.loads(value))
-            if mapped:
-                return mapped
+        if isinstance(cfg, dict):
+            for key in (PEER_ROUTES_ENV, PEER_ROUTES_ENV_PREV):
+                mapped = _peer_map_from_raw(cfg.get(key))
+                if mapped:
+                    return mapped
     except Exception:
         pass
     return _peer_map_from_ssm()
@@ -225,15 +229,9 @@ def _resolve_handlers_lambda_function_name(extension_name: str) -> str:
     return f"{extension_name}-handlers"
 
 
-def _external_handlers_names() -> list[str]:
-    raw = os.getenv("EXTERNAL_HANDLERS", "")
-    if not raw:
-        try:
-            from renglo.common import load_config
-            raw = load_config().get("EXTERNAL_HANDLERS", "") or ""
-        except Exception:
-            raw = ""
-    return [ext.strip().lower() for ext in str(raw).split(",") if ext.strip()]
+def _peer_extension_names() -> list[str]:
+    raw = _first_setting(PEER_EXTENSIONS_ENV, PEER_EXTENSIONS_ENV_PREV)
+    return [ext.strip().lower() for ext in raw.split(",") if ext.strip()]
 
 
 def resolve_handlers_docker_image_base(extension_name: str) -> str:
@@ -267,32 +265,24 @@ def prefer_local_docker_tag() -> bool:
     return os.name != "nt"
 
 
+def _peer_field(extension_name: str, field: str, default: str = "") -> str:
+    """``{HANDLE}_PEER_{FIELD}``, else the previous ``{HANDLE}_EXTERNAL_HANDLERS_{FIELD}``."""
+    handle = extension_name.upper().replace("-", "_")
+    current = os.getenv(f"{handle}_PEER_{field}")
+    if current is not None and str(current).strip() != "":
+        return str(current)
+    previous = os.getenv(f"{handle}_EXTERNAL_HANDLERS_{field}")
+    if previous is not None and str(previous).strip() != "":
+        return str(previous)
+    return default
+
+
 def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
-    """
-    Load configuration for a specific extension.
-    
-    This is SYSTEM-LEVEL configuration - the system needs to know which extensions
-    have external handlers and how to call them. The extension package itself
-    doesn't need this config (it's installed in a different Lambda).
-    
-    Tries multiple sources in order:
-    1. Environment variables (from zappa_settings.json for production, env_config.py for development)
-       - Uses EXTERNAL_HANDLERS comma-separated list (convention-based)
-       - Or individual {EXTENSION_NAME}_EXTERNAL_HANDLERS_* vars (legacy)
-    2. Default config
-    
-    Conventions (if extension is in EXTERNAL_HANDLERS list or has a peer route):
-    - Lambda function name: peer route, else {extension}-handlers
-    - Lambda region: peer route region, else AWS_REGION
-    - Docker image: peer builder, else {extension}-lambda-builder
-    - Enabled: true (if in list or mapped)
-    - Active: true (if in list or mapped)
-    
-    Args:
-        extension_name: Name of the extension
-        
-    Returns:
-        Extension config dict or None if not found
+    """Return how to call this handle when it is placed on a peer.
+
+    A peer route wins. Otherwise the handle must be listed in ``PEER_EXTENSIONS``
+    (or the previous ``EXTERNAL_HANDLERS`` name). ``{HANDLE}_PEER_*`` is the
+    per-handle override. Hub-placed handles return None and stay in-process.
     """
     config = None
     route = get_peer_route(extension_name)
@@ -305,7 +295,7 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
         )
         image_base = resolve_handlers_docker_image_base(extension_name)
         return {
-            "has_external_handlers": True,
+            "on_peer": True,
             "active": True,
             "lambda_function_name": _resolve_handlers_lambda_function_name(extension_name),
             "lambda_region": lambda_region,
@@ -314,8 +304,8 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
             "extension_name": extension_name,
         }
 
-    # Laptop / catalog: EXTERNAL_HANDLERS comma-separated list (convention-based)
-    extensions = _external_handlers_names()
+    # Laptop / catalog: handles placed on a peer, when no route row is present.
+    extensions = _peer_extension_names()
     
     if extensions:
         if extension_name.lower() in extensions:
@@ -323,7 +313,7 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
             image_base = resolve_handlers_docker_image_base(extension_name)
             
             config = {
-                "has_external_handlers": True,
+                "on_peer": True,
                 "active": True,
                 "lambda_function_name": _resolve_handlers_lambda_function_name(extension_name),
                 "lambda_region": lambda_region,
@@ -333,69 +323,59 @@ def load_extension_config(extension_name: str) -> Optional[Dict[str, Any]]:
             }
             return config
     
-    # Fallback: Individual environment variables (legacy support)
-    # Format: {EXTENSION_NAME}_EXTERNAL_HANDLERS_{FIELD}
-    env_prefix = f"{extension_name.upper()}_EXTERNAL_HANDLERS_"
-    env_enabled = os.getenv(f"{env_prefix}ENABLED", "").lower()
-    
-    # Check if external handlers are configured via individual env vars
+    env_enabled = _peer_field(extension_name, "ENABLED").lower()
     if env_enabled in ["true", "false"]:
-        lambda_region = os.getenv(f"{env_prefix}LAMBDA_REGION") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+        lambda_region = (
+            _peer_field(extension_name, "LAMBDA_REGION")
+            or os.getenv("AWS_REGION")
+            or os.getenv("AWS_DEFAULT_REGION")
+            or "us-east-1"
+        )
         image_base = resolve_handlers_docker_image_base(extension_name)
         default_docker = f"{image_base}:latest"
         config = {
-            "has_external_handlers": env_enabled == "true",
-            "active": os.getenv(f"{env_prefix}ACTIVE", "true").lower() == "true",
+            "on_peer": env_enabled == "true",
+            "active": _peer_field(extension_name, "ACTIVE", "true").lower() == "true",
             "lambda_function_name": (
-                os.getenv(f"{env_prefix}LAMBDA_FUNCTION")
+                _peer_field(extension_name, "LAMBDA_FUNCTION")
                 or _resolve_handlers_lambda_function_name(extension_name)
             ),
             "lambda_region": lambda_region,
-            "docker_image": os.getenv(f"{env_prefix}DOCKER_IMAGE", default_docker),
+            "docker_image": _peer_field(extension_name, "DOCKER_IMAGE", default_docker),
             "ecs_docker_image": f"{resolve_handlers_ecs_image_base(extension_name)}:latest",
             "extension_name": extension_name
         }
         return config
     
-    # Try 2: Check DEFAULT_CONFIG
     if extension_name in DEFAULT_CONFIG.get("extensions", {}):
         default_config = DEFAULT_CONFIG["extensions"][extension_name].copy()
-        if 'external_handlers' in default_config:
-            default_config = default_config['external_handlers']
+        if "on_peer" in default_config and isinstance(default_config["on_peer"], dict):
+            default_config = default_config["on_peer"]
+        elif "external_handlers" in default_config and isinstance(default_config["external_handlers"], dict):
+            default_config = default_config["external_handlers"]
         default_config["extension_name"] = extension_name
         return default_config
     
     return None
 
 
-def has_external_handlers(extension_name: str) -> bool:
-    """
-    Check if an extension has external handlers configured.
-    
-    Args:
-        extension_name: Name of the extension
-        
-    Returns:
-        True if extension has external handlers, False otherwise
-    """
-    config = load_extension_config(extension_name)
-    return config is not None and config.get("has_external_handlers", False)
-
-
-def is_external_handler_active(extension_name: str) -> bool:
-    """
-    Check if external handlers for an extension are active.
-    
-    Args:
-        extension_name: Name of the extension
-        
-    Returns:
-        True if external handlers are active, False if deactivated or not configured
-    """
+def placed_on_peer(extension_name: str) -> bool:
+    """True when this handle is placed on a peer. Hub-placed handles return False."""
     config = load_extension_config(extension_name)
     if not config:
         return False
-    return config.get("active", True) and config.get("has_external_handlers", False)
+    if "on_peer" in config:
+        return bool(config.get("on_peer"))
+    return bool(config.get("has_external_handlers"))
+
+
+def peer_is_active(extension_name: str) -> bool:
+    """True when the peer placement is configured and not turned off."""
+    config = load_extension_config(extension_name)
+    if not config:
+        return False
+    on_peer = config.get("on_peer", config.get("has_external_handlers"))
+    return bool(config.get("active", True) and on_peer)
 
 
 def get_lambda_config(extension_name: str) -> Optional[Dict[str, Any]]:
@@ -409,7 +389,7 @@ def get_lambda_config(extension_name: str) -> Optional[Dict[str, Any]]:
         Dict with lambda_function_name and lambda_region, or None
     """
     config = load_extension_config(extension_name)
-    if not config or not config.get("has_external_handlers", False):
+    if not placed_on_peer(extension_name):
         return None
     
     return {
@@ -420,10 +400,9 @@ def get_lambda_config(extension_name: str) -> Optional[Dict[str, Any]]:
 
 def get_local_config(extension_name: str) -> Optional[Dict[str, Any]]:
     """
-    Get local Docker configuration for an extension.
+    Get local Docker configuration for an extension placed on a peer.
     
-    Returns docker_image (small/Lambda) and ecs_docker_image (large/ECS).
-    Use ecs_docker_image when the handler is in the ECS handlers list.
+    Returns docker_image (Lambda builder) and ecs_docker_image (ECS builder).
     
     Args:
         extension_name: Name of the extension
@@ -432,7 +411,7 @@ def get_local_config(extension_name: str) -> Optional[Dict[str, Any]]:
         Dict with docker_image, ecs_docker_image, package_path (auto-detected), or None
     """
     config = load_extension_config(extension_name)
-    if not config or not config.get("has_external_handlers", False):
+    if not config or not placed_on_peer(extension_name):
         return None
     
     # Resolve package_path without assuming extensions/{handle}/ folder name.
@@ -447,8 +426,9 @@ def get_local_config(extension_name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _package_path_env_key(extension_name: str) -> str:
-    return f"EXTERNAL_HANDLERS_PACKAGE_{extension_name.upper().replace('-', '_')}"
+def _package_path_env_keys(extension_name: str) -> tuple[str, str]:
+    suffix = extension_name.upper().replace("-", "_")
+    return (f"PEER_PACKAGE_{suffix}", f"EXTERNAL_HANDLERS_PACKAGE_{suffix}")
 
 
 def _read_extension_handle_marker(package_dir: Path) -> str:
@@ -466,7 +446,7 @@ def resolve_extension_package_dir(extension_name: str) -> Optional[Path]:
     """Locate handler package source for local dev without assuming folder == handle.
 
     Resolution order:
-      1. ``EXTERNAL_HANDLERS_PACKAGE_{HANDLE}`` env (absolute or workspace-relative)
+      1. ``PEER_PACKAGE_{HANDLE}`` env (absolute or workspace-relative)
       2. ``extensions/{handle}/package`` when present
       3. Scan ``extensions/*/package/extension_handle`` for a matching handle
     """
@@ -477,7 +457,11 @@ def resolve_extension_package_dir(extension_name: str) -> Optional[Path]:
     if not root:
         return None
 
-    override = (os.getenv(_package_path_env_key(handle)) or "").strip()
+    override = ""
+    for key in _package_path_env_keys(handle):
+        override = (os.getenv(key) or "").strip()
+        if override:
+            break
     if override:
         candidate = Path(override)
         if not candidate.is_absolute():
@@ -522,7 +506,7 @@ def get_ecs_config(extension_name: str) -> Optional[Dict[str, Any]]:
     Reads ECS_* env vars / deploy_input (no laptop ecs_deploy_config.json).
     """
     config = load_extension_config(extension_name)
-    if not config or not config.get("has_external_handlers", False):
+    if not config or not placed_on_peer(extension_name):
         return None
     route = get_peer_route(extension_name)
     if not route:

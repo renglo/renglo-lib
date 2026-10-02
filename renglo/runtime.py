@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-# Internal key used to forward Cognito JWT claims to external handlers (Lambda/ECS/Docker).
+# Internal key used to forward Cognito JWT claims to a peer (Lambda, ECS, or local Docker).
 JWT_CLAIMS_PAYLOAD_KEY = "_jwt_claims"
 
 # Server-resolved tool roles for the caller (never trust client-supplied values).
@@ -73,7 +73,7 @@ def get_current_jwt_claims() -> Optional[Dict[str, Any]]:
 
 def attach_jwt_claims_to_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Copy Cognito JWT claims from the current Flask request into payload for external handlers.
+    Copy Cognito JWT claims from the current Flask request into payload for a peer handler.
     No-op when not in a Flask app context or when claims are already present.
     """
     if not isinstance(payload, dict):
