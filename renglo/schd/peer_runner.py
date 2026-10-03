@@ -947,7 +947,7 @@ def call_ecs_handler_async(
 def call_local_docker_handler_async_start(
     extension_name: str,
     handler_name: str,
-    payload: Dict[str, Any],
+    payload: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Start a handler in local Docker in async mode: write payload to S3, run container

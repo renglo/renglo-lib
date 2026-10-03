@@ -133,6 +133,37 @@ def _peer_map_from_mapping(data: Any) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def deployment_stage() -> str:
+    """Stage of this process. A staging hub must not call the production peer."""
+    for key in ("STAGE", "DEPLOY_STAGE"):
+        raw = (os.getenv(key) or "").strip().lower()
+        if raw in ("staging", "production"):
+            return raw
+    name = (os.getenv("AWS_LAMBDA_FUNCTION_NAME") or "").strip().lower()
+    for stage in ("staging", "production"):
+        if name.endswith("-" + stage):
+            return stage
+    return ""
+
+
+def _routes_for_stage(parsed: Any, stage: str) -> Dict[str, Dict[str, Any]]:
+    """Pick this stage's handle map.
+
+    A document with ``stages`` isolates the two peers. When this stage has no
+    block yet, fall back to the flat ``routes`` map so an older parameter
+    still resolves.
+    """
+    if not isinstance(parsed, dict):
+        return {}
+    stages = parsed.get("stages")
+    if isinstance(stages, dict) and stage and isinstance(stages.get(stage), dict):
+        return _peer_map_from_mapping(stages.get(stage))
+    routes = parsed.get("routes")
+    if isinstance(routes, dict):
+        return _peer_map_from_mapping(routes)
+    return _peer_map_from_mapping(parsed)
+
+
 def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
     """Optional runtime SSM so the map can change without a backend BOM deploy."""
     path = (os.getenv(PEER_ROUTES_SSM_ENV) or os.getenv(PEER_ROUTES_SSM_ENV_PREV) or "").strip()
@@ -151,23 +182,24 @@ def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
         if not value:
             return {}
         parsed = json.loads(value)
-        if isinstance(parsed, dict) and "routes" in parsed and isinstance(parsed["routes"], dict):
-            parsed = parsed["routes"]
-        return _peer_map_from_mapping(parsed)
+        return _routes_for_stage(parsed, deployment_stage())
     except Exception:
         return {}
 
 
 def _peer_map_from_raw(raw: Any) -> Dict[str, Dict[str, Any]]:
     if isinstance(raw, dict):
-        return _peer_map_from_mapping(raw)
-    if isinstance(raw, str) and raw.strip():
+        parsed: Any = raw
+    elif isinstance(raw, str) and raw.strip():
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             return {}
-        return _peer_map_from_mapping(parsed)
-    return {}
+    else:
+        return {}
+    if isinstance(parsed, dict) and ("stages" in parsed or "routes" in parsed):
+        return _routes_for_stage(parsed, deployment_stage())
+    return _peer_map_from_mapping(parsed)
 
 
 def load_peer_map() -> Dict[str, Dict[str, Any]]:

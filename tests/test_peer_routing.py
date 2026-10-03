@@ -21,6 +21,7 @@ from renglo.schd.peer_config import (  # noqa: E402
     peer_routing_enabled,
     resolve_handlers_docker_image_base,
     _resolve_handlers_lambda_function_name,
+    _routes_for_stage,
 )
 
 LAB_ARN = "arn:aws:lambda:us-east-1:123:function:arbitium0813-peer-lab"
@@ -199,6 +200,49 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertEqual(
             _resolve_handlers_lambda_function_name("arbitiumlab"),
             "arbitium0813-peer-lab",
+        )
+
+    def test_staging_hub_calls_the_staging_peer(self) -> None:
+        os.environ["PEER_ROUTES"] = json.dumps(
+            {
+                "stages": {
+                    "staging": {
+                        "arbitiumlab": {
+                            "lambda_function_name": "arbitium0813-peer-lab-staging",
+                            "region": "us-east-1",
+                        }
+                    },
+                    "production": {
+                        "arbitiumlab": {
+                            "lambda_function_name": "arbitium0813-peer-lab-production",
+                            "region": "us-east-1",
+                        }
+                    },
+                },
+                "routes": {
+                    "arbitiumlab": {
+                        "lambda_function_name": "arbitium0813-peer-lab-production",
+                        "region": "us-east-1",
+                    }
+                },
+            }
+        )
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "arbitium0813-backend-staging"
+        self.assertEqual(
+            _resolve_handlers_lambda_function_name("arbitiumlab"),
+            "arbitium0813-peer-lab-staging",
+        )
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "arbitium0813-backend-production"
+        self.assertEqual(
+            _resolve_handlers_lambda_function_name("arbitiumlab"),
+            "arbitium0813-peer-lab-production",
+        )
+
+    def test_flat_routes_still_resolve_when_there_is_no_stage_split(self) -> None:
+        parsed = json.loads(TWO_PEERS)
+        self.assertEqual(
+            _routes_for_stage({"routes": parsed}, "")["arbitiumlab"]["lambda_arn"],
+            LAB_ARN,
         )
 
     def test_docker_stem_not_first_peer_extension_name(self) -> None:

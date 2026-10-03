@@ -141,7 +141,7 @@ class SchdController(SchdScheduleMixin):
             response = run_peer_handler(
                 extension_name=extension,
                 handler_name=handler_name,
-                payload=payload
+                payload=payload,
             )
             if not response.get('success'):
                 result.append({'success': False, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
@@ -230,7 +230,7 @@ class SchdController(SchdScheduleMixin):
                     response = run_peer_handler(
                         extension_name=resolved_extension,
                         handler_name=handler,
-                        payload=payload
+                        payload=payload,
                     )
                     
                     # Peer runner returns {'success', 'output'}. SchdLoader nests output again.
