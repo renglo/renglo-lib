@@ -12,6 +12,7 @@ from renglo.schd.schd_schedule import SchdScheduleMixin
 from renglo.schd.peer_config import placed_on_peer, peer_is_active, get_ecs_config, get_async_s3_config
 from renglo.schd.peer_runner import (
     run_peer_handler,
+    invoke_peer_event,
     call_ecs_handler_async,
     call_local_docker_handler_async_start,
     get_async_result as run_get_async_result,
@@ -319,8 +320,62 @@ class SchdController(SchdScheduleMixin):
         except Exception as e:
             print(f'Error @handler_call:: {e}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call:: {e}'}
-        
-        
+
+    def probe_hello(self, payload):
+        """Tell this socket its connection id so a later run can be pushed back."""
+        from renglo.session.handler_error import push_handler_error
+
+        envelope = payload if isinstance(payload, dict) else {}
+        connection_id = str(envelope.get("connectionId") or envelope.get("connection_id") or "").strip()
+        frame = {
+            "_type": "probe_hello",
+            "_out": {"role": "system", "content": {"connectionId": connection_id}},
+        }
+        push_handler_error(self.config or {}, envelope, frame)
+
+    @authorize(resource="tool", tool_id_param="extension")
+    def handler_call_live(self, portfolio, org, extension, handler, payload):
+        """Start a peer call. The caller chose this path.
+
+        The result is pushed to connectionId as a tool_result. Schd does not
+        decide whether a handler should run this way.
+        """
+        payload = dict(payload or {})
+        connection_id = str(payload.pop("connectionId", "") or payload.pop("connection_id", "") or "").strip()
+        payload.pop("_tool_id", None)
+        if not connection_id:
+            return {
+                "success": False,
+                "error": "The request did not include a websocket connection id, so there is nowhere to send the result.",
+            }
+
+        resolved = self._resolve_extension_handle(portfolio, extension)
+        call_id = str(uuid.uuid4())
+        params = dict(payload)
+        params["portfolio"] = portfolio
+        params["org"] = org
+        params["tool"] = resolved
+        params["connectionId"] = connection_id
+        attach_jwt_claims_to_payload(params)
+        started = invoke_peer_event(
+            resolved,
+            handler,
+            params,
+            completion={
+                "call_id": call_id,
+                "tool": f"{resolved}/{handler}",
+            },
+        )
+        if not started.get("success"):
+            return {
+                "success": False,
+                "error": started.get("error") or "Could not start the peer call",
+            }
+        return {
+            "success": True,
+            "status": "running",
+            "call_id": call_id,
+        }
 
     @authorize(resource="tool", tool_id_param="extension")
     def handler_check(self,portfolio,org,extension,handler,payload):

@@ -529,6 +529,20 @@ PYTHON_SCRIPT"""
         }
 
 
+def _peer_emulator_url() -> str:
+    """Local stand-in for a peer Lambda. Unset means invoke AWS."""
+    url = (os.getenv("PEER_EMULATOR_URL") or "").strip()
+    if not url:
+        try:
+            from renglo.common import load_config
+
+            cfg = load_config() or {}
+            url = str(cfg.get("PEER_EMULATOR_URL") or "").strip()
+        except Exception:
+            url = ""
+    return url.rstrip("/")
+
+
 def invoke_peer_event(
     extension_name: str,
     handler_name: str,
@@ -539,6 +553,41 @@ def invoke_peer_event(
 
     The hub does not wait. The peer writes the session when the handler finishes.
     """
+    event = {
+        'handler': handler_name,
+        'payload': payload,
+        'detached': True,
+        'completion': completion or {},
+    }
+    emulator = _peer_emulator_url()
+    if emulator:
+        try:
+            import requests
+
+            response = requests.post(
+                f"{emulator}/2015-03-31/functions/{extension_name}/invocations",
+                json=event,
+                headers={"X-Amz-Invocation-Type": "Event"},
+                timeout=5,
+            )
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to reach peer emulator: {e}',
+            }
+        if response.status_code not in (200, 202):
+            detail = ""
+            try:
+                body = response.json()
+                detail = str(body.get("error") or body)
+            except Exception:
+                detail = response.text[:300]
+            return {
+                'success': False,
+                'error': f'Peer emulator rejected the call ({response.status_code}): {detail}',
+            }
+        return {'success': True, 'status': response.status_code}
+
     if not BOTO3_AVAILABLE:
         return {
             'success': False,
@@ -555,12 +604,7 @@ def invoke_peer_event(
         response = lambda_client.invoke(
             FunctionName=config['function_name'],
             InvocationType='Event',
-            Payload=json.dumps({
-                'handler': handler_name,
-                'payload': payload,
-                'detached': True,
-                'completion': completion or {},
-            })
+            Payload=json.dumps(event)
         )
     except Exception as e:
         return {
