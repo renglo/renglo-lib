@@ -8,7 +8,6 @@ from datetime import datetime
 from decimal import Decimal
 
 import boto3
-from flask import has_app_context
 
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
@@ -20,7 +19,16 @@ from renglo.runtime import get_current_jwt_claims
 from ..common import *
 
 
-
+def _in_flask_app() -> bool:
+    """True only inside a Flask app. The peer Lambda does not install Flask."""
+    try:
+        from flask import has_app_context
+    except Exception:
+        return False
+    try:
+        return bool(has_app_context())
+    except Exception:
+        return False
 
 
 class ChatController:
@@ -133,7 +141,7 @@ class ChatController:
 
         # Outside Flask: runtime/invocation JWT when set; else stable handler id (incoming).
 
-        if not has_app_context():
+        if not _in_flask_app():
 
             claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
 
