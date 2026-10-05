@@ -137,6 +137,31 @@ def _deadline_seconds(context: Any) -> int:
     return max(1, min(DETACHED_DEADLINE_SECONDS, int(remaining) - 45))
 
 
+def _reserved_flag(value: Any) -> bool:
+    """Same reserved-flag rules as SchdController._pop_reserved_flag."""
+    if value is True or value == 1:
+        return True
+    if isinstance(value, str) and value.strip().lower() in ("1", "true", "yes"):
+        return True
+    return False
+
+
+def _describe_fallback(handler_name: str) -> Dict[str, Any]:
+    return {
+        "success": True,
+        "action": "describe",
+        "output": {
+            "described": False,
+            "handler": handler_name,
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": True,
+            },
+            "output_schema": {"type": "object"},
+        },
+    }
+
+
 def _run_handler(handler_name: str, payload: Dict[str, Any]) -> Any:
     subhandler = None
     base_handler_name = handler_name
@@ -146,6 +171,15 @@ def _run_handler(handler_name: str, payload: Dict[str, Any]) -> Any:
             payload["subhandler"] = subhandler
     handler = get_handler(base_handler_name)
     payload = _apply_invocation_context(handler, payload)
+    # Peer calls skip SchdLoader. Honor the same _describe switch here so a
+    # schema request does not execute run() with default inputs.
+    describe = _reserved_flag(payload.pop("_describe", False))
+    payload.pop("_stack", None)
+    if describe:
+        describe_method = getattr(handler, "describe", None)
+        if callable(describe_method):
+            return describe_method(payload)
+        return _describe_fallback(base_handler_name)
     return handler.run(payload)
 
 
