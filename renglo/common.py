@@ -286,8 +286,6 @@ def load_config():
         # Generic RAG / vectors platform knobs (values & index names are extension-owned)
         'KB_ID', 'RAG_MODEL_ARN', 'RAG_DATA_SOURCE_ID', 'RAG_DOCS_BUCKET', 'RAG_DOCS_PREFIX',
         'S3_VECTORS_BUCKET', 'EMBEDDING_MODEL_ID',
-        'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET',
-        'GMAIL_OAUTH_REDIRECT_URI', 'OAUTH_STATE_SECRET',
         'RENGLO_INGRESS_SECRET',
         'WEBHOOK_EDGE_BASE_URL',
         'RENGLO_INGRESS_DESTINATION',
