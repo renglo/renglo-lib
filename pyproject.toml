@@ -31,5 +31,5 @@ where = ["."]
 renglo = ["chat/blueprints/*.json"]
 
 [tool.renglo]
-platform = "0.1.6"
+platform = "0.1.5"
 
