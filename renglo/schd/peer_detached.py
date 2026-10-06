@@ -1,0 +1,180 @@
+"""Finish an Event invoke: write the session and post the websocket.
+
+The hub has already returned a running receipt. This runs on the peer.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+
+DETACHED_DEADLINE_SECONDS = 14 * 60
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _completion(event: dict[str, Any]) -> dict[str, Any]:
+    raw = event.get("completion") if isinstance(event, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
+def _payload(event: dict[str, Any]) -> dict[str, Any]:
+    raw = event.get("payload") if isinstance(event, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
+def _session_id(event: dict[str, Any]) -> str:
+    completion = _completion(event)
+    existing = str(completion.get("session_id") or "").strip()
+    if existing:
+        return existing
+    payload = _payload(event)
+    parts = [
+        str(payload.get("entity_type") or "").strip(),
+        str(payload.get("entity_id") or "").strip(),
+        str(payload.get("thread") or "").strip(),
+    ]
+    if all(parts):
+        return "|".join(parts)
+    return ""
+
+
+def _meta(event: dict[str, Any]) -> dict[str, str]:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "session_id": _session_id(event),
+        "timestamp": _now(),
+    }
+
+
+def tool_result_frame(event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """Live socket shape used by the hub for a tool result."""
+    return {
+        "_type": "tool_result",
+        "_out": {"role": "system", "content": body},
+        "_meta": _meta(event),
+    }
+
+
+def assistant_frame(event: dict[str, Any], text: str) -> dict[str, Any]:
+    return {
+        "_type": "assistant_message",
+        "_out": {"role": "assistant", "content": text},
+        "_meta": _meta(event),
+    }
+
+
+def _handler_ok(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return result is not None
+    if result.get("success") is False:
+        return False
+    body = result.get("body")
+    if isinstance(body, dict) and body.get("success") is False:
+        return False
+    return True
+
+
+def _handler_error_text(result: Any, error: Optional[BaseException], timed_out: bool) -> str:
+    if timed_out:
+        return "The report did not finish."
+    if error is not None:
+        return str(error) or "The handler failed."
+    if isinstance(result, dict):
+        body = result.get("body") if isinstance(result.get("body"), dict) else result
+        if isinstance(body, dict):
+            for key in ("message", "error"):
+                text = body.get(key)
+                if isinstance(text, str) and text.strip():
+                    return text.strip()[:4000]
+        text = result.get("error")
+        if isinstance(text, str) and text.strip():
+            return text.strip()[:4000]
+    return "The handler failed."
+
+
+def frames_for_result(
+    event: dict[str, Any],
+    result: Any,
+    *,
+    error: Optional[BaseException] = None,
+    timed_out: bool = False,
+) -> list[dict[str, Any]]:
+    completion = _completion(event)
+    tool = str(completion.get("tool") or event.get("handler") or "tool")
+    call_id = str(completion.get("call_id") or "")
+    if timed_out or error is not None or not _handler_ok(result):
+        message = _handler_error_text(result, error, timed_out)
+        body = {
+            "tool": tool,
+            "call_id": call_id,
+            "success": False,
+            "result": result if isinstance(result, dict) else {},
+            "error": message,
+        }
+        return [tool_result_frame(event, body)]
+    body = {
+        "tool": tool,
+        "call_id": call_id,
+        "success": True,
+        "result": result,
+        "error": None,
+    }
+    ready = "The report is ready."
+    when = str(completion.get("when") or "").strip()
+    if when:
+        ready = f"The report is ready ({when})."
+    return [tool_result_frame(event, body), assistant_frame(event, ready)]
+
+
+def complete_detached(
+    event: dict[str, Any],
+    result: Any = None,
+    *,
+    error: Optional[BaseException] = None,
+    timed_out: bool = False,
+    config: Optional[dict[str, Any]] = None,
+    claims: Any = None,
+) -> list[dict[str, Any]]:
+    """Persist and push the frames onto the turn that started the call."""
+    frames = frames_for_result(event, result, error=error, timed_out=timed_out)
+    payload = _payload(event)
+    if config is None:
+        try:
+            from renglo.common import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    config = config if isinstance(config, dict) else {}
+    turn_id = str(_completion(event).get("turn_id") or "").strip()
+
+    from renglo.runtime import stamp_invocation_jwt_claims
+    from renglo.session.handler_error import persist_handler_error, push_handler_error
+    from renglo.session.session_controller import SessionController
+
+    sessions = SessionController(config=config)
+    if claims is None and isinstance(payload, dict):
+        claims = payload.get("_jwt_claims")
+    stamp_invocation_jwt_claims(sessions, claims)
+
+    for frame in frames:
+        try:
+            persist_handler_error(
+                config,
+                payload,
+                frame,
+                turn_id=turn_id,
+                sessions=sessions,
+            )
+        except Exception as exc:
+            print(f"persist detached frame failed: {exc}")
+        try:
+            push_handler_error(config, payload, frame)
+        except Exception as exc:
+            print(f"push detached frame failed: {exc}")
+    return frames

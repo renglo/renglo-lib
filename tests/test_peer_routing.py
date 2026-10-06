@@ -13,7 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from renglo.schd.external_handlers_config import (  # noqa: E402
+from renglo.schd.peer_config import (  # noqa: E402
     get_ecs_config,
     get_lambda_config,
     get_peer_route,
@@ -21,6 +21,7 @@ from renglo.schd.external_handlers_config import (  # noqa: E402
     peer_routing_enabled,
     resolve_handlers_docker_image_base,
     _resolve_handlers_lambda_function_name,
+    _routes_for_stage,
 )
 
 LAB_ARN = "arn:aws:lambda:us-east-1:123:function:arbitium0813-peer-lab"
@@ -74,13 +75,16 @@ class PeerRoutingTests(unittest.TestCase):
         self._env = patch.dict(
             os.environ,
             {
-                "EXTERNAL_HANDLERS": "arbitiumlab,arbitiumtriage",
+                "PEER_EXTENSIONS": "arbitiumlab,arbitiumtriage",
                 "AWS_REGION": "us-east-1",
             },
             clear=False,
         )
         self._env.start()
         for key in (
+            "PEER_ROUTES",
+            "PEER_ROUTING",
+            "EXTERNAL_HANDLERS",
             "EXTERNAL_HANDLERS_PEER_MAP",
             "EXTERNAL_HANDLERS_PEER_ROUTING",
         ):
@@ -112,7 +116,7 @@ class PeerRoutingTests(unittest.TestCase):
         os.environ["ECS_LAUNCH_TYPE"] = "ec2"
         os.environ["ECS_NETWORK_MODE"] = "bridge"
         os.environ["ECS_CLUSTER"] = "overflow-handlers"
-        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = json.dumps(
+        os.environ["PEER_ROUTES"] = json.dumps(
             {
                 "arbitiumtriage": {
                     "lambda_arn": TRIAGE_ARN,
@@ -134,7 +138,7 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertEqual(ecs["security_groups"], ["sg-peer"])
 
     def test_two_handles_two_peers(self) -> None:
-        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = TWO_PEERS
+        os.environ["PEER_ROUTES"] = TWO_PEERS
         self.assertEqual(
             _resolve_handlers_lambda_function_name("arbitiumlab"),
             "arbitium0813-peer-lab",
@@ -159,15 +163,15 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertEqual(load_extension_config("arbitiumtriage")["lambda_region"], "eu-west-1")
 
     def test_two_handles_same_peer(self) -> None:
-        os.environ["EXTERNAL_HANDLERS"] = "arbitiumlab,other"
-        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = SAME_PEER
+        os.environ["PEER_EXTENSIONS"] = "arbitiumlab,other"
+        os.environ["PEER_ROUTES"] = SAME_PEER
         self.assertEqual(_resolve_handlers_lambda_function_name("arbitiumlab"), "arbitium0813-peer-lab")
         self.assertEqual(_resolve_handlers_lambda_function_name("other"), "arbitium0813-peer-lab")
         self.assertEqual(get_ecs_config("arbitiumlab")["cluster"], "shared-lab")
         self.assertEqual(get_ecs_config("other")["cluster"], "shared-lab")
 
     def test_partial_map_unmapped_handle_uses_convention(self) -> None:
-        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = json.dumps(
+        os.environ["PEER_ROUTES"] = json.dumps(
             {"arbitiumlab": {"lambda_arn": LAB_ARN, "ecs_cluster": "lab", "ecs_results_bucket": "b"}}
         )
         self.assertEqual(_resolve_handlers_lambda_function_name("arbitiumlab"), "arbitium0813-peer-lab")
@@ -178,8 +182,8 @@ class PeerRoutingTests(unittest.TestCase):
         self.assertIsNone(get_ecs_config("arbitiumtriage"))
 
     def test_kill_switch_fails_closed(self) -> None:
-        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = TWO_PEERS
-        os.environ["EXTERNAL_HANDLERS_PEER_ROUTING"] = "off"
+        os.environ["PEER_ROUTES"] = TWO_PEERS
+        os.environ["PEER_ROUTING"] = "off"
         self.assertFalse(peer_routing_enabled())
         self.assertIsNone(get_peer_route("arbitiumlab"))
         self.assertEqual(
@@ -188,7 +192,60 @@ class PeerRoutingTests(unittest.TestCase):
         )
         self.assertIsNone(get_ecs_config("arbitiumlab"))
 
-    def test_docker_stem_not_first_external_handlers_name(self) -> None:
+    def test_previous_env_names_still_route(self) -> None:
+        os.environ.pop("PEER_EXTENSIONS", None)
+        os.environ.pop("PEER_ROUTES", None)
+        os.environ["EXTERNAL_HANDLERS"] = "arbitiumlab,arbitiumtriage"
+        os.environ["EXTERNAL_HANDLERS_PEER_MAP"] = TWO_PEERS
+        self.assertEqual(
+            _resolve_handlers_lambda_function_name("arbitiumlab"),
+            "arbitium0813-peer-lab",
+        )
+
+    def test_staging_hub_calls_the_staging_peer(self) -> None:
+        os.environ["PEER_ROUTES"] = json.dumps(
+            {
+                "stages": {
+                    "staging": {
+                        "arbitiumlab": {
+                            "lambda_function_name": "arbitium0813-peer-lab-staging",
+                            "region": "us-east-1",
+                        }
+                    },
+                    "production": {
+                        "arbitiumlab": {
+                            "lambda_function_name": "arbitium0813-peer-lab-production",
+                            "region": "us-east-1",
+                        }
+                    },
+                },
+                "routes": {
+                    "arbitiumlab": {
+                        "lambda_function_name": "arbitium0813-peer-lab-production",
+                        "region": "us-east-1",
+                    }
+                },
+            }
+        )
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "arbitium0813-backend-staging"
+        self.assertEqual(
+            _resolve_handlers_lambda_function_name("arbitiumlab"),
+            "arbitium0813-peer-lab-staging",
+        )
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "arbitium0813-backend-production"
+        self.assertEqual(
+            _resolve_handlers_lambda_function_name("arbitiumlab"),
+            "arbitium0813-peer-lab-production",
+        )
+
+    def test_flat_routes_still_resolve_when_there_is_no_stage_split(self) -> None:
+        parsed = json.loads(TWO_PEERS)
+        self.assertEqual(
+            _routes_for_stage({"routes": parsed}, "")["arbitiumlab"]["lambda_arn"],
+            LAB_ARN,
+        )
+
+    def test_docker_stem_not_first_peer_extension_name(self) -> None:
         self.assertEqual(
             resolve_handlers_docker_image_base("arbitiumtriage"),
             "arbitiumtriage-lambda-builder",

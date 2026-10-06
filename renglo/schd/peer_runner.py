@@ -1,9 +1,8 @@
 """
-Universal functions for running external handlers (local Docker or Lambda)
+Run a handler for an extension placed on a peer.
 
-These functions are extension-agnostic and work with any extension that has
-external handlers configured. Extension-specific information comes from
-the external_handlers_config module.
+Local Docker is the laptop path. A remote call invokes that peer's Lambda.
+Hub-placed extensions do not come through here; SchdLoader runs them in-process.
 """
 
 import json
@@ -23,10 +22,10 @@ except ImportError:
     BOTO3_AVAILABLE = False
     ClientError = Exception  # type: ignore
 
-from renglo.schd.external_handlers_config import (
+from renglo.schd.peer_config import (
     get_lambda_config,
     get_local_config,
-    is_external_handler_active,
+    peer_is_active,
     get_ecs_config,
     get_async_s3_config,
     prefer_local_docker_tag,
@@ -128,9 +127,8 @@ def use_dev_docker(extension_name: str) -> bool:
     """
     Check if the extension should use local Docker instead of Lambda.
     
-    This is controlled by the EXTERNAL_HANDLERS_USE_DEV_DOCKER environment variable,
-    which contains a comma-separated list of extension names that should use
-    local Docker even when running in a local environment.
+    ``PEER_USE_DEV_DOCKER`` is a comma-separated list of handles that use local
+    Docker on a laptop. ``EXTERNAL_HANDLERS_USE_DEV_DOCKER`` is the previous name.
     
     Args:
         extension_name: Name of the extension to check
@@ -139,15 +137,21 @@ def use_dev_docker(extension_name: str) -> bool:
         True if the extension should use local Docker, False otherwise
     """
     # Check environment variable
-    use_dev_docker_list = os.getenv("EXTERNAL_HANDLERS_USE_DEV_DOCKER", "")
+    use_dev_docker_list = (
+        os.getenv("PEER_USE_DEV_DOCKER")
+        or os.getenv("EXTERNAL_HANDLERS_USE_DEV_DOCKER")
+        or ""
+    )
     
     if not use_dev_docker_list:
-        # Try to get from load_config() (reads from env_config.py or environment variables)
         try:
             config = load_config()
-            use_dev_docker_list = config.get('EXTERNAL_HANDLERS_USE_DEV_DOCKER', '') or use_dev_docker_list
+            use_dev_docker_list = (
+                config.get("PEER_USE_DEV_DOCKER")
+                or config.get("EXTERNAL_HANDLERS_USE_DEV_DOCKER")
+                or ""
+            )
         except Exception:
-            # If config can't be loaded, just use empty string
             pass
     
     if use_dev_docker_list:
@@ -525,6 +529,97 @@ PYTHON_SCRIPT"""
         }
 
 
+def _peer_emulator_url() -> str:
+    """Local stand-in for a peer Lambda. Unset means invoke AWS."""
+    url = (os.getenv("PEER_EMULATOR_URL") or "").strip()
+    if not url:
+        try:
+            from renglo.common import load_config
+
+            cfg = load_config() or {}
+            url = str(cfg.get("PEER_EMULATOR_URL") or "").strip()
+        except Exception:
+            url = ""
+    return url.rstrip("/")
+
+
+def invoke_peer_event(
+    extension_name: str,
+    handler_name: str,
+    payload: Dict[str, Any],
+    completion: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Fire-and-forget invoke of the peer Lambda that owns this extension.
+
+    The hub does not wait. The peer writes the session when the handler finishes.
+    """
+    event = {
+        'handler': handler_name,
+        'payload': payload,
+        'detached': True,
+        'completion': completion or {},
+    }
+    emulator = _peer_emulator_url()
+    if emulator:
+        try:
+            import requests
+
+            response = requests.post(
+                f"{emulator}/2015-03-31/functions/{extension_name}/invocations",
+                json=event,
+                headers={"X-Amz-Invocation-Type": "Event"},
+                timeout=5,
+            )
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to reach peer emulator: {e}',
+            }
+        if response.status_code not in (200, 202):
+            detail = ""
+            try:
+                body = response.json()
+                detail = str(body.get("error") or body)
+            except Exception:
+                detail = response.text[:300]
+            return {
+                'success': False,
+                'error': f'Peer emulator rejected the call ({response.status_code}): {detail}',
+            }
+        return {'success': True, 'status': response.status_code}
+
+    if not BOTO3_AVAILABLE:
+        return {
+            'success': False,
+            'error': 'boto3 is not available. Install it to use Lambda handlers.'
+        }
+    config = get_lambda_config(extension_name)
+    if not config:
+        return {
+            'success': False,
+            'error': f'No peer Lambda for extension: {extension_name}'
+        }
+    try:
+        lambda_client = boto3.client('lambda', region_name=config['region'])
+        response = lambda_client.invoke(
+            FunctionName=config['function_name'],
+            InvocationType='Event',
+            Payload=json.dumps(event)
+        )
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Failed to invoke peer Lambda: {str(e)}'
+        }
+    status = int(response.get('StatusCode') or 0)
+    if status not in (202, 200):
+        return {
+            'success': False,
+            'error': f'Peer invoke was not accepted (status {status})'
+        }
+    return {'success': True, 'status': status}
+
+
 def call_lambda_handler(
     extension_name: str,
     handler_name: str,
@@ -848,13 +943,11 @@ def call_ecs_handler_async(
         }
 
 
-call_heavy_handler_async = call_ecs_handler_async
-
 
 def call_local_docker_handler_async_start(
     extension_name: str,
     handler_name: str,
-    payload: Dict[str, Any],
+    payload: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Start a handler in local Docker in async mode: write payload to S3, run container
@@ -1063,43 +1156,32 @@ def get_async_status(extension_name: str, request_id: str) -> Dict[str, Any]:
         return {'success': False, 'error': str(e), 'status': 'error', 'step': None}
 
 
-def run_external_handler(
+def run_peer_handler(
     extension_name: str,
     handler_name: str,
     payload: Dict[str, Any]
     ) -> Dict[str, Any]:
+    """Run one handler on the peer that owns this extension.
+
+    A laptop listed in ``PEER_USE_DEV_DOCKER`` uses local Docker. Otherwise
+    the call is a synchronous invoke of that peer's Lambda. The peer runs
+    every handler in the extension; this function does not choose a second home.
     """
-    Run an external handler (automatically chooses local Docker or Lambda).
-    
-    This is the main entry point that abstracts away the choice between
-    local and Lambda execution. It automatically detects the environment
-    and calls the appropriate function.
-    
-    Args:
-        extension_name: Name of the extension
-        handler_name: Name of the handler to run
-        payload: Payload to pass to the handler
-        
-    Returns:
-        Response dict with 'success', 'output', etc.
-    """
-    # Check if external handlers are active
-    if not is_external_handler_active(extension_name):
+    if not peer_is_active(extension_name):
         return {
             'success': False,
-            'error': f'External handlers for {extension_name} are not active or not configured'
+            'error': f'{extension_name} is not placed on an active peer'
         }
     
-    # Determine execution mode
     if is_running_locally() and use_dev_docker(extension_name):
-        print(f'Calling external handler: {extension_name}/{handler_name} in local docker. Payload:{payload}')
+        print(f'Calling peer handler: {extension_name}/{handler_name} in local docker. Payload:{payload}')
         response = call_local_docker_handler(extension_name, handler_name, payload)
         print(f'Response >> {response}')
         return response
 
-    # Remote sync always hits the peer zip. The peer owns light vs heavy;
+    # Remote sync waits on the peer Lambda. Event invokes are a separate path.
     # /start is the hub's only ECS path (see handler_call_async_start).
-    print(f'Calling external handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload}')
+    print(f'Calling peer handler: {extension_name}/{handler_name} in remote lambda. Payload:{payload}')
     response = call_lambda_handler(extension_name, handler_name, payload)
     print(f'Response >> {response}')
     return response

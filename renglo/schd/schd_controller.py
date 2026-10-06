@@ -9,10 +9,11 @@ from renglo.auth.authorize import authorize
 from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
 from renglo.schd.schd_schedule import SchdScheduleMixin
-from renglo.schd.external_handlers_config import has_external_handlers, is_external_handler_active, get_ecs_config, get_async_s3_config
-from renglo.schd.external_handler_runner import (
-    run_external_handler,
-    call_heavy_handler_async,
+from renglo.schd.peer_config import placed_on_peer, peer_is_active, get_ecs_config, get_async_s3_config
+from renglo.schd.peer_runner import (
+    run_peer_handler,
+    invoke_peer_event,
+    call_ecs_handler_async,
     call_local_docker_handler_async_start,
     get_async_result as run_get_async_result,
     get_async_status as run_get_async_status,
@@ -134,13 +135,13 @@ class SchdController(SchdScheduleMixin):
 
         payload['tool'] = extension
 
-        if has_external_handlers(extension) and is_external_handler_active(extension):
-            print(f'Calling external handler:{handler}')
+        if placed_on_peer(extension) and peer_is_active(extension):
+            print(f'Calling peer handler:{handler}')
             attach_jwt_claims_to_payload(payload)
-            response = run_external_handler(
+            response = run_peer_handler(
                 extension_name=extension,
                 handler_name=handler_name,
-                payload=payload
+                payload=payload,
             )
             if not response.get('success'):
                 result.append({'success': False, 'action': action, 'handler': handler_name, 'input': payload, 'output': response})
@@ -222,26 +223,20 @@ class SchdController(SchdScheduleMixin):
                 
             response = {'success':False,'output':[]}
             
-            # Switch logic: Check if extension has external handlers
-            if has_external_handlers(resolved_extension):
-                # Extension has external handlers configured
-                if is_external_handler_active(resolved_extension):
-                    # External handlers are active - use external handler runner
-                    # This automatically chooses local Docker or Lambda based on environment
+            # A peer-placed extension runs on that peer. A hub-placed one stays in-process.
+            if placed_on_peer(resolved_extension):
+                if peer_is_active(resolved_extension):
                     attach_jwt_claims_to_payload(payload)
-                    response = run_external_handler(
+                    response = run_peer_handler(
                         extension_name=resolved_extension,
                         handler_name=handler,
-                        payload=payload
+                        payload=payload,
                     )
                     
-                    # Convert external handler response format to match SchdLoader format
-                    # SchdLoader returns: {'success': bool, 'output': {'output': [...], 'interface': ...}}
-                    # External handlers return: {'success': bool, 'output': {...}}
+                    # Peer runner returns {'success', 'output'}. SchdLoader nests output again.
                     if not response.get('success'):
-                        # External handler failed - format to match SchdLoader error format
                         error_output = response.get('output', {})
-                        error_msg = response.get('error', 'External handler execution failed [SCOH]')
+                        error_msg = response.get('error', 'Peer handler execution failed [SCOH]')
                         
                         # Create error output in SchdLoader format
                         formatted_output = {
@@ -257,24 +252,21 @@ class SchdController(SchdScheduleMixin):
                             'output': formatted_output.get('output', [error_msg]),
                         }, response, include_stack)
                     else:
-                        # External handler succeeded - convert to SchdLoader format
-                        external_output = response.get('output', {})
+                        peer_output = response.get('output', {})
                         
                         # Wrap in SchdLoader format: {'output': {...}, 'interface': ...}
                         formatted_output = {
-                            'output': external_output
+                            'output': peer_output
                         }
                         
-                        # Extract interface if present
-                        if isinstance(external_output, dict) and 'interface' in external_output:
-                            formatted_output['interface'] = external_output.get('interface')
+                        if isinstance(peer_output, dict) and 'interface' in peer_output:
+                            formatted_output['interface'] = peer_output.get('interface')
                         
-                        # Extract canonical output (the actual result)
-                        if isinstance(external_output, dict):
-                            canonical = external_output.get('output', external_output)
+                        if isinstance(peer_output, dict):
+                            canonical = peer_output.get('output', peer_output)
                             interface = formatted_output.get('interface')
                         else:
-                            canonical = external_output
+                            canonical = peer_output
                             interface = None
                         
                         return self._maybe_stack({
@@ -286,11 +278,9 @@ class SchdController(SchdScheduleMixin):
                             'output': canonical,
                         }, {'success': True, 'output': formatted_output}, include_stack)
                 else:
-                    # External handlers are deactivated - fall back to internal
-                    print(f'External handlers for {resolved_extension} are deactivated, using internal handler')
+                    print(f'Peer placement for {resolved_extension} is off, using in-process handler')
                     response = self.SHL.load_and_run(f'{resolved_extension}/{handler}', payload=payload)
             else:
-                # Extension does not have external handlers - use internal handler loader
                 response = self.SHL.load_and_run(f'{resolved_extension}/{handler}', payload=payload)
 
             # Handle internal handler response (SchdLoader format).
@@ -330,8 +320,62 @@ class SchdController(SchdScheduleMixin):
         except Exception as e:
             print(f'Error @handler_call:: {e}')
             return {'success':False,'action':action,'handler':handler,'input':payload,'output':f'Error @handler_call:: {e}'}
-        
-        
+
+    def probe_hello(self, payload):
+        """Tell this socket its connection id so a later run can be pushed back."""
+        from renglo.session.handler_error import push_handler_error
+
+        envelope = payload if isinstance(payload, dict) else {}
+        connection_id = str(envelope.get("connectionId") or envelope.get("connection_id") or "").strip()
+        frame = {
+            "_type": "probe_hello",
+            "_out": {"role": "system", "content": {"connectionId": connection_id}},
+        }
+        push_handler_error(self.config or {}, envelope, frame)
+
+    @authorize(resource="tool", tool_id_param="extension")
+    def handler_call_live(self, portfolio, org, extension, handler, payload):
+        """Start a peer call. The caller chose this path.
+
+        The result is pushed to connectionId as a tool_result. Schd does not
+        decide whether a handler should run this way.
+        """
+        payload = dict(payload or {})
+        connection_id = str(payload.pop("connectionId", "") or payload.pop("connection_id", "") or "").strip()
+        payload.pop("_tool_id", None)
+        if not connection_id:
+            return {
+                "success": False,
+                "error": "The request did not include a websocket connection id, so there is nowhere to send the result.",
+            }
+
+        resolved = self._resolve_extension_handle(portfolio, extension)
+        call_id = str(uuid.uuid4())
+        params = dict(payload)
+        params["portfolio"] = portfolio
+        params["org"] = org
+        params["tool"] = resolved
+        params["connectionId"] = connection_id
+        attach_jwt_claims_to_payload(params)
+        started = invoke_peer_event(
+            resolved,
+            handler,
+            params,
+            completion={
+                "call_id": call_id,
+                "tool": f"{resolved}/{handler}",
+            },
+        )
+        if not started.get("success"):
+            return {
+                "success": False,
+                "error": started.get("error") or "Could not start the peer call",
+            }
+        return {
+            "success": True,
+            "status": "running",
+            "call_id": call_id,
+        }
 
     @authorize(resource="tool", tool_id_param="extension")
     def handler_check(self,portfolio,org,extension,handler,payload):
@@ -396,7 +440,7 @@ class SchdController(SchdScheduleMixin):
 
     @authorize(resource="tool", tool_id_param="extension")
     def handler_call_async_start(self, portfolio, org, extension, handler, payload):
-        """Start an async handler job (any handler). Local in-process, dev Docker, or heavy ECS."""
+        """Start an async handler job. In-process, local Docker, or the peer ECS task."""
         action = 'handler_call_async_start'
         payload = dict(payload or {})
         # Re-stamp roles after copying payload (decorator stamped the original dict).
@@ -407,13 +451,13 @@ class SchdController(SchdScheduleMixin):
         payload['org'] = org
         payload['tool'] = resolved_extension
 
-        s3_cfg = get_ecs_config(resolved_extension) if has_external_handlers(resolved_extension) else None
+        s3_cfg = get_ecs_config(resolved_extension) if placed_on_peer(resolved_extension) else None
         if not s3_cfg:
             s3_cfg = get_async_s3_config(resolved_extension)
         if not s3_cfg:
             return {'success': False, 'error': 'Async requires ECS_RESULTS_BUCKET or ECS config for result storage'}
 
-        if has_external_handlers(resolved_extension) and is_external_handler_active(resolved_extension):
+        if placed_on_peer(resolved_extension) and peer_is_active(resolved_extension):
             attach_jwt_claims_to_payload(payload)
             if use_dev_docker(resolved_extension):
                 response = call_local_docker_handler_async_start(
@@ -423,7 +467,7 @@ class SchdController(SchdScheduleMixin):
                 )
             else:
                 # Hub does not classify handlers. /start means the peer ECS path.
-                response = call_heavy_handler_async(
+                response = call_ecs_handler_async(
                     extension_name=resolved_extension,
                     handler_name=handler,
                     payload=payload,

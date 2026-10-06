@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renglo-lib"
-version = "0.0.6"
+version = "0.0.8"
 description = "Core Renglo functionality - controllers, models, and utilities"
 license = { text = "MIT" }
 authors = [
@@ -14,9 +14,6 @@ requires-python = ">=3.12"
 dependencies = [
     "boto3==1.43.72",
     "botocore==1.43.72",
-    "Flask==3.1.0",
-    "Flask-Cognito==1.21",
-    "Flask-Caching==2.1.0",
     "PyJWT==2.10.1",
     "Requests==2.32.3",
     "validate_email==1.3",
@@ -32,4 +29,7 @@ where = ["."]
 
 [tool.setuptools.package-data]
 renglo = ["chat/blueprints/*.json"]
+
+[tool.renglo]
+platform = "0.1.5"
 

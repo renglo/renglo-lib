@@ -607,15 +607,22 @@ class SessionController:
                             fallback = out.get("content", "")
                             parsed_content = self._convert_floats_to_strings(fallback)
                             entries[index]['_out']['content'] = parsed_content
-            else:
-                # Update is already sanitized at the beginning of the method
+                response = self.SSM.update_session(item)
+                print(response)
+                return response
+
+            # Append with list_append so a peer finishing a long call and the
+            # hub saving the receipt cannot erase each other.
+            index = item.get("index")
+            entity_index = item.get("entity_index")
+            if not index or not entity_index:
                 entries.append(update)
-            
-            #current_app.logger.debug(f'Prepared data for session update: {item}')
-            #print(f'Store modified item:{item}')
-            response = self.SSM.update_session(item)
-            print(response) 
-            return response
+                response = self.SSM.update_session(item)
+                print(response)
+                return response
+            appended = self.SSM.append_events(index, entity_index, [update])
+            print(appended)
+            return appended
         
         except Exception as e:
             self.logger.error(f"Error in update_turn: {str(e)}")

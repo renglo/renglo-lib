@@ -2502,17 +2502,17 @@ class AuthController:
             body_html=invite_email.body_html,
             inline_images=invite_inline_images(invite_email),
         )
+
+        if not response_4['success']:
+            ses_msg = response_4.get('message') or 'Could not send the invite'
+            self.logger.debug('Invite User Funnel > SES send failed: %s', response_4)
+            response_4['message'] = f'Could not send the invite: {ses_msg}'
+            return response_4
+
         response_4['message'] = (
             'Sent invite to team ' + kwargs['team_id'] + ' via email to ' + kwargs['email']
         )
-
-        if not response_4['success']:
-            # Keep SES error detail (e.g. unverified identity / sandbox) for operators.
-            ses_msg = response_4.get('message') or 'Could not send the invite'
-            response_4['message'] = f'Could not send the invite: {ses_msg}'
-            return response_4
-        else:
-            transaction.append(response_4)
+        transaction.append(response_4)
 
 
         
