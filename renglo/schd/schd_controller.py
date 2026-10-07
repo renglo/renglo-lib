@@ -23,6 +23,7 @@ from renglo.schd.peer_runner import (
     write_async_result,
 )
 from renglo.runtime import attach_auth_roles_to_payload, attach_jwt_claims_to_payload
+from renglo.schd.channel_reply import reply_route
 
 from datetime import datetime
 
@@ -338,16 +339,22 @@ class SchdController(SchdScheduleMixin):
     def handler_call_live(self, portfolio, org, extension, handler, payload):
         """Start a peer call. The caller chose this path.
 
-        The result is pushed to connectionId as a tool_result. Schd does not
-        decide whether a handler should run this way.
+        A websocket caller passes connectionId and the result is pushed there.
+        A webhook caller passes channel (and the recipient) and the result is
+        sent on that channel after it is saved on the session.
         """
         payload = dict(payload or {})
         connection_id = str(payload.pop("connectionId", "") or payload.pop("connection_id", "") or "").strip()
         payload.pop("_tool_id", None)
-        if not connection_id:
+        route = reply_route(payload)
+        raw_callback = payload.pop("callback", None)
+        payload.pop("reply_args", None)
+        payload.pop("channel", None)
+        payload.pop("external_id", None)
+        if not connection_id and not (route and route.get("handler")):
             return {
                 "success": False,
-                "error": "The request did not include a websocket connection id, so there is nowhere to send the result.",
+                "error": "The request did not include a websocket connection id or a channel to reply on.",
             }
 
         resolved = self._resolve_extension_handle(portfolio, extension)
@@ -356,16 +363,22 @@ class SchdController(SchdScheduleMixin):
         params["portfolio"] = portfolio
         params["org"] = org
         params["tool"] = resolved
-        params["connectionId"] = connection_id
+        if connection_id:
+            params["connectionId"] = connection_id
         attach_jwt_claims_to_payload(params)
+        completion = {
+            "call_id": call_id,
+            "tool": f"{resolved}/{handler}",
+        }
+        if route:
+            completion["reply"] = route
+        if isinstance(raw_callback, dict) and str(raw_callback.get("handler") or "").strip():
+            completion["callback"] = {"handler": str(raw_callback.get("handler")).strip()}
         started = invoke_peer_event(
             resolved,
             handler,
             params,
-            completion={
-                "call_id": call_id,
-                "tool": f"{resolved}/{handler}",
-            },
+            completion=completion,
         )
         if not started.get("success"):
             return {
@@ -625,3 +638,26 @@ class SchdController(SchdScheduleMixin):
         except Exception as e:
             logger.error(f"Error deleting rule: {str(e)}")
             raise
+
+
+def call_handler(
+    config: dict,
+    portfolio: str,
+    org: str,
+    handler: str,
+    payload: dict,
+    user_id: str = "",
+) -> dict:
+    """Run an extension handler through placement.
+
+    A hub-placed handler runs in this process. A peer-placed handler is
+    invoked on that peer. Callers do not choose the process.
+    """
+    parts = str(handler or "").split("/", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return {"success": False, "error": "handler must be extension/name"}
+    controller = SchdController(config=config or {})
+    actor = str(user_id or "").strip()
+    if actor:
+        controller.AUC.set_invocation_user(actor)
+    return controller.handler_call(portfolio, org, parts[0], parts[1], dict(payload or {}))
