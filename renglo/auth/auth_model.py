@@ -8,6 +8,7 @@ from datetime import datetime
 import uuid
 from decimal import Decimal
 
+from renglo.auth.entity_status import HARD_DELETE_REFUSED, entity_forbids_hard_delete
 from renglo.wl import build_raw_email
 
 logger = logging.getLogger(__name__)
@@ -524,6 +525,17 @@ class AuthModel:
 
 
     def delete_entity(self,**entity_document):
+
+        # Team and extension deletes call this helper. Portfolio and org rows
+        # stay in the table and are hidden by status instead.
+        if entity_forbids_hard_delete(entity_document):
+            logger.debug('MODEL: Refused hard delete of portfolio or org')
+            return {
+                "success": False,
+                "message": HARD_DELETE_REFUSED,
+                "document": entity_document,
+                "status": 400,
+            }
 
         keys = {
             'index': entity_document['index'],
