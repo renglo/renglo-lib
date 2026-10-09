@@ -8,6 +8,13 @@ from ..common import *
 import uuid
 from decimal import Decimal
 from renglo.auth.auth_model import AuthModel
+from renglo.auth.entity_status import (
+    ENTITY_STATUS_ACTIVE,
+    ENTITY_STATUS_DELETED,
+    HARD_DELETE_REFUSED,
+    entity_forbids_hard_delete,
+    entity_is_deleted,
+)
 from renglo.common import sanitize_entity_tags
 from renglo.wl import invite_inline_images, render_invite_email
 import re
@@ -738,9 +745,12 @@ class AuthController:
             index = 'irn:rel:team:portfolio:' + rel_team_id  + ':*'
             rels_team_portfolio = self.AUM.list_rel(index)
             for portfolio in rels_team_portfolio['document']['items']:
-                
-                if portfolio['rel'] not in user_portfolio_list:
-                    user_portfolio_list.append(portfolio['rel'])
+                portfolio_id = portfolio['rel']
+                if portfolio_id in user_portfolio_list:
+                    continue
+                if self._portfolio_is_deleted(portfolio_id):
+                    continue
+                user_portfolio_list.append(portfolio_id)
 
         return user_portfolio_list
 
@@ -795,8 +805,43 @@ class AuthController:
             
 
 
+    def _deleted_org_ids(self, portfolio_id, cache=None):
+        """Org ids marked deleted. Relationships to them are left in place."""
+        cache = cache if cache is not None else {}
+        if portfolio_id in cache:
+            return cache[portfolio_id]
+        index = 'irn:entity:portfolio/org:' + portfolio_id + '/*'
+        items = ((self.AUM.list_entity(index) or {}).get('document') or {}).get('items') or []
+        deleted = {
+            item.get('_id')
+            for item in items
+            if item.get('_id') and entity_is_deleted(item)
+        }
+        cache[portfolio_id] = deleted
+        return deleted
+
+    def _portfolio_is_deleted(self, portfolio_id):
+        if not portfolio_id:
+            return False
+        entity = self.get_entity(
+            'portfolio',
+            portfolio_id=portfolio_id,
+            include_deleted=True,
+        )
+        return bool(entity.get('success') and entity_is_deleted(entity.get('document')))
+
+    def _filter_deleted_entities(self, response):
+        document = (response or {}).get('document')
+        if not isinstance(document, dict) or not isinstance(document.get('items'), list):
+            return response
+        document['items'] = [
+            item for item in document['items'] if not entity_is_deleted(item)
+        ]
+        return response
+
     def _project_installables_for_team(
-        self, portfolio_id, team_id, kind, tree, org_grants, active_orgs
+        self, portfolio_id, team_id, kind, tree, org_grants, active_orgs,
+        hidden_org_ids=None,
     ):
         """
         Project one installable type into its own tree bag.
@@ -844,7 +889,13 @@ class AuthController:
             granted_orgs = self._rel_item_rels(
                 f"irn:rel:{rels['org']}:{team_id}/{entity_id}:*"
             )
-            for org_id in granted_orgs:
+            # Keep the rel rows. Omit deleted orgs from the tree so a grant
+            # to a hidden org does not make that org or the grant look live.
+            hidden_org_ids = hidden_org_ids or set()
+            visible_orgs = [
+                org_id for org_id in granted_orgs if org_id not in hidden_org_ids
+            ]
+            for org_id in visible_orgs:
                 active_orgs.append(org_id)
                 portfolio_node[bag][entity_id]["active"] = True
                 org_grants[bag].setdefault(org_id, [])
@@ -852,7 +903,7 @@ class AuthController:
                     org_grants[bag][org_id].append(entity_id)
             prev_orgs = team_node[bag][entity_id].get("orgs") or []
             team_node[bag][entity_id]["orgs"] = list(
-                dict.fromkeys(prev_orgs + granted_orgs)
+                dict.fromkeys(prev_orgs + visible_orgs)
             )
 
     def get_tree_full(self,**kwargs):
@@ -862,9 +913,7 @@ class AuthController:
         tree = {}
         tree['user_id'] = kwargs['user_id']
         tree['portfolios'] = {}
-        
-        
-
+        deleted_org_cache = {}
 
         self.logger.debug('GENERATING TREE')
 
@@ -902,11 +951,15 @@ class AuthController:
 
                         if portfolio_id not in tree['portfolios']:
 
-                            #RESOLVE: Get Portfolio entity document
+                            #RESOLVE: Get Portfolio entity document.
+                            # A deleted portfolio keeps its team rels, but it
+                            # is not part of the tree.
                             portfolio_entity = self.get_entity(
                                 'portfolio',
                                 portfolio_id=portfolio_id
                                 )
+                            if not portfolio_entity.get('success'):
+                                continue
 
                             portfolio_doc = {}  
                             portfolio_doc['portfolio_id'] = portfolio_id      
@@ -958,6 +1011,9 @@ class AuthController:
 
                         active_orgs = []
                         org_grants = {'tools': {}, 'extensions': {}}
+                        hidden_org_ids = self._deleted_org_ids(
+                            portfolio_id, deleted_org_cache
+                        )
                         for kind in self.INSTALLABLE_TYPES:
                             self._project_installables_for_team(
                                 portfolio_id,
@@ -966,6 +1022,7 @@ class AuthController:
                                 tree,
                                 org_grants,
                                 active_orgs,
+                                hidden_org_ids=hidden_org_ids,
                             )
 
                         self.logger.debug('ORG_GRANTS:')
@@ -983,6 +1040,9 @@ class AuthController:
                             entities_orgs['document']['items']):
 
                             for org in entities_orgs['document']['items']:
+
+                                if entity_is_deleted(org):
+                                    continue
 
                                 org_id = org['_id']
                                 
@@ -1049,6 +1109,15 @@ class AuthController:
                 index = 'irn:rel:team:portfolio:' + team['rel'] + ':*'
                 rel_team_portfolio = self.AUM.list_rel(index)
                 #self.logger.debug('User Portfolios:'+str(rel_team_portfolio))
+                items = ((rel_team_portfolio or {}).get('document') or {}).get('items') or []
+                kept = []
+                for portfolio in items:
+                    portfolio_id = portfolio.get('rel')
+                    if portfolio_id and self._portfolio_is_deleted(portfolio_id):
+                        continue
+                    kept.append(portfolio)
+                if isinstance((rel_team_portfolio or {}).get('document'), dict):
+                    rel_team_portfolio['document']['items'] = kept
                 portfolios.append(rel_team_portfolio)
 
             
@@ -1072,7 +1141,9 @@ class AuthController:
         if type in self.INSTALLABLE_TYPES:
             index = self._installable_entity_index(type, kwargs['portfolio_id'])
 
-        response = self.AUM.list_entity(index) 
+        response = self.AUM.list_entity(index)
+        if type == 'org':
+            return self._filter_deleted_entities(response)
         return response
 
 
@@ -1082,6 +1153,9 @@ class AuthController:
 
         #if(type== 'user' and 'user_id' in kwargs and 'portfolio_id' in kwargs ):
 
+        # Soft-deleted portfolios and orgs stay in the table but are not
+        # readable by id. Callers that must see the row pass include_deleted.
+        include_deleted = bool(kwargs.get('include_deleted'))
         missing = False
 
         if type == 'user':
@@ -1137,7 +1211,17 @@ class AuthController:
             result['message'] = response['message'] 
             result['status'] = response['status']               
             return result
-        
+
+        if (
+            not include_deleted
+            and type in ('portfolio', 'org')
+            and entity_is_deleted(response.get('document'))
+        ):
+            return {
+                'success': False,
+                'message': 'Entity not found',
+                'status': 404,
+            }
 
         result['success'] = True
         result['message'] = response['message']
@@ -1204,6 +1288,7 @@ class AuthController:
             'added': datetime.now().isoformat(),
             'is_active': True,
             'type': type,
+            'status': ENTITY_STATUS_ACTIVE,
             'last_ip': kwargs['ip'] if 'ip' in kwargs else '',
             'last_login': datetime.now().isoformat(),
             'modified': datetime.now().isoformat(), 
@@ -1235,6 +1320,13 @@ class AuthController:
 
         self.logger.debug('Document to be unlinked:')
         self.logger.debug(doc)
+
+        if entity_forbids_hard_delete(doc):
+            return {
+                "success": False,
+                "message": HARD_DELETE_REFUSED,
+                "status": 400,
+            }
  
         # Check if the second position exists and replace "entity" with "unentity"
         parts = doc['index'].split(":")
@@ -1321,8 +1413,11 @@ class AuthController:
                 if incoming and not (entity_doc.get(field) or '').strip():
                     entity_doc[field] = incoming
 
-        #Replace values of existing attributes with the ones in the payload
+        #Replace values of existing attributes with the ones in the payload.
+        # status is only changed by the portfolio and org soft-delete funnels.
         for key, val in kwargs['payload'].items():
+            if key == 'status':
+                continue
             if key == 'tags':
                 entity_doc[key] = sanitize_entity_tags(val)
             else:
@@ -2732,32 +2827,70 @@ class AuthController:
 
     
 
-    #NOT IMPLEMENTED
+    def _soft_delete_entity(self, entity_type, **lookup):
+        """
+        Mark a portfolio or org deleted and leave every relationship in place.
+
+        Tree generation and get/list skip the row. The document stays so the
+        data under that id can be recovered.
+        """
+        label = 'Portfolio' if entity_type == 'portfolio' else 'Org'
+        if entity_type == 'portfolio' and not lookup.get('portfolio_id'):
+            return {
+                "success": False,
+                "message": "Missing attributes",
+                "status": 400,
+            }
+        if entity_type == 'org' and not (
+            lookup.get('portfolio_id') and lookup.get('org_id')
+        ):
+            return {
+                "success": False,
+                "message": "Missing attributes",
+                "status": 400,
+            }
+
+        current = self.get_entity(entity_type, include_deleted=True, **lookup)
+        if not current.get('success'):
+            current['message'] = label + ' not found'
+            return current
+
+        document = current['document']
+        if entity_is_deleted(document):
+            return {
+                "success": True,
+                "message": label + " already deleted",
+                "status": 200,
+                "document": [current],
+            }
+
+        document['status'] = ENTITY_STATUS_DELETED
+        updated = self.AUM.update_entity(document)
+        if not updated.get('success'):
+            return updated
+
+        self.logger.debug('%s soft-deleted; relationships kept', label)
+        return {
+            "success": True,
+            "message": label + " deleted",
+            "status": 200,
+            "document": [updated],
+        }
+
+    def remove_portfolio_funnel(self, **kwargs):
+        self.logger.debug('Initiating DELETE PORTFOLIO FUNNEL')
+        return self._soft_delete_entity(
+            'portfolio',
+            portfolio_id=kwargs.get('portfolio_id'),
+        )
+
     def remove_org_funnel(self,**kwargs):
-        bridge = {}
-        result = {}
-        transaction = []
-
         self.logger.debug('Initiating DELETE ORG FUNNEL')
-
-
-        # 1. Create a copy of org entity and put it in irn:deleted_entity:org
-
-        # 2. Create a copy of team:org rel and put it in irn:deleted_rel:team:org
-
-        # 3. Remove original entity and rel documents  from steps 1-2
-
-  
-        #All went good, Summarize Transaction Success 
-        self.logger.debug('End of Funnel ')
-
-        result['success'] = True
-        result['message'] = 'Delete Org Funnel completed, Ok'
-        result['status'] = 200 
-        result['document'] = transaction  
-
-        self.logger.debug(result)            
-        return result
+        return self._soft_delete_entity(
+            'org',
+            portfolio_id=kwargs.get('portfolio_id'),
+            org_id=kwargs.get('org_id'),
+        )
     
 
 
@@ -2794,8 +2927,15 @@ class AuthController:
             "status" :400
             }
                 
-        #1b. Send document to unlink function
-        teamdoc = response_1a['document'] 
+        #1b. Send document to unlink function.
+        # A portfolio or org document must not be removed by this path.
+        teamdoc = response_1a['document']
+        if entity_forbids_hard_delete(teamdoc):
+            return {
+                "success": False,
+                "message": HARD_DELETE_REFUSED,
+                "status": 400,
+            }
         response_1b = self.unlink_entity(**teamdoc)  
         if not response_1b['success']:
             return response_1b
@@ -3002,16 +3142,27 @@ class AuthController:
                 existing = self.AUM.get_entity(index, tool_id)
                 if not existing.get("success"):
                     continue
-                deleted = self.AUM.delete_entity(index=index, _id=tool_id)
-                if deleted.get("success"):
-                    deleted_rows.append(deleted)
-                    self.logger.info(
-                        "Deleted %s %s row %s in %s",
-                        "archived" if archived else "live",
-                        kind,
-                        tool_id,
-                        portfolio_id,
-                    )
+                document = dict(existing.get("document") or {})
+                document.setdefault("index", index)
+                if entity_forbids_hard_delete(document):
+                    return {
+                        "success": False,
+                        "message": HARD_DELETE_REFUSED,
+                        "status": 400,
+                    }
+                deleted = self.AUM.delete_entity(index=index, _id=tool_id, type=document.get("type"))
+                if not deleted.get("success"):
+                    if deleted.get("status") == 400:
+                        return deleted
+                    continue
+                deleted_rows.append(deleted)
+                self.logger.info(
+                    "Deleted %s %s row %s in %s",
+                    "archived" if archived else "live",
+                    kind,
+                    tool_id,
+                    portfolio_id,
+                )
         if deleted_rows:
             return {
                 "success": True,
@@ -3167,7 +3318,14 @@ class AuthController:
 
         #1. Delete the tool entity row (live and any unentity archive).
         #   Data rings are not touched. Missing entity is ok: still drop rels.
+        #   A portfolio or org row is refused and its relationships stay.
         response_1b = self._delete_tool_entity_rows(portfolio_id, tool_id)
+        if (
+            not response_1b.get('success')
+            and response_1b.get('status') == 400
+            and response_1b.get('message') == HARD_DELETE_REFUSED
+        ):
+            return response_1b
         if response_1b.get('success'):
             transaction.append(response_1b)
         else:
