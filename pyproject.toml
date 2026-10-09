@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renglo-lib"
-version = "0.0.8"
+version = "0.0.9rc1"
 description = "Core Renglo functionality - controllers, models, and utilities"
 license = { text = "MIT" }
 authors = [
@@ -31,5 +31,5 @@ where = ["."]
 renglo = ["chat/blueprints/*.json"]
 
 [tool.renglo]
-platform = "0.1.5"
+platform = "0.1.6"
 
