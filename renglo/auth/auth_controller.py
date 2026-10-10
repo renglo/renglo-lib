@@ -15,7 +15,7 @@ from renglo.auth.entity_status import (
     entity_forbids_hard_delete,
     entity_is_deleted,
 )
-from renglo.common import sanitize_entity_tags
+from renglo.common import sanitize_entity_preferences, sanitize_entity_tags
 from renglo.wl import invite_inline_images, render_invite_email
 import re
 import time
@@ -303,6 +303,7 @@ class AuthController:
             "name": "ALL",
             "handle": org_id,
             "tags": {},
+            "preferences": {},
             "tools": list(set(tools_for_all)),
             "extensions": list(set(extensions_for_all)),
             "active": active,
@@ -864,6 +865,7 @@ class AuthController:
                 "handle": entity.get("handle"),
                 "roles": self._normalize_roles_list(entity.get("roles")),
                 "entity_type": kind,
+                "preferences": entity.get("preferences") or {},
             }
             if kind == "extension":
                 node["extension_id"] = entity_id
@@ -913,6 +915,9 @@ class AuthController:
         tree = {}
         tree['user_id'] = kwargs['user_id']
         tree['portfolios'] = {}
+        user_entity = self.get_entity('user', user_id=kwargs['user_id'])
+        user_doc = user_entity.get('document') if user_entity.get('success') else {}
+        tree['preferences'] = (user_doc or {}).get('preferences') or {}
         deleted_org_cache = {}
 
         self.logger.debug('GENERATING TREE')
@@ -964,6 +969,7 @@ class AuthController:
                             portfolio_doc = {}  
                             portfolio_doc['portfolio_id'] = portfolio_id      
                             portfolio_doc['name'] = portfolio_entity['document']['name']
+                            portfolio_doc['preferences'] = portfolio_entity['document'].get('preferences') or {}
                             portfolio_doc['teams'] = {}
                             portfolio_doc['orgs'] = {}
                             portfolio_doc['tools'] = {}
@@ -995,6 +1001,7 @@ class AuthController:
                         team_doc = {}
                         team_doc['team_id'] = team_id
                         team_doc['name'] = team_entity['document']['name']
+                        team_doc['preferences'] = team_entity['document'].get('preferences') or {}
                         team_doc['tools'] = {}
                         team_doc['extensions'] = {}
 
@@ -1068,6 +1075,7 @@ class AuthController:
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['name'] = org['name']
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['handle'] = org['handle']
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['tags'] = org.get('tags') or {}
+                                tree['portfolios'][portfolio_id]['orgs'][org_id]['preferences'] = org.get('preferences') or {}
                                 
                                 
                                 if org_id in active_orgs:
@@ -1296,7 +1304,8 @@ class AuthController:
             'index':pk,
             'irn':irn,
             'language':kwargs['lan'] if 'lan' in kwargs else '',
-            'tags': kwargs.get('tags') if isinstance(kwargs.get('tags'), dict) else {},           
+            'tags': kwargs.get('tags') if isinstance(kwargs.get('tags'), dict) else {},
+            'preferences': sanitize_entity_preferences(kwargs.get('preferences')),
         }
 
         if type in self.INSTALLABLE_TYPES:
@@ -1420,6 +1429,8 @@ class AuthController:
                 continue
             if key == 'tags':
                 entity_doc[key] = sanitize_entity_tags(val)
+            elif key == 'preferences':
+                entity_doc[key] = sanitize_entity_preferences(val)
             else:
                 entity_doc[key] = val
 
@@ -2029,6 +2040,7 @@ class AuthController:
         kwargs['name'] = 'Admin'
         kwargs['about'] = 'This team enables its users to change portfolio settings.'
         kwargs['portfolio_id'] = response_1['document']['_id'] #This is the portfolio_id
+        kwargs.pop('preferences', None)
         response_3 = self.create_entity('team',**kwargs)
 
         self.logger.debug('Step 3: Creating a default Team')

@@ -85,6 +85,43 @@ def sanitize_entity_tags(raw_tags):
     return clean
 
 
+def sanitize_entity_preferences(raw_preferences):
+    """Normalize preferences to dict[str, str] for storage on entity documents.
+
+    One value per key. A list collapses to its last safe entry. Empty and
+    unsafe keys or values are dropped.
+
+    A preference is an instruction the platform may follow (language,
+    time_zone, default_extension). The same key stored as a tag is only a
+    description. Keys stay free-form: a key nothing reads yet is stored and
+    inert. A later registry can name the keys the platform acts on, their
+    types, and the entity order used to resolve them. Extension-private
+    settings belong in that extension's own config, not in this map.
+    """
+    if not isinstance(raw_preferences, dict):
+        return {}
+    clean = {}
+    for key, value in raw_preferences.items():
+        if not isinstance(key, str):
+            continue
+        pref_key = key.strip().lower()
+        if not pref_key or not _entity_tag_text_is_safe(pref_key):
+            continue
+
+        candidates = value if isinstance(value, (list, tuple)) else [value]
+        chosen = ''
+        for item in candidates:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if not text or not _entity_tag_text_is_safe(text):
+                continue
+            chosen = text
+        if chosen:
+            clean[pref_key] = chosen
+    return clean
+
+
 _LOCAL_DEV_CONSOLE_URL = "http://127.0.0.1:5174"
 
 
