@@ -19,6 +19,7 @@ from renglo.auth.entity_status import (  # noqa: E402
     entity_status,
 )
 from renglo.auth.auth_controller import AuthController  # noqa: E402
+from renglo.auth.auth_trees import MemoryTreeS3  # noqa: E402
 
 
 def _doc(index, entity_id, entity_type, name, status=None):
@@ -168,7 +169,9 @@ class FakeAuthModel:
 
 def _controller(store):
     with patch("renglo.auth.auth_controller.AuthModel", return_value=store):
-        return AuthController(config={})
+        controller = AuthController(config={"S3_BUCKET_NAME": "bucket"})
+    controller.trees._client = MemoryTreeS3()
+    return controller
 
 
 class SoftDeleteControllerTests(unittest.TestCase):
@@ -314,6 +317,18 @@ class SoftDeleteControllerTests(unittest.TestCase):
     def test_new_entities_are_marked_active(self):
         created = self.auth.create_entity("org", portfolio_id="p_live", name="New")
         self.assertEqual(created["document"]["status"], ENTITY_STATUS_ACTIVE)
+
+    def test_new_tool_installs_are_written_as_extensions(self):
+        created = self.auth.create_entity(
+            "tool",
+            portfolio_id="p_live",
+            name="Dumbo",
+            handle="dumbo",
+        )
+        document = created["document"]
+        self.assertEqual(document["type"], "extension")
+        self.assertEqual(document["index"], "irn:entity:portfolio/extension:p_live/*")
+        self.assertTrue(document["irn"].startswith("irn:entity:portfolio/extension:p_live/"))
 
     def test_team_delete_still_removes_a_team(self):
         removed = self.auth.remove_team_funnel(portfolio_id="p_live", team_id="t1")

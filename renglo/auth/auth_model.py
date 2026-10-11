@@ -63,24 +63,38 @@ class AuthModel:
                 Filter=f'email = "{email}"'  # Filter by email
             )
 
-            # Check if a user was found
-            if response['Users']:
-                user = response['Users'][0]  # Get the first user from the response
-
-                # Extract Cognito User ID (the 'sub' attribute)
-                cognito_user_id = next(
-                    (attr['Value'] for attr in user['Attributes'] if attr['Name'] == 'sub'), 
-                    None
+            # The app user id is the hash of Cognito Username, the same
+            # string the ID token puts in cognito:username. For a password
+            # user that username equals sub. For Google it is Google_<subject>
+            # and sub is a different id.
+            matches = []
+            for user in response.get('Users') or []:
+                username = str(user.get('Username') or '').strip()
+                if not username:
+                    continue
+                sub = next(
+                    (attr['Value'] for attr in user.get('Attributes') or [] if attr.get('Name') == 'sub'),
+                    None,
                 )
+                matches.append({
+                    'username': username,
+                    'sub': sub,
+                    'status': user.get('UserStatus') or '',
+                })
 
-                if cognito_user_id:
-                    return {
-                        "success":True, 
-                        "message": "User found", 
-                        "document": {'email':email,'cognito_user_id':cognito_user_id},
-                        "status" : 200
-                    } 
-                        
+            if matches:
+                return {
+                    "success": True,
+                    "message": "User found",
+                    "document": {
+                        'email': email,
+                        'cognito_username': matches[0]['username'],
+                        'cognito_user_id': matches[0].get('sub'),
+                        'matches': matches,
+                    },
+                    "status": 200,
+                }
+
             return {
                 "success":False, 
                 "message": "User not found",

@@ -21,7 +21,7 @@ DEFAULT_INVITE = {
     "subject": "You have been invited to {team} on {appName}",
     "subjectHint": "You have been invited to a team on {appName}",
     "heading": "Hello from {appName}",
-    "intro": "You have been invited by {inviter} to team {team}.",
+    "intro": "You have been invited by {inviter} to team {team}. Sign in and accept the invitation to join.",
     "code": "Your invite code is: {code}",
     "link": "Follow this link:",
 }
