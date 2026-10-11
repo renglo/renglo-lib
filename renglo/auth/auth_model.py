@@ -477,6 +477,32 @@ class AuthModel:
                 }
         
     
+    def put_entity_exclusive(self, data):
+        """Insert an entity only when that index/_id pair does not exist yet."""
+        data['modified'] = datetime.now().isoformat()
+        try:
+            response = self.entity_table.put_item(
+                Item=data,
+                ConditionExpression='attribute_not_exists(#idx) AND attribute_not_exists(#id)',
+                ExpressionAttributeNames={'#idx': 'index', '#id': '_id'},
+            )
+            return {
+                "success": True,
+                "message": "Entity created",
+                "document": data,
+                "status": response['ResponseMetadata']['HTTPStatusCode'],
+            }
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            status = 409 if code == 'ConditionalCheckFailedException' else e.response['ResponseMetadata']['HTTPStatusCode']
+            return {
+                "success": False,
+                "message": e.response['Error']['Message'],
+                "document": data,
+                "status": status,
+            }
+
+
     def create_entity(self,data):
 
         data['modified'] = datetime.now().isoformat()
