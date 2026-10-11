@@ -8,6 +8,12 @@ from ..common import *
 import uuid
 from decimal import Decimal
 from renglo.auth.auth_model import AuthModel
+from renglo.auth.federated_identity import (
+    USER_IDENTITY_INDEX,
+    identities_from_claims,
+    identity_document,
+    identity_key,
+)
 from renglo.auth.entity_status import (
     ENTITY_STATUS_ACTIVE,
     ENTITY_STATUS_DELETED,
@@ -607,6 +613,104 @@ class AuthController:
         if uid is not None:
             return uid
         return None
+
+    def record_federated_identities(self, claims):
+        """Store each identities-claim pair against the username-derived user id.
+
+        A token with no identities claim is a native login and writes nothing.
+        An existing pair that already points at this user is refreshed.
+        A pair that points at a different user is left unchanged.
+        """
+        identities = identities_from_claims(claims)
+        if not identities:
+            return {"success": True, "message": "No federated identity", "status": 200}
+        user_id = self._user_id_from_claims(claims)
+        if not user_id:
+            return {"success": False, "message": "Missing username claim", "status": 400}
+        cognito_sub = str((claims or {}).get("sub") or "")
+        email = str((claims or {}).get("email") or "")
+        now = datetime.now().isoformat()
+        for item in identities:
+            outcome = self._record_one_identity(
+                provider_name=item["provider_name"],
+                provider_subject=item["provider_subject"],
+                user_id=user_id,
+                cognito_sub=cognito_sub,
+                email=email,
+                now=now,
+            )
+            if not outcome.get("success"):
+                return outcome
+        return {"success": True, "message": "Identity recorded", "status": 200}
+
+    def _record_one_identity(
+        self,
+        *,
+        provider_name,
+        provider_subject,
+        user_id,
+        cognito_sub,
+        email,
+        now,
+    ):
+        key = identity_key(provider_name, provider_subject)
+        existing = self.AUM.get_entity(USER_IDENTITY_INDEX, key)
+        if existing.get("success"):
+            return self._refresh_or_reject_identity(
+                existing.get("document") or {},
+                user_id=user_id,
+                now=now,
+                provider_name=provider_name,
+            )
+        document = identity_document(
+            provider_name=provider_name,
+            provider_subject=provider_subject,
+            user_id=user_id,
+            cognito_sub=cognito_sub,
+            email=email,
+            linked_at=now,
+        )
+        created = self.AUM.put_entity_exclusive(document)
+        if created.get("success"):
+            self.logger.info(
+                "Federated identity recorded provider=%s user_id=%s",
+                provider_name,
+                user_id,
+            )
+            return {"success": True, "message": "Identity recorded", "status": 200}
+        if created.get("status") != 409:
+            return created
+        raced = self.AUM.get_entity(USER_IDENTITY_INDEX, key)
+        if raced.get("success"):
+            return self._refresh_or_reject_identity(
+                raced.get("document") or {},
+                user_id=user_id,
+                now=now,
+                provider_name=provider_name,
+            )
+        return {
+            "success": False,
+            "message": "Could not record federated identity",
+            "status": created.get("status") or 409,
+        }
+
+    def _refresh_or_reject_identity(self, document, *, user_id, now, provider_name):
+        current = str(document.get("user_id") or "")
+        if current != user_id:
+            self.logger.error(
+                "Federated identity already belongs to another user provider=%s",
+                provider_name,
+            )
+            return {
+                "success": False,
+                "message": "This identity is already linked to another user.",
+                "status": 409,
+            }
+        updated = dict(document)
+        updated["last_authenticated_at"] = now
+        updated["modified"] = now
+        self.AUM.update_entity(updated)
+        return {"success": True, "message": "Identity refreshed", "status": 200}
 
 
     def invite_user(self,email,team_id,portfolio_id,sender_id,sender_profile=None):
