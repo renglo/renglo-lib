@@ -12,25 +12,73 @@ sys.path.insert(0, str(ROOT))
 
 from renglo.auth.auth_controller import AuthController  # noqa: E402
 from renglo.auth.federated_identity import USER_IDENTITY_INDEX  # noqa: E402
-from renglo.auth.federated_signup import (  # noqa: E402
-    external_signup_error,
-    should_deny_external_signup,
-)
+from renglo.auth.federated_signup import external_signup_action  # noqa: E402
 
 
 class PreSignupDecisionTests(unittest.TestCase):
     def test_new_external_email_is_allowed(self):
-        self.assertFalse(should_deny_external_signup("PreSignUp_ExternalProvider", False))
-        self.assertIsNone(external_signup_error("PreSignUp_ExternalProvider", False))
+        self.assertEqual(
+            external_signup_action(
+                "PreSignUp_ExternalProvider",
+                email_taken=False,
+                email_verified=True,
+                can_link=False,
+            ),
+            "allow",
+        )
 
-    def test_existing_email_is_denied_for_any_external_provider(self):
-        self.assertTrue(should_deny_external_signup("PreSignUp_ExternalProvider", True))
-        self.assertIn("already exists", external_signup_error("PreSignUp_ExternalProvider", True))
+    def test_verified_existing_email_is_linked(self):
+        self.assertEqual(
+            external_signup_action(
+                "PreSignUp_ExternalProvider",
+                email_taken=True,
+                email_verified=True,
+                can_link=True,
+            ),
+            "link",
+        )
+
+    def test_unverified_existing_email_is_denied(self):
+        self.assertEqual(
+            external_signup_action(
+                "PreSignUp_ExternalProvider",
+                email_taken=True,
+                email_verified=False,
+                can_link=True,
+            ),
+            "deny",
+        )
+
+    def test_existing_email_without_a_link_target_is_denied(self):
+        self.assertEqual(
+            external_signup_action(
+                "PreSignUp_ExternalProvider",
+                email_taken=True,
+                email_verified=True,
+                can_link=False,
+            ),
+            "deny",
+        )
 
     def test_native_paths_stay_open_when_the_email_exists(self):
-        self.assertFalse(should_deny_external_signup("PreSignUp_SignUp", True))
-        self.assertFalse(should_deny_external_signup("PreSignUp_AdminCreateUser", True))
-        self.assertIsNone(external_signup_error("PreSignUp_AdminCreateUser", True))
+        self.assertEqual(
+            external_signup_action(
+                "PreSignUp_SignUp",
+                email_taken=True,
+                email_verified=True,
+                can_link=True,
+            ),
+            "allow",
+        )
+        self.assertEqual(
+            external_signup_action(
+                "PreSignUp_AdminCreateUser",
+                email_taken=True,
+                email_verified=False,
+                can_link=False,
+            ),
+            "allow",
+        )
 
 
 class _Store:
