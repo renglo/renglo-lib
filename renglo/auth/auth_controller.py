@@ -901,6 +901,269 @@ class AuthController:
         row = self._issue_team_invite(email, team_id, replace=True)
         return self._invitation_result(email, row)
 
+    JOIN_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
+    JOIN_TOKEN_INVALID = 'That invitation token is not valid.'
+
+    @staticmethod
+    def admin_team_name(portfolio_name):
+        cleaned = str(portfolio_name or '').strip()
+        return f'{cleaned} Admin' if cleaned else 'Admin'
+
+    @staticmethod
+    def staff_team_name(portfolio_name):
+        cleaned = str(portfolio_name or '').strip()
+        return f'{cleaned} Staff' if cleaned else 'Staff'
+
+    @classmethod
+    def _pick_core_teams(cls, portfolio_name, teams):
+        """Choose this portfolio's admin and staff teams by name.
+
+        `teams` must already be limited to one portfolio. A team named Admin
+        on another portfolio is not in this list, so it cannot be selected.
+        """
+        qualified_admin = cls.admin_team_name(portfolio_name)
+        qualified_staff = cls.staff_team_name(portfolio_name)
+        admin = None
+        staff = None
+        for team in teams or []:
+            if entity_is_deleted(team):
+                continue
+            name = str(team.get('name') or '').strip()
+            if name == qualified_admin:
+                admin = team
+            elif name == 'Admin' and admin is None:
+                admin = team
+            elif name == qualified_staff:
+                staff = team
+            elif name == 'Staff' and staff is None:
+                staff = team
+        return admin, staff
+
+    def _portfolio_team_documents(self, portfolio_id):
+        index = 'irn:entity:portfolio/team:' + portfolio_id + '/*'
+        listed = self.AUM.list_entity(index, limit=500)
+        if not listed or not listed.get('success'):
+            return []
+        return ((listed.get('document') or {}).get('items') or [])
+
+    def _caller_in_portfolio(self, user_id, portfolio_id):
+        response = self.list_rel('user:team', user_id=user_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        for item in items:
+            team_id = item.get('rel')
+            if team_id and self._portfolio_id_for_team(team_id) == portfolio_id:
+                return True
+        return False
+
+    def core_teams_for_member(self, portfolio_id, user_id):
+        """Admin and staff ids for a portfolio the caller already belongs to.
+
+        Membership is not changed. A staff member can learn the admin team id
+        so a new org can be granted to that team, and still is not added to it.
+        """
+        if not self._caller_in_portfolio(user_id, portfolio_id):
+            return {
+                "success": False,
+                "message": "You are not a member of this portfolio.",
+                "status": 403,
+            }
+        portfolio = self.get_entity('portfolio', portfolio_id=portfolio_id)
+        if not portfolio.get('success'):
+            return portfolio
+        portfolio_name = (portfolio.get('document') or {}).get('name') or ''
+        admin, staff = self._pick_core_teams(
+            portfolio_name,
+            self._portfolio_team_documents(portfolio_id),
+        )
+
+        def public(team):
+            if not team or not team.get('_id'):
+                return None
+            return {'team_id': team['_id'], 'name': team.get('name') or ''}
+
+        return {
+            "success": True,
+            "status": 200,
+            "document": {
+                "portfolio_name": portfolio_name,
+                "admin": public(admin),
+                "staff": public(staff),
+            },
+        }
+
+    def _new_join_code(self):
+        def block():
+            return ''.join(secrets.choice(self.JOIN_CODE_ALPHABET) for _ in range(4))
+        return f'FRM-{block()}-{block()}'
+
+    @classmethod
+    def _normalize_join_code(cls, token):
+        cleaned = re.sub(r'[^A-Za-z0-9]', '', str(token or '')).upper()
+        if len(cleaned) != 11 or not cleaned.startswith('FRM'):
+            return ''
+        return f'{cleaned[:3]}-{cleaned[3:7]}-{cleaned[7:]}'
+
+    def _join_code_result(self, code, team_id):
+        return {
+            "success": True,
+            "message": "Open invitation is ready.",
+            "status": 200,
+            "document": {"code": code, "team_id": team_id},
+        }
+
+    def _team_join_rows(self, team_id):
+        response = self.list_rel('team:join', team_id=team_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        rows = []
+        for item in items:
+            code = str(item.get('rel') or '').strip()
+            if code:
+                rows.append({'code': code, 'team_id': team_id})
+        return rows
+
+    def _delete_team_join_row(self, team_id, code):
+        self.delete_rel('team:join', team_id=team_id, code=code)
+        self.delete_rel('join:team', code=code, team_id=team_id)
+
+    def _team_portfolio_or_error(self, team_id):
+        portfolio_id = self._portfolio_id_for_team(team_id)
+        if not portfolio_id:
+            return None, {
+                "success": False,
+                "message": "Team was not found.",
+                "status": 404,
+            }
+        return portfolio_id, None
+
+    def get_team_join_code(self, team_id, portfolio_id, sender_id):
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        rows = self._team_join_rows(team_id)
+        if not rows:
+            return {
+                "success": True,
+                "message": "This team has no open invitation.",
+                "status": 200,
+                "document": None,
+            }
+        return self._join_code_result(rows[0]['code'], team_id)
+
+    def issue_team_join_code(self, team_id, portfolio_id, sender_id, replace=False):
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        existing = self._team_join_rows(team_id)
+        if existing and not replace:
+            return self._join_code_result(existing[0]['code'], team_id)
+        for row in existing:
+            self._delete_team_join_row(team_id, row['code'])
+        code = self._new_join_code()
+        created = self.create_rel('team:join', team_id=team_id, code=code)
+        if not created or not created.get('success'):
+            return created
+        created = self.create_rel('join:team', code=code, team_id=team_id)
+        if not created or not created.get('success'):
+            return created
+        return self._join_code_result(code, team_id)
+
+    def revoke_team_join_code(self, team_id, portfolio_id, sender_id):
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        for row in self._team_join_rows(team_id):
+            self._delete_team_join_row(team_id, row['code'])
+        return {
+            "success": True,
+            "message": "Open invitation revoked.",
+            "status": 200,
+            "document": None,
+        }
+
+    def _access_user_ids(self, team_id):
+        response = self.list_rel('team:access', team_id=team_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        return [item.get('rel') for item in items if item.get('rel')]
+
+    def redeem_join_code(self, user_id, token):
+        code = self._normalize_join_code(token)
+        if not code:
+            return {"success": False, "message": self.JOIN_TOKEN_INVALID, "status": 404}
+        response = self.list_rel('join:team', code=code)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        team_id = items[0].get('rel') if items else ''
+        if not team_id:
+            return {"success": False, "message": self.JOIN_TOKEN_INVALID, "status": 404}
+        names = self._invite_place_names(team_id)
+        document = {
+            "status": "access-requested",
+            "team_id": team_id,
+            "team_name": names['team_name'],
+            "portfolio_name": names['portfolio_name'],
+        }
+        if self._caller_on_team(user_id, team_id):
+            document['status'] = 'member'
+            return {
+                "success": True,
+                "message": "You are already on this team.",
+                "status": 200,
+                "document": document,
+            }
+        if user_id not in self._access_user_ids(team_id):
+            created = self.create_rel('team:access', team_id=team_id, user_id=user_id)
+            if not created or not created.get('success'):
+                return created
+        return {
+            "success": True,
+            "message": "Access requested.",
+            "status": 200,
+            "document": document,
+        }
+
+    def approve_team_access(self, team_id, user_id, approver_id):
+        portfolio_id, error = self._team_portfolio_or_error(team_id)
+        if error:
+            return error
+        context = self._invite_context(portfolio_id, team_id, approver_id)
+        if not context.get('success'):
+            return context
+        if user_id not in self._access_user_ids(team_id):
+            return {
+                "success": False,
+                "message": "That access request is no longer waiting.",
+                "status": 404,
+            }
+        if not self._caller_on_team(user_id, team_id):
+            added = self.add_user_to_team_funnel(user_id=user_id, team_id=team_id)
+            if not added.get('success'):
+                return added
+        self.delete_rel('team:access', team_id=team_id, user_id=user_id)
+        return {
+            "success": True,
+            "message": "Access approved.",
+            "status": 200,
+        }
+
+    def reject_team_access(self, team_id, user_id, approver_id):
+        portfolio_id, error = self._team_portfolio_or_error(team_id)
+        if error:
+            return error
+        context = self._invite_context(portfolio_id, team_id, approver_id)
+        if not context.get('success'):
+            return context
+        if user_id not in self._access_user_ids(team_id):
+            return {
+                "success": False,
+                "message": "That access request is no longer waiting.",
+                "status": 404,
+            }
+        self.delete_rel('team:access', team_id=team_id, user_id=user_id)
+        return {
+            "success": True,
+            "message": "Access rejected.",
+            "status": 200,
+        }
+
     def _live_email_invites(self, email):
         """Live invitations stored for this address. Membership is not implied."""
         email = self._normalize_invite_email(email)
@@ -1969,6 +2232,18 @@ class AuthController:
             index = 'irn:rel:team:accept:' + data['team_id'] + ':*'
             rel = data['user_id'] + '|' + data['email'] + '|' + str(data['accepted_at'])
 
+        elif reltype == 'team:join':
+            index = 'irn:rel:team:join:' + data['team_id'] + ':*'
+            rel = data['code']
+
+        elif reltype == 'join:team':
+            index = 'irn:rel:join:team:' + data['code'] + ':*'
+            rel = data['team_id']
+
+        elif reltype == 'team:access':
+            index = 'irn:rel:team:access:' + data['team_id'] + ':*'
+            rel = data['user_id']
+
 
         rel_document = {
             'index' : index,
@@ -1976,7 +2251,7 @@ class AuthController:
         }
             
         logged = dict(rel_document)
-        if reltype in ('email:hash:ttl', 'hash:team', 'team:invite'):
+        if reltype in ('email:hash:ttl', 'hash:team', 'team:invite', 'team:join', 'join:team'):
             logged['rel'] = '[invite]'
         self.logger.debug('Rel to Create:'+str(logged))
         response = self.AUM.create_rel(**rel_document)
@@ -2063,6 +2338,18 @@ class AuthController:
             index = 'irn:rel:team:accept:' + data['team_id'] + ':*'
             rel = data['user_id'] + '|' + data['email'] + '|' + str(data['accepted_at'])
 
+        elif reltype == 'team:join':
+            index = 'irn:rel:team:join:' + data['team_id'] + ':*'
+            rel = data['code']
+
+        elif reltype == 'join:team':
+            index = 'irn:rel:join:team:' + data['code'] + ':*'
+            rel = data['team_id']
+
+        elif reltype == 'team:access':
+            index = 'irn:rel:team:access:' + data['team_id'] + ':*'
+            rel = data['user_id']
+
 
         rel_document = {
             'index' : index,
@@ -2070,7 +2357,7 @@ class AuthController:
         }
             
         logged = dict(rel_document)
-        if reltype in ('email:hash:ttl', 'hash:team', 'team:invite'):
+        if reltype in ('email:hash:ttl', 'hash:team', 'team:invite', 'team:join', 'join:team'):
             logged['rel'] = '[invite]'
         self.logger.debug('Rel to Delete:'+str(logged))
         response = self.AUM.delete_rel(**rel_document)
@@ -2221,8 +2508,17 @@ class AuthController:
 
         elif reltype == 'team:accept':
             index = 'irn:rel:team:accept:' + data['team_id'] + ':*'
-            
- 
+
+        elif reltype == 'team:join':
+            index = 'irn:rel:team:join:' + data['team_id'] + ':*'
+
+        elif reltype == 'join:team':
+            index = 'irn:rel:join:team:' + data['code'] + ':*'
+
+        elif reltype == 'team:access':
+            index = 'irn:rel:team:access:' + data['team_id'] + ':*'
+
+
         self.logger.debug('List Rels > '+index)
         response = self.AUM.list_rel(index)
 
@@ -2278,6 +2574,7 @@ class AuthController:
             
 
             self._attach_pending_invites(userdict, kwargs['team_id'])
+            self._attach_access_requests(userdict, kwargs['team_id'])
 
             result['success'] = True
             result['message'] = 'Users in the team'
@@ -2321,7 +2618,24 @@ class AuthController:
             if public.get('link'):
                 userdict['invite:' + email]['link'] = public['link']
 
-
+    def _attach_access_requests(self, userdict, team_id):
+        member_ids = {
+            str(row.get('user_id') or '')
+            for row in userdict.values()
+            if row.get('membership') == 'active'
+        }
+        for user_id in self._access_user_ids(team_id):
+            if user_id in member_ids:
+                continue
+            user = self.get_entity('user', user_id=user_id)
+            document = user.get('document') if user.get('success') else {}
+            userdict['access:' + user_id] = {
+                'user_id': user_id,
+                'name': (document or {}).get('name') or '',
+                'last': (document or {}).get('slot_a') or '',
+                'email': (document or {}).get('email') or '',
+                'membership': 'access-requested',
+            }
 
     def assign_team_orgs(self,**kwargs):
 
@@ -2499,8 +2813,10 @@ class AuthController:
 
         
 
-        #3. Create a default Team
-        kwargs['name'] = 'Admin'
+        #3. Create a default Team named for this portfolio, so it cannot be
+        # confused with an Admin team that already exists somewhere else.
+        portfolio_name = str(kwargs.get('name') or '').strip()
+        kwargs['name'] = f'{portfolio_name} Admin' if portfolio_name else 'Admin'
         kwargs['about'] = 'This team enables its users to change portfolio settings.'
         kwargs['portfolio_id'] = response_1['document']['_id'] #This is the portfolio_id
         kwargs.pop('preferences', None)

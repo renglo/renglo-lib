@@ -23,6 +23,9 @@ INVITE_REL_TYPES = frozenset({
     "hash:team",
     "team:invite",
     "team:accept",
+    "team:join",
+    "join:team",
+    "team:access",
 })
 TEAM_GRANT_REL_TYPES = frozenset({
     "team:tool",
