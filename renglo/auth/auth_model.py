@@ -8,6 +8,7 @@ from datetime import datetime
 import uuid
 from decimal import Decimal
 
+from renglo.auth.entity_status import HARD_DELETE_REFUSED, entity_forbids_hard_delete
 from renglo.wl import build_raw_email
 
 logger = logging.getLogger(__name__)
@@ -62,24 +63,38 @@ class AuthModel:
                 Filter=f'email = "{email}"'  # Filter by email
             )
 
-            # Check if a user was found
-            if response['Users']:
-                user = response['Users'][0]  # Get the first user from the response
-
-                # Extract Cognito User ID (the 'sub' attribute)
-                cognito_user_id = next(
-                    (attr['Value'] for attr in user['Attributes'] if attr['Name'] == 'sub'), 
-                    None
+            # The app user id is the hash of Cognito Username, the same
+            # string the ID token puts in cognito:username. For a password
+            # user that username equals sub. For Google it is Google_<subject>
+            # and sub is a different id.
+            matches = []
+            for user in response.get('Users') or []:
+                username = str(user.get('Username') or '').strip()
+                if not username:
+                    continue
+                sub = next(
+                    (attr['Value'] for attr in user.get('Attributes') or [] if attr.get('Name') == 'sub'),
+                    None,
                 )
+                matches.append({
+                    'username': username,
+                    'sub': sub,
+                    'status': user.get('UserStatus') or '',
+                })
 
-                if cognito_user_id:
-                    return {
-                        "success":True, 
-                        "message": "User found", 
-                        "document": {'email':email,'cognito_user_id':cognito_user_id},
-                        "status" : 200
-                    } 
-                        
+            if matches:
+                return {
+                    "success": True,
+                    "message": "User found",
+                    "document": {
+                        'email': email,
+                        'cognito_username': matches[0]['username'],
+                        'cognito_user_id': matches[0].get('sub'),
+                        'matches': matches,
+                    },
+                    "status": 200,
+                }
+
             return {
                 "success":False, 
                 "message": "User not found",
@@ -476,6 +491,32 @@ class AuthModel:
                 }
         
     
+    def put_entity_exclusive(self, data):
+        """Insert an entity only when that index/_id pair does not exist yet."""
+        data['modified'] = datetime.now().isoformat()
+        try:
+            response = self.entity_table.put_item(
+                Item=data,
+                ConditionExpression='attribute_not_exists(#idx) AND attribute_not_exists(#id)',
+                ExpressionAttributeNames={'#idx': 'index', '#id': '_id'},
+            )
+            return {
+                "success": True,
+                "message": "Entity created",
+                "document": data,
+                "status": response['ResponseMetadata']['HTTPStatusCode'],
+            }
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            status = 409 if code == 'ConditionalCheckFailedException' else e.response['ResponseMetadata']['HTTPStatusCode']
+            return {
+                "success": False,
+                "message": e.response['Error']['Message'],
+                "document": data,
+                "status": status,
+            }
+
+
     def create_entity(self,data):
 
         data['modified'] = datetime.now().isoformat()
@@ -524,6 +565,17 @@ class AuthModel:
 
 
     def delete_entity(self,**entity_document):
+
+        # Team and extension deletes call this helper. Portfolio and org rows
+        # stay in the table and are hidden by status instead.
+        if entity_forbids_hard_delete(entity_document):
+            logger.debug('MODEL: Refused hard delete of portfolio or org')
+            return {
+                "success": False,
+                "message": HARD_DELETE_REFUSED,
+                "document": entity_document,
+                "status": 400,
+            }
 
         keys = {
             'index': entity_document['index'],

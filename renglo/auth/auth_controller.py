@@ -1,17 +1,31 @@
 #auth_controller.py
-import boto3
 import copy
-import json
 import logging
 from datetime import datetime
 from ..common import *
 import uuid
 from decimal import Decimal
 from renglo.auth.auth_model import AuthModel
-from renglo.common import sanitize_entity_tags
+from renglo.auth.auth_trees import AuthTreeStore, coalesced_trees
+from renglo.auth.federated_identity import (
+    USER_IDENTITY_INDEX,
+    identities_from_claims,
+    identity_document,
+    identity_key,
+)
+from renglo.auth.entity_status import (
+    ENTITY_STATUS_ACTIVE,
+    ENTITY_STATUS_DELETED,
+    HARD_DELETE_REFUSED,
+    entity_forbids_hard_delete,
+    entity_is_deleted,
+)
+from renglo.common import sanitize_entity_preferences, sanitize_entity_tags
 from renglo.wl import invite_inline_images, render_invite_email
 import re
+import secrets
 import time
+from urllib.parse import quote
 from validate_email import validate_email
 from renglo.runtime import get_current_jwt_claims
 
@@ -26,10 +40,9 @@ class AuthController:
     def __init__(self, config=None, tid=False, ip=False):
         self.config = config or {}
         self.AUM = AuthModel(config=self.config)
+        self.trees = AuthTreeStore(self)
         self._invocation_user_id = None
         self._invocation_jwt_claims = None
-        # Per-instance auth tree cache: {user_id: tree_dict}
-        self._auth_tree_cache = None
         # Set up logger
         self.logger = logging.getLogger(self.__class__.__name__)
         # Configure logger if not already configured (prevents duplicate handlers)
@@ -44,104 +57,24 @@ class AuthController:
         
         
     def refresh_tree(self):
-    
-        # Generate tree
-        self.logger.error(f"Refreshing tree")
-        data = {}
-        data['user_id'] = self.get_current_user()
-        response = self.get_tree_full(**data)
+        return self.refresh_user_tree(self.get_current_user())
 
-        # Initialize S3 client and define bucket name and file path
-        s3_client = boto3.client('s3')  # Ensure boto3 is imported
-        bucket_name = self.config.get('S3_BUCKET_NAME')  
-        file_path = f'auth/tree/{data["user_id"]}'
-
-        # Store the new version in S3
-        try:
-            s3_client.put_object(Bucket=bucket_name, Key=file_path, Body=json.dumps(response['document']))
-            if response.get('success') and response.get('document'):
-                self._auth_tree_cache = {
-                    'user_id': data['user_id'],
-                    'tree': response['document'],
-                }
-        except Exception as e:
-            self.logger.error(f"Failed to upload to S3: {str(e)}")
-            return {"success": False, "message": "Failed to upload to S3", "status": 500}, 500
-        
-        return response
+    def refresh_user_tree(self, user_id):
+        """Rebuild this caller's user tree and the team and portfolio trees they use."""
+        if not user_id:
+            return {"success": False, "message": "User identity required", "status": 400}
+        self.logger.error("Refreshing tree")
+        return self.trees.repair(user_id)
 
     def get_cached_tree(self, user_id):
-        """
-        Load the user's auth tree from S3 (auth/tree/{user_id}).
-        On miss, rebuild via get_tree_full and cache to S3.
-        Caches the parsed tree on this instance for reuse within the same request.
-        """
+        """Assemble the frontend tree from the user, team, and portfolio trees."""
         if not user_id:
             return {
                 "success": False,
                 "message": "User identity required",
                 "status": 401,
             }
-
-        cached = getattr(self, "_auth_tree_cache", None)
-        if cached and cached.get("user_id") == user_id and cached.get("tree") is not None:
-            return {
-                "success": True,
-                "document": cached["tree"],
-                "status": 200,
-                "cached": True,
-            }
-
-        bucket_name = self.config.get("S3_BUCKET_NAME")
-        if not bucket_name:
-            return {
-                "success": False,
-                "message": "S3_BUCKET_NAME not configured",
-                "status": 500,
-            }
-
-        s3_client = boto3.client("s3")
-        file_path = f"auth/tree/{user_id}"
-
-        try:
-            response = s3_client.get_object(Bucket=bucket_name, Key=file_path)
-            tree = json.loads(response["Body"].read())
-            tree = self.normalize_auth_tree(tree)
-            self._auth_tree_cache = {"user_id": user_id, "tree": tree}
-            self.logger.debug("Auth tree loaded from S3 for user %s", user_id)
-            return {
-                "success": True,
-                "document": tree,
-                "status": 200,
-                "cached": False,
-            }
-        except Exception as e:
-            # Miss or read error — rebuild from DynamoDB relationships
-            self.logger.debug(
-                "Auth tree not found in S3 for user %s (%s); rebuilding", user_id, e
-            )
-
-        rebuild = self.get_tree_full(user_id=user_id)
-        if not rebuild.get("success"):
-            return rebuild
-
-        tree = rebuild["document"]
-        tree = self.normalize_auth_tree(tree)
-        try:
-            s3_client.put_object(
-                Bucket=bucket_name, Key=file_path, Body=json.dumps(tree)
-            )
-        except Exception as e:
-            self.logger.error("Failed to upload auth tree to S3: %s", e)
-            # Still return the rebuilt tree so authorization can proceed
-
-        self._auth_tree_cache = {"user_id": user_id, "tree": tree}
-        return {
-            "success": True,
-            "document": tree,
-            "status": 200,
-            "cached": False,
-        }
+        return self.trees.assemble(user_id)
 
     @staticmethod
     def _normalize_roles_list(raw):
@@ -296,6 +229,7 @@ class AuthController:
             "name": "ALL",
             "handle": org_id,
             "tags": {},
+            "preferences": {},
             "tools": list(set(tools_for_all)),
             "extensions": list(set(extensions_for_all)),
             "active": active,
@@ -342,23 +276,52 @@ class AuthController:
                     roles.append(role_id)
         return roles
 
+    @staticmethod
+    def _org_granted(teams, org_id):
+        for team in (teams or {}).values():
+            for bag in ("tools", "extensions"):
+                for access in ((team or {}).get(bag) or {}).values():
+                    if org_id in ((access or {}).get("orgs") or []):
+                        return True
+        return False
+
+    @classmethod
+    def _granted_entity_org(cls, teams, portfolio_orgs):
+        for org_id in portfolio_orgs or {}:
+            if cls.is_portfolio_scope_org(org_id):
+                continue
+            if cls._org_granted(teams, org_id):
+                return True
+        return False
+
+    @staticmethod
+    def _tool_granted(teams, tool_id, org_id):
+        for team in (teams or {}).values():
+            access = AuthController._team_installable_access(team, tool_id)
+            if org_id in (access.get("orgs") or []):
+                return True
+        return False
+
     def resolve_tool_roles(self, portfolio, org, tool_id, user_id=None):
         """
-        Resolve the caller's roles for a tool in an org from the S3 auth tree.
-        tool_id may be a tool id or handle. Returns a list of role strings.
+        Resolve the caller's roles for a tool in an org from the team trees
+        on that portfolio. tool_id may be an id or a handle.
         """
         resolved_user_id = user_id if user_id is not None else self.get_current_user()
         if not resolved_user_id:
             return []
-        tree_response = self.get_cached_tree(resolved_user_id)
-        if not tree_response.get("success"):
+        scope, err = self.trees.scope(resolved_user_id, portfolio)
+        if err or not scope or not scope.get("teams"):
             return []
-        tree = tree_response.get("document") or {}
-        portfolio_node = (tree.get("portfolios") or {}).get(portfolio) or {}
+        portfolio_node = scope.get("portfolio") or {}
+        if portfolio_node.get("deleted"):
+            return []
         resolved_tool_id = self._resolve_tool_ref(portfolio_node, tool_id)
         if not resolved_tool_id:
             return []
-        return self._collect_roles_for_tool_org(portfolio_node, org, resolved_tool_id)
+        return self._collect_roles_for_tool_org(
+            {"teams": scope["teams"]}, org, resolved_tool_id
+        )
 
     def authorize(
         self,
@@ -371,9 +334,11 @@ class AuthController:
         user_id=None,
     ):
         """
-        Authorize the current (or given) user against their S3-cached auth tree.
+        Authorize the current (or given) user from the user tree and the team
+        trees on this portfolio. The portfolio tree is read to confirm the org
+        and to resolve a handle. Other portfolios are not loaded.
 
-        resource='org': user may access the org when portfolios[p].orgs[o].active.
+        resource='org': user may access the org when one of those teams grants it.
         org='_all' is a portfolio-scoped pseudo-org (not in DynamoDB). For
         resource='org', _all is allowed when the user has any active entity org
         in the portfolio (extension grants on real orgs). For resource='tool',
@@ -402,20 +367,19 @@ class AuthController:
                 "roles": [],
             }
 
-        tree_response = self.get_cached_tree(resolved_user_id)
-        if not tree_response.get("success"):
+        scope, err = self.trees.scope(resolved_user_id, portfolio)
+        if err:
             return {
                 "success": False,
-                "message": tree_response.get("message", "Failed to load auth tree"),
-                "status": tree_response.get("status", 500),
+                "message": err.get("message", "Failed to load auth tree"),
+                "status": err.get("status", 500),
                 "user_id": resolved_user_id,
                 "roles": [],
             }
 
-        tree = tree_response.get("document") or {}
-        portfolios = tree.get("portfolios") or {}
-        portfolio_node = portfolios.get(portfolio)
-        if not portfolio_node:
+        teams = (scope or {}).get("teams") or {}
+        portfolio_node = (scope or {}).get("portfolio") or {}
+        if not teams or portfolio_node.get("deleted"):
             self.logger.debug(
                 "Auth deny: user %s has no access to portfolio %s",
                 resolved_user_id,
@@ -444,12 +408,11 @@ class AuthController:
                 "roles": [],
             }
 
-        org_node = (portfolio_node.get("orgs") or {}).get(org_key)
+        portfolio_orgs = portfolio_node.get("orgs") or {}
         if self.is_portfolio_scope_org(org_key):
-            # _all.active is only true with an explicit _all tool grant.
-            # Org-level operations (files, data rings) should succeed when the
-            # user already has an active entity org via an extension.
-            if resource == "org" and not self._has_active_entity_org(portfolio_node):
+            # Org-level operations (files, data rings) succeed when the user
+            # already has an active entity org via an extension.
+            if resource == "org" and not self._granted_entity_org(teams, portfolio_orgs):
                 self.logger.debug(
                     "Auth deny: user %s has no active org in portfolio %s for _all",
                     resolved_user_id,
@@ -462,7 +425,7 @@ class AuthController:
                     "user_id": resolved_user_id,
                     "roles": [],
                 }
-        elif not org_node or org_node.get("active") is not True:
+        elif org_key not in portfolio_orgs or not self._org_granted(teams, org_key):
             self.logger.debug(
                 "Auth deny: user %s has no active access to org %s/%s",
                 resolved_user_id,
@@ -507,23 +470,13 @@ class AuthController:
                         "user_id": resolved_user_id,
                         "roles": [],
                     }
-                has_tool_org = False
-                granted_orgs = []
-                for team_id, team in (portfolio_node.get("teams") or {}).items():
-                    tool_access = self._team_installable_access(team, resolved_tool_id)
-                    team_orgs = tool_access.get("orgs") or []
-                    granted_orgs.append({"team": team_id, "orgs": team_orgs})
-                    if org_key in team_orgs:
-                        has_tool_org = True
-                        break
-                if not has_tool_org:
+                if not self._tool_granted(teams, resolved_tool_id, org_key):
                     self.logger.info(
-                        "Auth deny: user %s has no tool %s access in org %s/%s (grants=%s)",
+                        "Auth deny: user %s has no tool %s access in org %s/%s",
                         resolved_user_id,
                         resolved_tool_id,
                         portfolio,
                         org_key,
-                        granted_orgs,
                     )
                     return {
                         "success": False,
@@ -534,7 +487,7 @@ class AuthController:
                     }
             if resolved_tool_id:
                 roles = self._collect_roles_for_tool_org(
-                    portfolio_node, org_key, resolved_tool_id
+                    {"teams": teams}, org_key, resolved_tool_id
                 )
 
         # action reserved for future extension-level checks
@@ -600,125 +553,816 @@ class AuthController:
             return uid
         return None
 
+    def record_federated_identities(self, claims):
+        """Store each identities-claim pair against the username-derived user id.
+
+        A token with no identities claim is a native login and writes nothing.
+        An existing pair that already points at this user is refreshed.
+        A pair that points at a different user is left unchanged.
+        """
+        identities = identities_from_claims(claims)
+        if not identities:
+            return {"success": True, "message": "No federated identity", "status": 200}
+        user_id = self._user_id_from_claims(claims)
+        if not user_id:
+            return {"success": False, "message": "Missing username claim", "status": 400}
+        cognito_sub = str((claims or {}).get("sub") or "")
+        email = str((claims or {}).get("email") or "")
+        now = datetime.now().isoformat()
+        for item in identities:
+            outcome = self._record_one_identity(
+                provider_name=item["provider_name"],
+                provider_subject=item["provider_subject"],
+                user_id=user_id,
+                cognito_sub=cognito_sub,
+                email=email,
+                now=now,
+            )
+            if not outcome.get("success"):
+                return outcome
+        return {"success": True, "message": "Identity recorded", "status": 200}
+
+    def _record_one_identity(
+        self,
+        *,
+        provider_name,
+        provider_subject,
+        user_id,
+        cognito_sub,
+        email,
+        now,
+    ):
+        key = identity_key(provider_name, provider_subject)
+        existing = self.AUM.get_entity(USER_IDENTITY_INDEX, key)
+        if existing.get("success"):
+            return self._refresh_or_reject_identity(
+                existing.get("document") or {},
+                user_id=user_id,
+                now=now,
+                provider_name=provider_name,
+            )
+        document = identity_document(
+            provider_name=provider_name,
+            provider_subject=provider_subject,
+            user_id=user_id,
+            cognito_sub=cognito_sub,
+            email=email,
+            linked_at=now,
+        )
+        created = self.AUM.put_entity_exclusive(document)
+        if created.get("success"):
+            self.logger.info(
+                "Federated identity recorded provider=%s user_id=%s",
+                provider_name,
+                user_id,
+            )
+            return {"success": True, "message": "Identity recorded", "status": 200}
+        if created.get("status") != 409:
+            return created
+        raced = self.AUM.get_entity(USER_IDENTITY_INDEX, key)
+        if raced.get("success"):
+            return self._refresh_or_reject_identity(
+                raced.get("document") or {},
+                user_id=user_id,
+                now=now,
+                provider_name=provider_name,
+            )
+        return {
+            "success": False,
+            "message": "Could not record federated identity",
+            "status": created.get("status") or 409,
+        }
+
+    def _refresh_or_reject_identity(self, document, *, user_id, now, provider_name):
+        current = str(document.get("user_id") or "")
+        if current != user_id:
+            self.logger.error(
+                "Federated identity already belongs to another user provider=%s",
+                provider_name,
+            )
+            return {
+                "success": False,
+                "message": "This identity is already linked to another user.",
+                "status": 409,
+            }
+        updated = dict(document)
+        updated["last_authenticated_at"] = now
+        updated["modified"] = now
+        self.AUM.update_entity(updated)
+        return {"success": True, "message": "Identity refreshed", "status": 200}
+
+
+    INVITE_READY_MESSAGE = "Invitation is ready."
+
+    @staticmethod
+    def _normalize_invite_email(email):
+        cleaned = str(email or '').strip().lower()
+        if not cleaned or any(ch in cleaned for ch in ' \t\r\n') or cleaned.count('@') != 1:
+            return ''
+        return cleaned
+
+    @staticmethod
+    def _user_has_opened_app(document):
+        """True only after a real console sign-in, not entity creation.
+
+        Creating a user row stamps last_login with a timestamp. The console
+        sets the boolean True when that person actually opens the app.
+        """
+        return bool(document) and document.get('last_login') is True
+
+    def _invite_still_valid(self, ttl):
+        return str(self.generate_ttl(0)) < str(ttl)
+
+    def _invite_code_accepted(self, email, ttl, code):
+        """Accept a live stored invite code.
+
+        Older invites use a 6-digit code derived from the server secret.
+        New invites use a long random token. The lookup already matched
+        email and code, so the derived check only guards the short codes.
+        """
+        code = str(code or '')
+        if not code:
+            return False
+        if len(code) <= 12:
+            return code == self.generate_invite_hash(email, ttl)
+        return True
+
+    def _invite_link(self, email, code):
+        base = resolve_invite_fe_base_url(self.config).rstrip('/')
+        return (
+            f"{base}/invite?code={quote(code, safe='')}"
+            f"&email={quote(email, safe='')}"
+        )
+
+    def _invite_public_document(self, email, row):
+        document = {
+            'email': email,
+            'expires_at': int(row['ttl']),
+            'expired': bool(row.get('expired')),
+            'membership': 'invited',
+        }
+        if not document['expired']:
+            document['link'] = self._invite_link(email, row['code'])
+        return document
+
+    def _caller_on_team(self, user_id, team_id):
+        response = self.list_rel('user:team', user_id=user_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        return any(item.get('rel') == team_id for item in items)
+
+    def _invite_context(self, portfolio_id, team_id, sender_id):
+        if not self._caller_on_team(sender_id, team_id):
+            return {
+                "success": False,
+                "message": "You are not a member of this team.",
+                "status": 403,
+            }
+        team = self.get_entity('team', portfolio_id=portfolio_id, team_id=team_id)
+        if not team.get('success'):
+            return team
+        portfolio = self.get_entity('portfolio', portfolio_id=portfolio_id)
+        if not portfolio.get('success'):
+            return portfolio
+        sender = self.get_entity('user', user_id=sender_id)
+        if not sender.get('success'):
+            return sender
+        return {
+            "success": True,
+            "team": team['document'],
+            "portfolio": portfolio['document'],
+            "sender": sender['document'],
+        }
+
+    @staticmethod
+    def _parse_team_invite_rel(rel):
+        email, code, ttl = str(rel or '').rsplit('|', 2)
+        return email, code, ttl
+
+    def _team_invite_rows(self, team_id):
+        response = self.list_rel('team:invite', team_id=team_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        rows = []
+        for item in items:
+            try:
+                email, code, ttl = self._parse_team_invite_rel(item.get('rel'))
+            except ValueError:
+                continue
+            rows.append({
+                'email': email,
+                'code': code,
+                'ttl': ttl,
+                'expired': not self._invite_still_valid(ttl),
+            })
+        return rows
+
+    def _delete_team_invite_row(self, team_id, row):
+        self.delete_rel(
+            'email:hash:ttl',
+            email=row['email'],
+            hash=row['code'],
+            ttl=row['ttl'],
+        )
+        self.delete_rel('hash:team', hash=row['code'], team_id=team_id)
+        self.delete_rel(
+            'team:invite',
+            team_id=team_id,
+            email=row['email'],
+            hash=row['code'],
+            ttl=row['ttl'],
+        )
+
+    def _issue_team_invite(self, email, team_id, replace=False):
+        existing = [row for row in self._team_invite_rows(team_id) if row['email'] == email]
+        live = [row for row in existing if not row['expired']]
+        if live and not replace:
+            return live[0]
+        for row in existing:
+            self._delete_team_invite_row(team_id, row)
+        code = secrets.token_urlsafe(32)
+        ttl = self.generate_ttl(offset_min=1440)
+        created = self.create_rel('email:hash:ttl', email=email, hash=code, ttl=ttl)
+        if not created.get('success'):
+            return created
+        created = self.create_rel('hash:team', hash=code, team_id=team_id)
+        if not created.get('success'):
+            return created
+        created = self.create_rel(
+            'team:invite',
+            team_id=team_id,
+            email=email,
+            hash=code,
+            ttl=ttl,
+        )
+        if not created.get('success'):
+            return created
+        return {'email': email, 'code': code, 'ttl': ttl, 'expired': False}
+
+    def _invitation_result(self, email, row):
+        if not isinstance(row, dict) or 'code' not in row:
+            return row
+        return {
+            "success": True,
+            "message": self.INVITE_READY_MESSAGE,
+            "status": 200,
+            "document": self._invite_public_document(email, row),
+        }
 
     def invite_user(self,email,team_id,portfolio_id,sender_id,sender_profile=None):
         '''
-        Invites user to a team
+        Create a team invitation and return a link the inviter can share.
 
-        INPUT
-        - email
-        - team_id
-        - portfolio_id
-        - sender_profile: optional JWT fields (name, slot_a, email) when user doc is sparse
+        The response does not say whether this email already has an account.
+        Email is sent only when the inviter asks for it.
         '''
-        # 1. Check whether the email is valid
-        #This function is not working. It is rejecting valid emails
-        '''
-        if not validate_email(email, verify=True):
-            return{
-                "success":False, 
-                "message": "Email is not valid", 
-                "status" :400
+        email = self._normalize_invite_email(email)
+        if not email:
+            return {"success": False, "message": "Email is not valid", "status": 400}
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        row = self._issue_team_invite(email, team_id, replace=False)
+        if not isinstance(row, dict) or 'code' not in row:
+            return row
+        return self._invitation_result(email, row)
+
+    def send_team_invite_email(self, email, team_id, portfolio_id, sender_id, sender_profile=None):
+        email = self._normalize_invite_email(email)
+        if not email:
+            return {"success": False, "message": "Email is not valid", "status": 400}
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        live = [
+            row for row in self._team_invite_rows(team_id)
+            if row['email'] == email and not row['expired']
+        ]
+        if not live:
+            expired = any(row['email'] == email for row in self._team_invite_rows(team_id))
+            if expired:
+                return {
+                    "success": False,
+                    "message": "This invitation has expired.",
+                    "status": 410,
                 }
-        '''
+            return {
+                "success": False,
+                "message": "There is no invitation to send.",
+                "status": 404,
+            }
+        row = live[0]
+        sender = dict(context['sender'])
+        profile = sender_profile or {}
+        for field, key in (('name', 'name'), ('slot_a', 'slot_a'), ('email', 'email')):
+            if not (sender.get(field) or '').strip():
+                fallback = (profile.get(key) or '').strip()
+                if fallback:
+                    sender[field] = fallback
+        from_email = (self.config.get('FROM_EMAIL') or '').strip()
+        if not from_email:
+            return {
+                "success": False,
+                "message": (
+                    "FROM_EMAIL is not configured. Set it in env_config / SSM "
+                    "(application SES identity from customer-config email_from)."
+                ),
+                "status": 500,
+            }
+        link = self._invite_link(email, row['code'])
+        team_label = context['portfolio'].get('name', '') + '/' + context['team'].get('name', '')
+        invite_email = render_invite_email(
+            inviter=self._inviter_display_name(sender),
+            team=team_label,
+            code=row['code'],
+            link=link,
+        )
+        sent = self.AUM.send_email(
+            sender=from_email,
+            recipient=email,
+            subject=invite_email.subject,
+            body_text=invite_email.body_text,
+            body_html=invite_email.body_html,
+            inline_images=invite_inline_images(invite_email),
+        )
+        if not sent.get('success'):
+            ses_msg = sent.get('message') or 'Could not send the invite'
+            sent['message'] = f'Could not send the invite: {ses_msg}'
+            return sent
+        result = self._invitation_result(email, row)
+        result['message'] = "Invitation email sent."
+        return result
 
-        #1b. Check if the recipient email is already part of the team
-        
+    def regenerate_team_invite(self, email, team_id, portfolio_id, sender_id, sender_profile=None):
+        email = self._normalize_invite_email(email)
+        if not email:
+            return {"success": False, "message": "Email is not valid", "status": 400}
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        row = self._issue_team_invite(email, team_id, replace=True)
+        return self._invitation_result(email, row)
 
-        #2. Check if the recipient email already exists in the user pool
-        response_1 = self.get_user_id(email)
-        self.logger.debug('User exists in pool?:'+str(response_1))
-        
-        if response_1['success']:
+    JOIN_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
+    JOIN_TOKEN_INVALID = 'That invitation token is not valid.'
 
-            #3. Check if the recipient already belongs to the portfolio.
-            user_id = response_1['document']['user_id']
-            check = self.is_user_team_same_portfolio(
-                user_id=user_id,
-                team_id=team_id
-                )
-            
-            if check:       
-                self.logger.debug('User already belongs to the portfolio:'+str(check))
-                # If yes, the user will be automatically added to the team without sending an invite
-                response = self.add_user_to_team_funnel(user_id=user_id,team_id=team_id)
-                if response['success']:
-                    self.logger.debug('User added to the team:'+str(response))
-                    return{
-                        "success":True, 
-                        "message": "User has been added to the team.", 
-                        "status" : 200
-                        }
-                else:
-                    self.logger.debug('User could not be added to the team:'+str(response))
-                    return{
-                        "success":False, 
-                        "message": "User could not be added to the team.", 
-                        "status" :400
-                        }
-            
-                
-            else:
-                # If not, the user will still get added to the team
-                self.logger.debug('Email found in the user pool but it does not belong to the portfolio. Adding new user to Team')
-                response = self.add_user_to_team_funnel(user_id=user_id,team_id=team_id)
-                if response['success']:
-                    return{
-                        "success":True, 
-                        "message": "User has been added to the team and portfolio.", 
-                        "status" : 200
-                        }
-                else:
-                    return{
-                        "success":False, 
-                        "message": "User could not be added to the team and portfolio.", 
-                        "status" :400
-                        }
-        
-        else:
-            # Email not found in the user pool
-            self.logger.debug('Email not found in the user pool')
-            pass
+    @staticmethod
+    def admin_team_name(portfolio_name):
+        cleaned = str(portfolio_name or '').strip()
+        return f'{cleaned} Admin' if cleaned else 'Admin'
 
+    @staticmethod
+    def staff_team_name(portfolio_name):
+        cleaned = str(portfolio_name or '').strip()
+        return f'{cleaned} Staff' if cleaned else 'Staff'
 
-        # USER DOES NOT EXIST IN THE USER POOL OR IT IS NOT PART OF THE PORTFOLIO, SEND EMAIL INVITE
-        response = self.invite_user_funnel(
-            email=email,
+    @classmethod
+    def _pick_core_teams(cls, portfolio_name, teams):
+        """Choose this portfolio's admin and staff teams by name.
+
+        `teams` must already be limited to one portfolio. A team named Admin
+        on another portfolio is not in this list, so it cannot be selected.
+        """
+        qualified_admin = cls.admin_team_name(portfolio_name)
+        qualified_staff = cls.staff_team_name(portfolio_name)
+        admin = None
+        staff = None
+        for team in teams or []:
+            if entity_is_deleted(team):
+                continue
+            name = str(team.get('name') or '').strip()
+            if name == qualified_admin:
+                admin = team
+            elif name == 'Admin' and admin is None:
+                admin = team
+            elif name == qualified_staff:
+                staff = team
+            elif name == 'Staff' and staff is None:
+                staff = team
+        return admin, staff
+
+    def _portfolio_team_documents(self, portfolio_id):
+        index = 'irn:entity:portfolio/team:' + portfolio_id + '/*'
+        listed = self.AUM.list_entity(index, limit=500)
+        if not listed or not listed.get('success'):
+            return []
+        return ((listed.get('document') or {}).get('items') or [])
+
+    def _caller_in_portfolio(self, user_id, portfolio_id):
+        response = self.list_rel('user:team', user_id=user_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        for item in items:
+            team_id = item.get('rel')
+            if team_id and self._portfolio_id_for_team(team_id) == portfolio_id:
+                return True
+        return False
+
+    def core_teams_for_member(self, portfolio_id, user_id):
+        """Admin and staff ids for a portfolio the caller already belongs to.
+
+        Membership is not changed. A staff member can learn the admin team id
+        so a new org can be granted to that team, and still is not added to it.
+        """
+        if not self._caller_in_portfolio(user_id, portfolio_id):
+            return {
+                "success": False,
+                "message": "You are not a member of this portfolio.",
+                "status": 403,
+            }
+        portfolio = self.get_entity('portfolio', portfolio_id=portfolio_id)
+        if not portfolio.get('success'):
+            return portfolio
+        portfolio_name = (portfolio.get('document') or {}).get('name') or ''
+        admin, staff = self._pick_core_teams(
+            portfolio_name,
+            self._portfolio_team_documents(portfolio_id),
+        )
+
+        def public(team):
+            if not team or not team.get('_id'):
+                return None
+            return {'team_id': team['_id'], 'name': team.get('name') or ''}
+
+        return {
+            "success": True,
+            "status": 200,
+            "document": {
+                "portfolio_name": portfolio_name,
+                "admin": public(admin),
+                "staff": public(staff),
+            },
+        }
+
+    def _new_join_code(self):
+        def block():
+            return ''.join(secrets.choice(self.JOIN_CODE_ALPHABET) for _ in range(4))
+        return f'FRM-{block()}-{block()}'
+
+    @classmethod
+    def _normalize_join_code(cls, token):
+        cleaned = re.sub(r'[^A-Za-z0-9]', '', str(token or '')).upper()
+        if len(cleaned) != 11 or not cleaned.startswith('FRM'):
+            return ''
+        return f'{cleaned[:3]}-{cleaned[3:7]}-{cleaned[7:]}'
+
+    def _join_code_result(self, code, team_id):
+        return {
+            "success": True,
+            "message": "Open invitation is ready.",
+            "status": 200,
+            "document": {"code": code, "team_id": team_id},
+        }
+
+    def _team_join_rows(self, team_id):
+        response = self.list_rel('team:join', team_id=team_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        rows = []
+        for item in items:
+            code = str(item.get('rel') or '').strip()
+            if code:
+                rows.append({'code': code, 'team_id': team_id})
+        return rows
+
+    def _delete_team_join_row(self, team_id, code):
+        self.delete_rel('team:join', team_id=team_id, code=code)
+        self.delete_rel('join:team', code=code, team_id=team_id)
+
+    def _team_portfolio_or_error(self, team_id):
+        portfolio_id = self._portfolio_id_for_team(team_id)
+        if not portfolio_id:
+            return None, {
+                "success": False,
+                "message": "Team was not found.",
+                "status": 404,
+            }
+        return portfolio_id, None
+
+    def get_team_join_code(self, team_id, portfolio_id, sender_id):
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        rows = self._team_join_rows(team_id)
+        if not rows:
+            return {
+                "success": True,
+                "message": "This team has no open invitation.",
+                "status": 200,
+                "document": None,
+            }
+        return self._join_code_result(rows[0]['code'], team_id)
+
+    def issue_team_join_code(self, team_id, portfolio_id, sender_id, replace=False):
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        existing = self._team_join_rows(team_id)
+        if existing and not replace:
+            return self._join_code_result(existing[0]['code'], team_id)
+        for row in existing:
+            self._delete_team_join_row(team_id, row['code'])
+        code = self._new_join_code()
+        created = self.create_rel('team:join', team_id=team_id, code=code)
+        if not created or not created.get('success'):
+            return created
+        created = self.create_rel('join:team', code=code, team_id=team_id)
+        if not created or not created.get('success'):
+            return created
+        return self._join_code_result(code, team_id)
+
+    def revoke_team_join_code(self, team_id, portfolio_id, sender_id):
+        context = self._invite_context(portfolio_id, team_id, sender_id)
+        if not context.get('success'):
+            return context
+        for row in self._team_join_rows(team_id):
+            self._delete_team_join_row(team_id, row['code'])
+        return {
+            "success": True,
+            "message": "Open invitation revoked.",
+            "status": 200,
+            "document": None,
+        }
+
+    def _access_user_ids(self, team_id):
+        response = self.list_rel('team:access', team_id=team_id)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        return [item.get('rel') for item in items if item.get('rel')]
+
+    def redeem_join_code(self, user_id, token):
+        code = self._normalize_join_code(token)
+        if not code:
+            return {"success": False, "message": self.JOIN_TOKEN_INVALID, "status": 404}
+        response = self.list_rel('join:team', code=code)
+        items = ((response or {}).get('document') or {}).get('items') or []
+        team_id = items[0].get('rel') if items else ''
+        if not team_id:
+            return {"success": False, "message": self.JOIN_TOKEN_INVALID, "status": 404}
+        names = self._invite_place_names(team_id)
+        document = {
+            "status": "access-requested",
+            "team_id": team_id,
+            "team_name": names['team_name'],
+            "portfolio_name": names['portfolio_name'],
+        }
+        if self._caller_on_team(user_id, team_id):
+            document['status'] = 'member'
+            return {
+                "success": True,
+                "message": "You are already on this team.",
+                "status": 200,
+                "document": document,
+            }
+        if user_id not in self._access_user_ids(team_id):
+            created = self.create_rel('team:access', team_id=team_id, user_id=user_id)
+            if not created or not created.get('success'):
+                return created
+        return {
+            "success": True,
+            "message": "Access requested.",
+            "status": 200,
+            "document": document,
+        }
+
+    def approve_team_access(self, team_id, user_id, approver_id):
+        portfolio_id, error = self._team_portfolio_or_error(team_id)
+        if error:
+            return error
+        context = self._invite_context(portfolio_id, team_id, approver_id)
+        if not context.get('success'):
+            return context
+        if user_id not in self._access_user_ids(team_id):
+            return {
+                "success": False,
+                "message": "That access request is no longer waiting.",
+                "status": 404,
+            }
+        if not self._caller_on_team(user_id, team_id):
+            added = self.add_user_to_team_funnel(user_id=user_id, team_id=team_id)
+            if not added.get('success'):
+                return added
+        self.delete_rel('team:access', team_id=team_id, user_id=user_id)
+        return {
+            "success": True,
+            "message": "Access approved.",
+            "status": 200,
+        }
+
+    def reject_team_access(self, team_id, user_id, approver_id):
+        portfolio_id, error = self._team_portfolio_or_error(team_id)
+        if error:
+            return error
+        context = self._invite_context(portfolio_id, team_id, approver_id)
+        if not context.get('success'):
+            return context
+        if user_id not in self._access_user_ids(team_id):
+            return {
+                "success": False,
+                "message": "That access request is no longer waiting.",
+                "status": 404,
+            }
+        self.delete_rel('team:access', team_id=team_id, user_id=user_id)
+        return {
+            "success": True,
+            "message": "Access rejected.",
+            "status": 200,
+        }
+
+    def _live_email_invites(self, email):
+        """Live invitations stored for this address. Membership is not implied."""
+        email = self._normalize_invite_email(email)
+        if not email:
+            return []
+        found = self.AUM.list_rel_prefix('irn:rel:email:hash:ttl:*:*:*', email + ':')
+        rows = found.get('document') if found.get('success') else []
+        invites = []
+        for invitation in rows or []:
+            parts = str(invitation.get('rel') or '').split(':')
+            if len(parts) < 3:
+                continue
+            ttl = parts[-1]
+            code = parts[-2]
+            row_email = ':'.join(parts[:-2])
+            if row_email != email or not self._invite_still_valid(ttl):
+                continue
+            if not self._invite_code_accepted(email, ttl, code):
+                continue
+            teams = self.list_rel('hash:team', hash=code)
+            items = ((teams or {}).get('document') or {}).get('items') or []
+            for item in items:
+                team_id = item.get('rel')
+                if team_id:
+                    invites.append({
+                        'email': email,
+                        'code': code,
+                        'ttl': ttl,
+                        'team_id': team_id,
+                        'expired': False,
+                    })
+        return invites
+
+    def _invite_place_names(self, team_id):
+        portfolios = self.list_rel('team:portfolio', team_id=team_id)
+        items = ((portfolios or {}).get('document') or {}).get('items') or []
+        portfolio_id = items[0].get('rel') if items else ''
+        portfolio_name = ''
+        team_name = ''
+        if portfolio_id:
+            portfolio = self.get_entity('portfolio', portfolio_id=portfolio_id)
+            if portfolio.get('success'):
+                portfolio_name = (portfolio.get('document') or {}).get('name') or ''
+            team = self.get_entity('team', portfolio_id=portfolio_id, team_id=team_id)
+            if team.get('success'):
+                team_name = (team.get('document') or {}).get('name') or ''
+        return {
+            'team_name': team_name or 'a team',
+            'portfolio_name': portfolio_name,
+        }
+
+    def list_pending_invites(self, email):
+        """Invitations this signed-in address can accept. The code stays on the server."""
+        public = []
+        for row in self._live_email_invites(email):
+            names = self._invite_place_names(row['team_id'])
+            expires = row['ttl']
+            public.append({
+                'team_id': row['team_id'],
+                'team_name': names['team_name'],
+                'portfolio_name': names['portfolio_name'],
+                'expires_at': int(expires) if str(expires).isdigit() else expires,
+            })
+        return {"success": True, "document": public, "status": 200}
+
+    def _invite_for_team(self, email, team_id):
+        matches = [
+            row for row in self._live_email_invites(email)
+            if row['team_id'] == team_id
+        ]
+        return matches[0] if matches else None
+
+    def accept_team_invite(self, email, user_id, team_id):
+        """Add this person only after they agree, and record who accepted when."""
+        email = self._normalize_invite_email(email)
+        team_id = str(team_id or '').strip()
+        if not email or not user_id or not team_id:
+            return {"success": False, "message": "Missing attributes", "status": 400}
+        row = self._invite_for_team(email, team_id)
+        if not row:
+            return {
+                "success": False,
+                "message": "This invitation is no longer available.",
+                "status": 404,
+            }
+        memberships = self.list_rel('user:team', user_id=user_id)
+        already = any(
+            item.get('rel') == team_id
+            for item in (((memberships or {}).get('document') or {}).get('items') or [])
+        )
+        if not already:
+            added = self.add_user_to_team_funnel(user_id=user_id, team_id=team_id)
+            if not added.get('success'):
+                return added
+        recorded = self.create_rel(
+            'team:accept',
             team_id=team_id,
-            portfolio_id=portfolio_id,
-            sender_id=sender_id,
-            sender_profile=sender_profile or {},
-            )
-        
-        self.logger.debug('Invite User Funnel > response: '+ str(response))
+            user_id=user_id,
+            email=email,
+            accepted_at=str(int(time.time())),
+        )
+        if not recorded.get('success'):
+            self.logger.error('Acceptance was not recorded for %s on %s', user_id, team_id)
+        self._delete_team_invite_row(team_id, row)
+        refreshed = self.refresh_user_tree(user_id)
+        if not refreshed.get('success'):
+            self.logger.error('Could not refresh tree after accepting invite for %s', user_id)
+        return {"success": True, "message": "You joined the team.", "status": 200}
 
-        # Warning: Never send out the funnel response as it contains the solution to the challenge.
-        # (The challenge is to demonstrate that the invitee has access to the inbox.)
-        if response['success']:
-            return{
-                "success":True, 
-                "message": "Invite has been sent out.", 
-                "status" : 200
-                }
-        else:
-            return{
-                "success":False, 
-                "message": response.get("message") or "Invite could not be sent out.", 
-                "status" : response.get("status") or 400
-                }
+    def decline_team_invite(self, email, team_id):
+        email = self._normalize_invite_email(email)
+        team_id = str(team_id or '').strip()
+        if not email or not team_id:
+            return {"success": False, "message": "Missing attributes", "status": 400}
+        row = self._invite_for_team(email, team_id)
+        if not row:
+            return {
+                "success": False,
+                "message": "This invitation is no longer available.",
+                "status": 404,
+            }
+        self._delete_team_invite_row(team_id, row)
+        return {"success": True, "message": "Invitation declined.", "status": 200}
 
 
 
+
+    def _choose_cognito_match(self, matches):
+        """Pick the Cognito user whose Username hashes to this app's user id.
+
+        Prefer a profile that already has a user entity. Otherwise prefer a
+        password user over an external one, so a later sign-in lands on the
+        same id.
+        """
+        ranked = []
+        for match in matches or []:
+            username = str(match.get('username') or '').strip()
+            if not username:
+                continue
+            user_id = create_md5_hash(username, 9)
+            has_entity = bool(self.get_entity('user', user_id=user_id).get('success'))
+            native = str(match.get('status') or '') != 'EXTERNAL_PROVIDER'
+            ranked.append((has_entity, native, user_id, match))
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return ranked[0][2], ranked[0][3]
+
+    def _drop_phantom_sub_membership(self, *, team_id, username, sub, user_id):
+        """Remove a team link that was stored under the Cognito sub hash.
+
+        Password users are unaffected: their username and sub are the same
+        string. A Google user id is the hash of Google_<subject>, so a link
+        stored under the sub hash never resolves to a user entity.
+        """
+        username = str(username or '').strip()
+        sub = str(sub or '').strip()
+        if not team_id or not username or not sub or username == sub:
+            return
+        phantom_id = create_md5_hash(sub, 9)
+        if not phantom_id or phantom_id == user_id:
+            return
+        if self.get_entity('user', user_id=phantom_id).get('success'):
+            return
+        for reltype, payload in (
+            ('team:user', {'team_id': team_id, 'user_id': phantom_id}),
+            ('user:team', {'user_id': phantom_id, 'team_id': team_id}),
+        ):
+            response = self.delete_rel(reltype, **payload)
+            self.logger.debug('Dropped mismatched invite membership: %s', response)
 
     def get_user_id(self,email):
         # DO NOT EXPOSE THIS FUNCTION TO API
         response = self.AUM.check_user_by_email(email)
-        self.logger.debug('Calling Identity Pool:'+str(response)) 
-        
-        if response['success']:
-            user_id = create_md5_hash(response['document']['cognito_user_id'],9)
-            response['document']['user_id'] = user_id
+        self.logger.debug('Calling Identity Pool:'+str(response))
 
+        if not response.get('success'):
+            return response
+
+        document = response.get('document') or {}
+        matches = document.get('matches')
+        if not matches and document.get('cognito_username'):
+            matches = [{
+                'username': document.get('cognito_username'),
+                'sub': document.get('cognito_user_id'),
+                'status': '',
+            }]
+        chosen = self._choose_cognito_match(matches)
+        if not chosen:
+            return {
+                "success": False,
+                "message": "User not found",
+                "status": 404,
+            }
+        user_id, match = chosen
+        document['user_id'] = user_id
+        document['cognito_username'] = match.get('username')
+        document['cognito_user_id'] = match.get('sub')
+        response['document'] = document
         return response
 
 
@@ -738,9 +1382,12 @@ class AuthController:
             index = 'irn:rel:team:portfolio:' + rel_team_id  + ':*'
             rels_team_portfolio = self.AUM.list_rel(index)
             for portfolio in rels_team_portfolio['document']['items']:
-                
-                if portfolio['rel'] not in user_portfolio_list:
-                    user_portfolio_list.append(portfolio['rel'])
+                portfolio_id = portfolio['rel']
+                if portfolio_id in user_portfolio_list:
+                    continue
+                if self._portfolio_is_deleted(portfolio_id):
+                    continue
+                user_portfolio_list.append(portfolio_id)
 
         return user_portfolio_list
 
@@ -795,8 +1442,43 @@ class AuthController:
             
 
 
+    def _deleted_org_ids(self, portfolio_id, cache=None):
+        """Org ids marked deleted. Relationships to them are left in place."""
+        cache = cache if cache is not None else {}
+        if portfolio_id in cache:
+            return cache[portfolio_id]
+        index = 'irn:entity:portfolio/org:' + portfolio_id + '/*'
+        items = ((self.AUM.list_entity(index) or {}).get('document') or {}).get('items') or []
+        deleted = {
+            item.get('_id')
+            for item in items
+            if item.get('_id') and entity_is_deleted(item)
+        }
+        cache[portfolio_id] = deleted
+        return deleted
+
+    def _portfolio_is_deleted(self, portfolio_id):
+        if not portfolio_id:
+            return False
+        entity = self.get_entity(
+            'portfolio',
+            portfolio_id=portfolio_id,
+            include_deleted=True,
+        )
+        return bool(entity.get('success') and entity_is_deleted(entity.get('document')))
+
+    def _filter_deleted_entities(self, response):
+        document = (response or {}).get('document')
+        if not isinstance(document, dict) or not isinstance(document.get('items'), list):
+            return response
+        document['items'] = [
+            item for item in document['items'] if not entity_is_deleted(item)
+        ]
+        return response
+
     def _project_installables_for_team(
-        self, portfolio_id, team_id, kind, tree, org_grants, active_orgs
+        self, portfolio_id, team_id, kind, tree, org_grants, active_orgs,
+        hidden_org_ids=None,
     ):
         """
         Project one installable type into its own tree bag.
@@ -819,6 +1501,7 @@ class AuthController:
                 "handle": entity.get("handle"),
                 "roles": self._normalize_roles_list(entity.get("roles")),
                 "entity_type": kind,
+                "preferences": entity.get("preferences") or {},
             }
             if kind == "extension":
                 node["extension_id"] = entity_id
@@ -844,7 +1527,13 @@ class AuthController:
             granted_orgs = self._rel_item_rels(
                 f"irn:rel:{rels['org']}:{team_id}/{entity_id}:*"
             )
-            for org_id in granted_orgs:
+            # Keep the rel rows. Omit deleted orgs from the tree so a grant
+            # to a hidden org does not make that org or the grant look live.
+            hidden_org_ids = hidden_org_ids or set()
+            visible_orgs = [
+                org_id for org_id in granted_orgs if org_id not in hidden_org_ids
+            ]
+            for org_id in visible_orgs:
                 active_orgs.append(org_id)
                 portfolio_node[bag][entity_id]["active"] = True
                 org_grants[bag].setdefault(org_id, [])
@@ -852,7 +1541,7 @@ class AuthController:
                     org_grants[bag][org_id].append(entity_id)
             prev_orgs = team_node[bag][entity_id].get("orgs") or []
             team_node[bag][entity_id]["orgs"] = list(
-                dict.fromkeys(prev_orgs + granted_orgs)
+                dict.fromkeys(prev_orgs + visible_orgs)
             )
 
     def get_tree_full(self,**kwargs):
@@ -862,15 +1551,16 @@ class AuthController:
         tree = {}
         tree['user_id'] = kwargs['user_id']
         tree['portfolios'] = {}
-        
-        
-
+        user_entity = self.get_entity('user', user_id=kwargs['user_id'])
+        user_doc = user_entity.get('document') if user_entity.get('success') else {}
+        tree['preferences'] = (user_doc or {}).get('preferences') or {}
+        deleted_org_cache = {}
 
         self.logger.debug('GENERATING TREE')
 
         # 1. Get all the user:team rels. 
         index = 'irn:rel:user:team:' + kwargs['user_id'] + ':*'
-        rels_user_teams = self.AUM.list_rel(index)
+        rels_user_teams = self.AUM.list_rel(index, limit=1000)
         #self.logger.debug('User Teams:'+str(rels_user_teams))
 
         # 2. For each rel, get its team:portfolio rel. Each rel will show a Portfolio_id
@@ -902,15 +1592,20 @@ class AuthController:
 
                         if portfolio_id not in tree['portfolios']:
 
-                            #RESOLVE: Get Portfolio entity document
+                            #RESOLVE: Get Portfolio entity document.
+                            # A deleted portfolio keeps its team rels, but it
+                            # is not part of the tree.
                             portfolio_entity = self.get_entity(
                                 'portfolio',
                                 portfolio_id=portfolio_id
                                 )
+                            if not portfolio_entity.get('success'):
+                                continue
 
                             portfolio_doc = {}  
                             portfolio_doc['portfolio_id'] = portfolio_id      
                             portfolio_doc['name'] = portfolio_entity['document']['name']
+                            portfolio_doc['preferences'] = portfolio_entity['document'].get('preferences') or {}
                             portfolio_doc['teams'] = {}
                             portfolio_doc['orgs'] = {}
                             portfolio_doc['tools'] = {}
@@ -942,6 +1637,7 @@ class AuthController:
                         team_doc = {}
                         team_doc['team_id'] = team_id
                         team_doc['name'] = team_entity['document']['name']
+                        team_doc['preferences'] = team_entity['document'].get('preferences') or {}
                         team_doc['tools'] = {}
                         team_doc['extensions'] = {}
 
@@ -958,6 +1654,9 @@ class AuthController:
 
                         active_orgs = []
                         org_grants = {'tools': {}, 'extensions': {}}
+                        hidden_org_ids = self._deleted_org_ids(
+                            portfolio_id, deleted_org_cache
+                        )
                         for kind in self.INSTALLABLE_TYPES:
                             self._project_installables_for_team(
                                 portfolio_id,
@@ -966,6 +1665,7 @@ class AuthController:
                                 tree,
                                 org_grants,
                                 active_orgs,
+                                hidden_org_ids=hidden_org_ids,
                             )
 
                         self.logger.debug('ORG_GRANTS:')
@@ -983,6 +1683,9 @@ class AuthController:
                             entities_orgs['document']['items']):
 
                             for org in entities_orgs['document']['items']:
+
+                                if entity_is_deleted(org):
+                                    continue
 
                                 org_id = org['_id']
                                 
@@ -1008,6 +1711,7 @@ class AuthController:
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['name'] = org['name']
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['handle'] = org['handle']
                                 tree['portfolios'][portfolio_id]['orgs'][org_id]['tags'] = org.get('tags') or {}
+                                tree['portfolios'][portfolio_id]['orgs'][org_id]['preferences'] = org.get('preferences') or {}
                                 
                                 
                                 if org_id in active_orgs:
@@ -1049,6 +1753,15 @@ class AuthController:
                 index = 'irn:rel:team:portfolio:' + team['rel'] + ':*'
                 rel_team_portfolio = self.AUM.list_rel(index)
                 #self.logger.debug('User Portfolios:'+str(rel_team_portfolio))
+                items = ((rel_team_portfolio or {}).get('document') or {}).get('items') or []
+                kept = []
+                for portfolio in items:
+                    portfolio_id = portfolio.get('rel')
+                    if portfolio_id and self._portfolio_is_deleted(portfolio_id):
+                        continue
+                    kept.append(portfolio)
+                if isinstance((rel_team_portfolio or {}).get('document'), dict):
+                    rel_team_portfolio['document']['items'] = kept
                 portfolios.append(rel_team_portfolio)
 
             
@@ -1072,7 +1785,9 @@ class AuthController:
         if type in self.INSTALLABLE_TYPES:
             index = self._installable_entity_index(type, kwargs['portfolio_id'])
 
-        response = self.AUM.list_entity(index) 
+        response = self.AUM.list_entity(index)
+        if type == 'org':
+            return self._filter_deleted_entities(response)
         return response
 
 
@@ -1082,6 +1797,9 @@ class AuthController:
 
         #if(type== 'user' and 'user_id' in kwargs and 'portfolio_id' in kwargs ):
 
+        # Soft-deleted portfolios and orgs stay in the table but are not
+        # readable by id. Callers that must see the row pass include_deleted.
+        include_deleted = bool(kwargs.get('include_deleted'))
         missing = False
 
         if type == 'user':
@@ -1137,7 +1855,17 @@ class AuthController:
             result['message'] = response['message'] 
             result['status'] = response['status']               
             return result
-        
+
+        if (
+            not include_deleted
+            and type in ('portfolio', 'org')
+            and entity_is_deleted(response.get('document'))
+        ):
+            return {
+                'success': False,
+                'message': 'Entity not found',
+                'status': 404,
+            }
 
         result['success'] = True
         result['message'] = response['message']
@@ -1149,6 +1877,9 @@ class AuthController:
        
 
     def create_entity(self,type,**kwargs):
+        # 'tool' is the retired installable type. New rows are extensions.
+        if type == 'tool':
+            type = 'extension'
 
         self.logger.debug('Data:')
         self.logger.debug(kwargs)
@@ -1204,14 +1935,20 @@ class AuthController:
             'added': datetime.now().isoformat(),
             'is_active': True,
             'type': type,
+            'status': ENTITY_STATUS_ACTIVE,
             'last_ip': kwargs['ip'] if 'ip' in kwargs else '',
-            'last_login': datetime.now().isoformat(),
+            'last_login': (
+                True
+                if isinstance(kwargs.get('payload'), dict) and kwargs['payload'].get('last_login') is True
+                else datetime.now().isoformat()
+            ),
             'modified': datetime.now().isoformat(), 
             'raw_id': raw_id,
             'index':pk,
             'irn':irn,
             'language':kwargs['lan'] if 'lan' in kwargs else '',
-            'tags': kwargs.get('tags') if isinstance(kwargs.get('tags'), dict) else {},           
+            'tags': kwargs.get('tags') if isinstance(kwargs.get('tags'), dict) else {},
+            'preferences': sanitize_entity_preferences(kwargs.get('preferences')),
         }
 
         if type in self.INSTALLABLE_TYPES:
@@ -1220,6 +1957,10 @@ class AuthController:
     
         self.logger.debug('Entity to Create:'+str(data))
         response = self.AUM.create_entity(data)
+        if response.get('success'):
+            synced = self.trees.note_entity(type, response.get('document') or data, kwargs)
+            if not synced.get('success'):
+                return synced
 
         return response
     
@@ -1235,6 +1976,13 @@ class AuthController:
 
         self.logger.debug('Document to be unlinked:')
         self.logger.debug(doc)
+
+        if entity_forbids_hard_delete(doc):
+            return {
+                "success": False,
+                "message": HARD_DELETE_REFUSED,
+                "status": 400,
+            }
  
         # Check if the second position exists and replace "entity" with "unentity"
         parts = doc['index'].split(":")
@@ -1321,10 +2069,15 @@ class AuthController:
                 if incoming and not (entity_doc.get(field) or '').strip():
                     entity_doc[field] = incoming
 
-        #Replace values of existing attributes with the ones in the payload
+        #Replace values of existing attributes with the ones in the payload.
+        # status is only changed by the portfolio and org soft-delete funnels.
         for key, val in kwargs['payload'].items():
+            if key == 'status':
+                continue
             if key == 'tags':
                 entity_doc[key] = sanitize_entity_tags(val)
+            elif key == 'preferences':
+                entity_doc[key] = sanitize_entity_preferences(val)
             else:
                 entity_doc[key] = val
 
@@ -1341,8 +2094,10 @@ class AuthController:
         result['success'] = True
         result['message'] = response['message']
         result['document'] = response['document']  
-        result['status'] = response['status']   
-        #self.logger.debug('Returned object:'+str(result))
+        result['status'] = response['status']
+        synced = self.trees.note_entity(type, result.get('document'), kwargs)
+        if not synced.get('success'):
+            return synced
         return result
 
 
@@ -1469,15 +2224,42 @@ class AuthController:
             index = 'irn:rel:hash:team:' + data['hash'] + ':*'
             rel = data['team_id']
 
+        elif reltype == 'team:invite':
+            index = 'irn:rel:team:invite:' + data['team_id'] + ':*'
+            rel = data['email'] + '|' + data['hash'] + '|' + str(data['ttl'])
+
+        elif reltype == 'team:accept':
+            index = 'irn:rel:team:accept:' + data['team_id'] + ':*'
+            rel = data['user_id'] + '|' + data['email'] + '|' + str(data['accepted_at'])
+
+        elif reltype == 'team:join':
+            index = 'irn:rel:team:join:' + data['team_id'] + ':*'
+            rel = data['code']
+
+        elif reltype == 'join:team':
+            index = 'irn:rel:join:team:' + data['code'] + ':*'
+            rel = data['team_id']
+
+        elif reltype == 'team:access':
+            index = 'irn:rel:team:access:' + data['team_id'] + ':*'
+            rel = data['user_id']
+
 
         rel_document = {
             'index' : index,
             'rel' : rel
         }
             
-        self.logger.debug('Rel to Create:'+str(rel_document))
+        logged = dict(rel_document)
+        if reltype in ('email:hash:ttl', 'hash:team', 'team:invite', 'team:join', 'join:team'):
+            logged['rel'] = '[invite]'
+        self.logger.debug('Rel to Create:'+str(logged))
         response = self.AUM.create_rel(**rel_document)
-
+        if not response or not response.get('success'):
+            return response
+        synced = self.trees.note_rel(reltype, data)
+        if not synced.get('success'):
+            return synced
         return response
     
 
@@ -1546,7 +2328,27 @@ class AuthController:
 
         elif reltype == 'hash:team': #One to Many
             index = 'irn:rel:hash:team:' + data['hash'] + ':*'
-            rel = data['team']
+            rel = data.get('team_id') or data.get('team')
+
+        elif reltype == 'team:invite':
+            index = 'irn:rel:team:invite:' + data['team_id'] + ':*'
+            rel = data['email'] + '|' + data['hash'] + '|' + str(data['ttl'])
+
+        elif reltype == 'team:accept':
+            index = 'irn:rel:team:accept:' + data['team_id'] + ':*'
+            rel = data['user_id'] + '|' + data['email'] + '|' + str(data['accepted_at'])
+
+        elif reltype == 'team:join':
+            index = 'irn:rel:team:join:' + data['team_id'] + ':*'
+            rel = data['code']
+
+        elif reltype == 'join:team':
+            index = 'irn:rel:join:team:' + data['code'] + ':*'
+            rel = data['team_id']
+
+        elif reltype == 'team:access':
+            index = 'irn:rel:team:access:' + data['team_id'] + ':*'
+            rel = data['user_id']
 
 
         rel_document = {
@@ -1554,9 +2356,16 @@ class AuthController:
             'rel' : rel
         }
             
-        self.logger.debug('Rel to Create:'+str(rel_document))
+        logged = dict(rel_document)
+        if reltype in ('email:hash:ttl', 'hash:team', 'team:invite', 'team:join', 'join:team'):
+            logged['rel'] = '[invite]'
+        self.logger.debug('Rel to Delete:'+str(logged))
         response = self.AUM.delete_rel(**rel_document)
-
+        if not response or not response.get('success'):
+            return response
+        synced = self.trees.note_rel(reltype, data, removing=True)
+        if not synced.get('success'):
+            return synced
         return response
     
 
@@ -1693,8 +2502,23 @@ class AuthController:
 
         elif reltype == 'hash:team': #One to Many
             index = 'irn:rel:hash:team:' + data['hash'] + ':*'
-            
- 
+
+        elif reltype == 'team:invite':
+            index = 'irn:rel:team:invite:' + data['team_id'] + ':*'
+
+        elif reltype == 'team:accept':
+            index = 'irn:rel:team:accept:' + data['team_id'] + ':*'
+
+        elif reltype == 'team:join':
+            index = 'irn:rel:team:join:' + data['team_id'] + ':*'
+
+        elif reltype == 'join:team':
+            index = 'irn:rel:join:team:' + data['code'] + ':*'
+
+        elif reltype == 'team:access':
+            index = 'irn:rel:team:access:' + data['team_id'] + ':*'
+
+
         self.logger.debug('List Rels > '+index)
         response = self.AUM.list_rel(index)
 
@@ -1735,6 +2559,9 @@ class AuthController:
                 userdict[team_user_doc['_id']]['name'] = team_user_doc['name']
                 userdict[team_user_doc['_id']]['last'] = team_user_doc['slot_a']
                 userdict[team_user_doc['_id']]['email'] = team_user_doc['email']
+                userdict[team_user_doc['_id']]['membership'] = (
+                    'active' if self._user_has_opened_app(team_user_doc) else 'invited'
+                )
 
 
             result = {}
@@ -1746,6 +2573,9 @@ class AuthController:
                 return result
             
 
+            self._attach_pending_invites(userdict, kwargs['team_id'])
+            self._attach_access_requests(userdict, kwargs['team_id'])
+
             result['success'] = True
             result['message'] = 'Users in the team'
             result['document'] = userdict 
@@ -1753,7 +2583,59 @@ class AuthController:
 
             return result
 
+    def _attach_pending_invites(self, userdict, team_id):
+        active_emails = {
+            str(row.get('email') or '').strip().lower()
+            for row in userdict.values()
+            if row.get('membership') == 'active'
+        }
+        for invite in self._team_invite_rows(team_id):
+            email = invite['email']
+            if email in active_emails:
+                continue
+            public = self._invite_public_document(email, invite)
+            match = None
+            for row in userdict.values():
+                if str(row.get('email') or '').strip().lower() == email:
+                    match = row
+                    break
+            if match is not None:
+                match['membership'] = 'invited'
+                match['expires_at'] = public['expires_at']
+                match['expired'] = public['expired']
+                if public.get('link'):
+                    match['link'] = public['link']
+                continue
+            userdict['invite:' + email] = {
+                'user_id': 'invite:' + email,
+                'name': '',
+                'last': '',
+                'email': email,
+                'membership': 'invited',
+                'expires_at': public['expires_at'],
+                'expired': public['expired'],
+            }
+            if public.get('link'):
+                userdict['invite:' + email]['link'] = public['link']
 
+    def _attach_access_requests(self, userdict, team_id):
+        member_ids = {
+            str(row.get('user_id') or '')
+            for row in userdict.values()
+            if row.get('membership') == 'active'
+        }
+        for user_id in self._access_user_ids(team_id):
+            if user_id in member_ids:
+                continue
+            user = self.get_entity('user', user_id=user_id)
+            document = user.get('document') if user.get('success') else {}
+            userdict['access:' + user_id] = {
+                'user_id': user_id,
+                'name': (document or {}).get('name') or '',
+                'last': (document or {}).get('slot_a') or '',
+                'email': (document or {}).get('email') or '',
+                'membership': 'access-requested',
+            }
 
     def assign_team_orgs(self,**kwargs):
 
@@ -1903,6 +2785,7 @@ class AuthController:
 
 
 
+    @coalesced_trees
     def create_portfolio_funnel(self,**kwargs):
         result = {}
         transaction = []
@@ -1930,10 +2813,13 @@ class AuthController:
 
         
 
-        #3. Create a default Team
-        kwargs['name'] = 'Admin'
+        #3. Create a default Team named for this portfolio, so it cannot be
+        # confused with an Admin team that already exists somewhere else.
+        portfolio_name = str(kwargs.get('name') or '').strip()
+        kwargs['name'] = f'{portfolio_name} Admin' if portfolio_name else 'Admin'
         kwargs['about'] = 'This team enables its users to change portfolio settings.'
         kwargs['portfolio_id'] = response_1['document']['_id'] #This is the portfolio_id
+        kwargs.pop('preferences', None)
         response_3 = self.create_entity('team',**kwargs)
 
         self.logger.debug('Step 3: Creating a default Team')
@@ -2150,6 +3036,7 @@ class AuthController:
 
 
     
+    @coalesced_trees
     def create_org_funnel(self,**kwargs):
         result = {}
         transaction = []
@@ -2198,6 +3085,7 @@ class AuthController:
 
 
 
+    @coalesced_trees
     def create_team_funnel(self,**kwargs):
         result = {}
         transaction = []
@@ -2294,6 +3182,7 @@ class AuthController:
     
 
 
+    @coalesced_trees
     def add_user_to_team_funnel(self,**kwargs):
         result = {}
         transaction = []
@@ -2588,7 +3477,7 @@ class AuthController:
                 }  
         
         # Provided code is valid
-        if kwargs['code'] != self.generate_invite_hash(email,ttl):
+        if not self._invite_code_accepted(email, ttl, kwargs['code']):
              return{
                 "success":False, 
                 "message": "Invitation is invalid", 
@@ -2636,77 +3525,18 @@ class AuthController:
 
 
 
-        #5. Create the Rels that link the new user to the teams from the invitation
-        # Run again the prefix search for all invitations to this email ( index = email:hash:ttl  prefix = email )
+        #5. Leave the invitation pending. The new account is not on the team
+        # until this person accepts it after they sign in.
         index = 'irn:rel:email:hash:ttl:*:*:*'
         prefix = kwargs['email']+':'+kwargs['code']
-        response_5 = self.AUM.list_rel_prefix(index,prefix) 
-        teams_to_add = []
-        if response_5['success'] and len(response_5['document'])>0 :
-
-            
-            for invitation in response_5['document']:
-                email,hash,ttl = invitation['rel'].split(":")
-
-                valid_invitations = []
-                # TTL has not expired
-                if  str(self.generate_ttl(0)) < str(ttl):
-                    valid_invitations.append({'email':email,'hash':hash})
-                else:
-                    continue
-
-                      
-                for i in valid_invitations:                
-                    response_5b = self.list_rel('hash:team',hash=hash)
-                    #This response will only have one item
-
-                    if not response_5b['success']:
-                        self.logger.debug('Team for invitation:('+hash+') was not found')
-                        continue
-
-                    team_id = response_5b['document']['items'][0]['rel']
-                    teams_to_add.append(team_id)
-
-        else:
+        response_5 = self.AUM.list_rel_prefix(index,prefix)
+        if not (response_5.get('success') and response_5.get('document')):
             return{
-                "success":False, 
-                "message": "Could not find any invitation related to this email:code", 
+                "success":False,
+                "message": "Could not find any invitation related to this email:code",
                 "status" :400
                 }
-
-        
-        for team in teams_to_add:
-
-            # Create Team to User Rel
-            rel_data = {}
-            rel_data['user_id'] = bridge['user_id']
-            rel_data['team_id'] = team #This is the team_id
-            response_5c = self.create_rel('team:user',**rel_data)
-
-            self.logger.debug('Step 5c:Creating Team-User relationship')
-            self.logger.debug(response_5c)
-
-            if not response_5c['success']:
-                response_5c['message'] = 'Could not create Team-User relationship'                
-                continue
-            else:
-                transaction.append(response_5c)
-
-            
-            # Create User to Team Rel (Adding the owner as the first member of the team)
-            rel_data = {}
-            rel_data['user_id'] = bridge['user_id']
-            rel_data['team_id'] = team #This is the team_id
-            response_5d = self.create_rel('user:team',**rel_data)
-
-            self.logger.debug('Step 5d: Creating User to Team relationship ')
-            self.logger.debug(response_5d)
-
-            if not response_5d['success']:
-                response_5d['message'] = 'Could not create User-Team relationship'                
-                continue
-            else:
-                transaction.append(response_5d)
+        transaction.append(response_5)
 
 
 
@@ -2732,35 +3562,79 @@ class AuthController:
 
     
 
-    #NOT IMPLEMENTED
+    def _soft_delete_entity(self, entity_type, **lookup):
+        """
+        Mark a portfolio or org deleted and leave every relationship in place.
+
+        Tree generation and get/list skip the row. The document stays so the
+        data under that id can be recovered.
+        """
+        label = 'Portfolio' if entity_type == 'portfolio' else 'Org'
+        if entity_type == 'portfolio' and not lookup.get('portfolio_id'):
+            return {
+                "success": False,
+                "message": "Missing attributes",
+                "status": 400,
+            }
+        if entity_type == 'org' and not (
+            lookup.get('portfolio_id') and lookup.get('org_id')
+        ):
+            return {
+                "success": False,
+                "message": "Missing attributes",
+                "status": 400,
+            }
+
+        current = self.get_entity(entity_type, include_deleted=True, **lookup)
+        if not current.get('success'):
+            current['message'] = label + ' not found'
+            return current
+
+        document = current['document']
+        if entity_is_deleted(document):
+            return {
+                "success": True,
+                "message": label + " already deleted",
+                "status": 200,
+                "document": [current],
+            }
+
+        document['status'] = ENTITY_STATUS_DELETED
+        updated = self.AUM.update_entity(document)
+        if not updated.get('success'):
+            return updated
+
+        self.logger.debug('%s soft-deleted; relationships kept', label)
+        synced = self.trees.note_entity(entity_type, document, lookup, deleted=True)
+        if not synced.get('success'):
+            return synced
+        return {
+            "success": True,
+            "message": label + " deleted",
+            "status": 200,
+            "document": [updated],
+        }
+
+    @coalesced_trees
+    def remove_portfolio_funnel(self, **kwargs):
+        self.logger.debug('Initiating DELETE PORTFOLIO FUNNEL')
+        return self._soft_delete_entity(
+            'portfolio',
+            portfolio_id=kwargs.get('portfolio_id'),
+        )
+
+    @coalesced_trees
     def remove_org_funnel(self,**kwargs):
-        bridge = {}
-        result = {}
-        transaction = []
-
         self.logger.debug('Initiating DELETE ORG FUNNEL')
-
-
-        # 1. Create a copy of org entity and put it in irn:deleted_entity:org
-
-        # 2. Create a copy of team:org rel and put it in irn:deleted_rel:team:org
-
-        # 3. Remove original entity and rel documents  from steps 1-2
-
-  
-        #All went good, Summarize Transaction Success 
-        self.logger.debug('End of Funnel ')
-
-        result['success'] = True
-        result['message'] = 'Delete Org Funnel completed, Ok'
-        result['status'] = 200 
-        result['document'] = transaction  
-
-        self.logger.debug(result)            
-        return result
+        return self._soft_delete_entity(
+            'org',
+            portfolio_id=kwargs.get('portfolio_id'),
+            org_id=kwargs.get('org_id'),
+        )
     
 
 
+    @coalesced_trees
     def remove_team_funnel(self,**kwargs):
         bridge = {}
         result = {}
@@ -2794,8 +3668,15 @@ class AuthController:
             "status" :400
             }
                 
-        #1b. Send document to unlink function
-        teamdoc = response_1a['document'] 
+        #1b. Send document to unlink function.
+        # A portfolio or org document must not be removed by this path.
+        teamdoc = response_1a['document']
+        if entity_forbids_hard_delete(teamdoc):
+            return {
+                "success": False,
+                "message": HARD_DELETE_REFUSED,
+                "status": 400,
+            }
         response_1b = self.unlink_entity(**teamdoc)  
         if not response_1b['success']:
             return response_1b
@@ -2892,6 +3773,7 @@ class AuthController:
     
     
 
+    @coalesced_trees
     def remove_user_from_team_funnel(self,**kwargs):
         bridge = {}
         result = {}
@@ -2948,6 +3830,7 @@ class AuthController:
         return result
 
 
+    @coalesced_trees
     def create_extension_funnel(self,**kwargs):
         result = {}
         transaction = []
@@ -3002,16 +3885,27 @@ class AuthController:
                 existing = self.AUM.get_entity(index, tool_id)
                 if not existing.get("success"):
                     continue
-                deleted = self.AUM.delete_entity(index=index, _id=tool_id)
-                if deleted.get("success"):
-                    deleted_rows.append(deleted)
-                    self.logger.info(
-                        "Deleted %s %s row %s in %s",
-                        "archived" if archived else "live",
-                        kind,
-                        tool_id,
-                        portfolio_id,
-                    )
+                document = dict(existing.get("document") or {})
+                document.setdefault("index", index)
+                if entity_forbids_hard_delete(document):
+                    return {
+                        "success": False,
+                        "message": HARD_DELETE_REFUSED,
+                        "status": 400,
+                    }
+                deleted = self.AUM.delete_entity(index=index, _id=tool_id, type=document.get("type"))
+                if not deleted.get("success"):
+                    if deleted.get("status") == 400:
+                        return deleted
+                    continue
+                deleted_rows.append(deleted)
+                self.logger.info(
+                    "Deleted %s %s row %s in %s",
+                    "archived" if archived else "live",
+                    kind,
+                    tool_id,
+                    portfolio_id,
+                )
         if deleted_rows:
             return {
                 "success": True,
@@ -3025,6 +3919,7 @@ class AuthController:
             "status": 404,
         }
 
+    @coalesced_trees
     def _apply_installable_rels(self, method, rel_key, team_id, entity_id, kinds=None, **extra):
         """
         Create or delete a grant on one or both installable rel families.
@@ -3148,6 +4043,7 @@ class AuthController:
                     transaction.append(deleted)
         return None
 
+    @coalesced_trees
     def remove_tool_funnel(self,**kwargs):
         result = {}
         transaction = []
@@ -3167,7 +4063,14 @@ class AuthController:
 
         #1. Delete the tool entity row (live and any unentity archive).
         #   Data rings are not touched. Missing entity is ok: still drop rels.
+        #   A portfolio or org row is refused and its relationships stay.
         response_1b = self._delete_tool_entity_rows(portfolio_id, tool_id)
+        if (
+            not response_1b.get('success')
+            and response_1b.get('status') == 400
+            and response_1b.get('message') == HARD_DELETE_REFUSED
+        ):
+            return response_1b
         if response_1b.get('success'):
             transaction.append(response_1b)
         else:
@@ -3176,6 +4079,10 @@ class AuthController:
                 tool_id,
                 portfolio_id,
             )
+
+        noted = self.trees.note_portfolio_and_teams(portfolio_id)
+        if not noted.get('success'):
+            return noted
 
         #2. Remove team-tool / role / org rels for every team in the portfolio.
         #   The DELETE route has no team_id; the old commented cleanup could

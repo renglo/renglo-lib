@@ -520,6 +520,10 @@ class DataController:
                 return False
             
             index_value = item_values[field_name]
+            if isinstance(index_value, dict):
+                extracted = self._extract_reference_value(index_value)
+                if extracted:
+                    index_value = extracted
             index_string += str(index_value) + ":"
 
         # Remove the trailing colon from the constructed index string
@@ -597,6 +601,12 @@ class DataController:
                 return False
             
             index_value = item_values[field_name]
+            # Source-ref fields store `{value: id}`; index the id so begins_with
+            # queries (AID / score upserts) match the plain uuid string.
+            if isinstance(index_value, dict):
+                extracted = self._extract_reference_value(index_value)
+                if extracted:
+                    index_value = extracted
             index_string += str(index_value) + ":"
 
         # Remove the trailing colon from the constructed index string
