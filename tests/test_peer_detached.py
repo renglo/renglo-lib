@@ -87,6 +87,133 @@ class DetachedFrameTests(unittest.TestCase):
         stamp.assert_called_once()
         self.assertEqual(stamp.call_args.args[1], {"sub": "user"})
 
+    def test_webhook_reply_is_sent_after_the_session_write(self) -> None:
+        import sys
+        import types
+
+        event = {
+            **EVENT,
+            "payload": {
+                **EVENT["payload"],
+                "connectionId": "",
+                "public_user": "user-1",
+            },
+            "completion": {
+                **EVENT["completion"],
+                "turn_id": "turn-9",
+                "reply": {
+                    "channel": "whatsapp",
+                    "handler": "whatsapp/post_message",
+                    "args": {"target": "15551212"},
+                    "external_id": "15551212",
+                    "user_id": "user-1",
+                },
+            },
+        }
+        order: list[str] = []
+        fake = types.ModuleType("renglo.session.session_controller")
+
+        class FakeController:
+            def __init__(self, config=None):
+                self.config = config
+                self.user_id = ""
+
+            def set_invocation_user(self, user_id):
+                self.user_id = user_id
+
+        fake.SessionController = FakeController
+        previous = sys.modules.get("renglo.session.session_controller")
+        sys.modules["renglo.session.session_controller"] = fake
+
+        def persist(*_args, **_kwargs):
+            order.append("persist")
+            return True
+
+        def push(*_args, **_kwargs):
+            order.append("push")
+            return False
+
+        def deliver(_config, body):
+            order.append("deliver")
+            self.assertEqual(body["entity_id"], "dumbo-o")
+            self.assertEqual(body["turn_id"], "turn-9")
+            self.assertEqual(body["reply"]["channel"], "whatsapp")
+            self.assertIn("ready", body["text"])
+            return {"success": True}
+
+        try:
+            with patch("renglo.runtime.stamp_invocation_jwt_claims"), patch(
+                "renglo.session.handler_error.persist_handler_error", side_effect=persist
+            ), patch("renglo.session.handler_error.push_handler_error", side_effect=push), patch(
+                "renglo.schd.channel_reply.deliver_channel_reply", side_effect=deliver
+            ):
+                complete_detached(event, {"success": True, "output": {"total": 10}}, config={})
+        finally:
+            if previous is None:
+                sys.modules.pop("renglo.session.session_controller", None)
+            else:
+                sys.modules["renglo.session.session_controller"] = previous
+        self.assertEqual([step for step in order if step == "persist"], ["persist", "persist"])
+        self.assertEqual(order[-1], "deliver")
+        self.assertLess(order.index("persist"), order.index("deliver"))
+
+    def test_callback_saves_the_tool_result_and_continues_the_agent(self) -> None:
+        import sys
+        import types
+
+        event = {
+            **EVENT,
+            "completion": {
+                **EVENT["completion"],
+                "turn_id": "turn-9",
+                "callback": {"handler": "dumbo/generic_agent"},
+                "reply": {
+                    "channel": "whatsapp",
+                    "handler": "whatsapp/post_message",
+                    "args": {"target": "15551212"},
+                    "user_id": "user-1",
+                },
+            },
+        }
+        persisted: list[str] = []
+        fake = types.ModuleType("renglo.session.session_controller")
+
+        class FakeController:
+            def __init__(self, config=None):
+                pass
+
+            def set_invocation_user(self, user_id):
+                return None
+
+        fake.SessionController = FakeController
+        previous = sys.modules.get("renglo.session.session_controller")
+        sys.modules["renglo.session.session_controller"] = fake
+
+        def persist(_config, _payload, frame, **_kwargs):
+            persisted.append(frame["_type"])
+            return True
+
+        def callback(_config, body):
+            self.assertEqual(body["callback"]["handler"], "dumbo/generic_agent")
+            self.assertEqual(body["call_id"], "call-1")
+            self.assertEqual(body["reply"]["channel"], "whatsapp")
+            return {"success": True}
+
+        try:
+            with patch("renglo.runtime.stamp_invocation_jwt_claims"), patch(
+                "renglo.session.handler_error.persist_handler_error", side_effect=persist
+            ), patch("renglo.session.handler_error.push_handler_error", return_value=True), patch(
+                "renglo.schd.continuation.post_agent_callback", side_effect=callback
+            ), patch("renglo.schd.channel_reply.deliver_channel_reply") as raw_send:
+                complete_detached(event, {"success": True, "output": {"total": 10}}, config={})
+        finally:
+            if previous is None:
+                sys.modules.pop("renglo.session.session_controller", None)
+            else:
+                sys.modules["renglo.session.session_controller"] = previous
+        self.assertEqual(persisted, ["tool_result"])
+        raw_send.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

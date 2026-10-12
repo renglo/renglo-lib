@@ -10,6 +10,7 @@ from renglo.schd.schd_loader import SchdLoader
 from renglo.schd.schd_model import SchdModel
 from renglo.schd.schd_schedule import SchdScheduleMixin
 from renglo.schd.peer_config import placed_on_peer, peer_is_active, get_ecs_config, get_async_s3_config
+from renglo.schd.ingress_worker import try_invoke_async_ingress_worker
 from renglo.schd.peer_runner import (
     run_peer_handler,
     invoke_peer_event,
@@ -22,6 +23,7 @@ from renglo.schd.peer_runner import (
     write_async_result,
 )
 from renglo.runtime import attach_auth_roles_to_payload, attach_jwt_claims_to_payload
+from renglo.schd.channel_reply import reply_route
 
 from datetime import datetime
 
@@ -337,16 +339,22 @@ class SchdController(SchdScheduleMixin):
     def handler_call_live(self, portfolio, org, extension, handler, payload):
         """Start a peer call. The caller chose this path.
 
-        The result is pushed to connectionId as a tool_result. Schd does not
-        decide whether a handler should run this way.
+        A websocket caller passes connectionId and the result is pushed there.
+        A webhook caller passes channel (and the recipient) and the result is
+        sent on that channel after it is saved on the session.
         """
         payload = dict(payload or {})
         connection_id = str(payload.pop("connectionId", "") or payload.pop("connection_id", "") or "").strip()
         payload.pop("_tool_id", None)
-        if not connection_id:
+        route = reply_route(payload)
+        raw_callback = payload.pop("callback", None)
+        payload.pop("reply_args", None)
+        payload.pop("channel", None)
+        payload.pop("external_id", None)
+        if not connection_id and not (route and route.get("handler")):
             return {
                 "success": False,
-                "error": "The request did not include a websocket connection id, so there is nowhere to send the result.",
+                "error": "The request did not include a websocket connection id or a channel to reply on.",
             }
 
         resolved = self._resolve_extension_handle(portfolio, extension)
@@ -355,16 +363,22 @@ class SchdController(SchdScheduleMixin):
         params["portfolio"] = portfolio
         params["org"] = org
         params["tool"] = resolved
-        params["connectionId"] = connection_id
+        if connection_id:
+            params["connectionId"] = connection_id
         attach_jwt_claims_to_payload(params)
+        completion = {
+            "call_id": call_id,
+            "tool": f"{resolved}/{handler}",
+        }
+        if route:
+            completion["reply"] = route
+        if isinstance(raw_callback, dict) and str(raw_callback.get("handler") or "").strip():
+            completion["callback"] = {"handler": str(raw_callback.get("handler")).strip()}
         started = invoke_peer_event(
             resolved,
             handler,
             params,
-            completion={
-                "call_id": call_id,
-                "tool": f"{resolved}/{handler}",
-            },
+            completion=completion,
         )
         if not started.get("success"):
             return {
@@ -438,27 +452,35 @@ class SchdController(SchdScheduleMixin):
         except Exception as e:
             write_async_result(extension, request_id, {'success': False, 'output': str(e), 'error': str(e)})
 
-    @authorize(resource="tool", tool_id_param="extension")
-    def handler_call_async_start(self, portfolio, org, extension, handler, payload):
-        """Start an async handler job. In-process, local Docker, or the peer ECS task."""
-        action = 'handler_call_async_start'
+    def _handler_async_start_impl(
+        self,
+        portfolio,
+        org,
+        extension,
+        handler,
+        payload,
+        *,
+        action: str = "handler_call_async_start",
+        attach_jwt: bool = False,
+    ):
         payload = dict(payload or {})
-        # Re-stamp roles after copying payload (decorator stamped the original dict).
-        auth_ctx = getattr(self, "_auth_context", None) or {}
-        attach_auth_roles_to_payload(payload, auth_ctx.get("roles") or [])
         resolved_extension = self._resolve_extension_handle(portfolio, extension)
-        payload['portfolio'] = portfolio
-        payload['org'] = org
-        payload['tool'] = resolved_extension
+        payload["portfolio"] = portfolio
+        payload["org"] = org
+        payload["tool"] = resolved_extension
 
         s3_cfg = get_ecs_config(resolved_extension) if placed_on_peer(resolved_extension) else None
         if not s3_cfg:
             s3_cfg = get_async_s3_config(resolved_extension)
         if not s3_cfg:
-            return {'success': False, 'error': 'Async requires ECS_RESULTS_BUCKET or ECS config for result storage'}
+            return {
+                "success": False,
+                "error": "Async requires ECS_RESULTS_BUCKET or ECS config for result storage",
+            }
 
         if placed_on_peer(resolved_extension) and peer_is_active(resolved_extension):
-            attach_jwt_claims_to_payload(payload)
+            if attach_jwt:
+                attach_jwt_claims_to_payload(payload)
             if use_dev_docker(resolved_extension):
                 response = call_local_docker_handler_async_start(
                     extension_name=resolved_extension,
@@ -466,34 +488,32 @@ class SchdController(SchdScheduleMixin):
                     payload=payload,
                 )
             else:
-                # Hub does not classify handlers. /start means the peer ECS path.
                 response = call_ecs_handler_async(
                     extension_name=resolved_extension,
                     handler_name=handler,
                     payload=payload,
                 )
-            if not response.get('success'):
+            if not response.get("success"):
                 return {
-                    'success': False,
-                    'action': action,
-                    'error': response.get('error', 'Async start failed'),
-                    'request_id': None,
-                    'task_id': None,
+                    "success": False,
+                    "action": action,
+                    "error": response.get("error", "Async start failed"),
+                    "request_id": None,
+                    "task_id": None,
                 }
             return {
-                'success': True,
-                'action': action,
-                'request_id': response.get('request_id'),
-                'task_id': response.get('task_id'),
+                "success": True,
+                "action": action,
+                "request_id": response.get("request_id"),
+                "task_id": response.get("task_id"),
             }
 
-        # Local (no external): run handler in background thread and write result to S3
         request_id = str(uuid.uuid4())
-        event = {'handler': handler, 'payload': payload}
+        event = {"handler": handler, "payload": payload}
         try:
             write_async_payload(resolved_extension, request_id, event)
         except Exception as e:
-            return {'success': False, 'error': f'Failed to write async payload: {e}'}
+            return {"success": False, "error": f"Failed to write async payload: {e}"}
         thread = threading.Thread(
             target=self._run_async_local_worker,
             args=(resolved_extension, handler, payload, request_id),
@@ -501,11 +521,81 @@ class SchdController(SchdScheduleMixin):
         )
         thread.start()
         return {
-            'success': True,
-            'action': action,
-            'request_id': request_id,
-            'task_id': None,
+            "success": True,
+            "action": action,
+            "request_id": request_id,
+            "task_id": None,
         }
+
+    def ingress_webhook_handler_start(self, handler_route: str, payload: dict | None = None) -> dict:
+        """Start a webhook handler without Cognito (EventBridge ingress only)."""
+        payload = dict(payload or {})
+        parts = str(handler_route or "").split("/", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return {"success": False, "error": f"invalid handler route: {handler_route!r}"}
+        extension, handler = parts
+        portfolio = payload.get("portfolio")
+        org = payload.get("org") or "_all"
+        if not portfolio:
+            return {"success": False, "error": "portfolio required"}
+        resolved = self._resolve_extension_handle(portfolio, extension)
+
+        if placed_on_peer(resolved) and peer_is_active(resolved):
+            peer_result = self._handler_async_start_impl(
+                portfolio,
+                org,
+                extension,
+                handler,
+                payload,
+                action="ingress_webhook_async",
+                attach_jwt=False,
+            )
+            if peer_result.get("success"):
+                return peer_result
+
+        lambda_result = try_invoke_async_ingress_worker(handler_route, payload)
+        if lambda_result.get("success"):
+            return lambda_result
+
+        if not os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+            local_result = self._handler_async_start_impl(
+                portfolio,
+                org,
+                extension,
+                handler,
+                payload,
+                action="ingress_webhook_async",
+                attach_jwt=False,
+            )
+            if local_result.get("success"):
+                return local_result
+
+        return {
+            "success": False,
+            "error": "Could not start async ingress worker (Lambda invoke, peer ECS, or local async)",
+        }
+
+    @authorize(resource="tool", tool_id_param="extension")
+    def handler_call_async_start(self, portfolio, org, extension, handler, payload):
+        """Start an async handler job. In-process, local Docker, or the peer ECS task."""
+        action = "handler_call_async_start"
+        payload = dict(payload or {})
+        auth_ctx = getattr(self, "_auth_context", None) or {}
+        attach_auth_roles_to_payload(payload, auth_ctx.get("roles") or [])
+        result = self._handler_async_start_impl(
+            portfolio,
+            org,
+            extension,
+            handler,
+            payload,
+            action=action,
+            attach_jwt=True,
+        )
+        if not result.get("success") and result.get("error"):
+            return result
+        if result.get("success"):
+            return result
+        return result
 
     handler_call_batch_start = handler_call_async_start
 
@@ -548,3 +638,26 @@ class SchdController(SchdScheduleMixin):
         except Exception as e:
             logger.error(f"Error deleting rule: {str(e)}")
             raise
+
+
+def call_handler(
+    config: dict,
+    portfolio: str,
+    org: str,
+    handler: str,
+    payload: dict,
+    user_id: str = "",
+) -> dict:
+    """Run an extension handler through placement.
+
+    A hub-placed handler runs in this process. A peer-placed handler is
+    invoked on that peer. Callers do not choose the process.
+    """
+    parts = str(handler or "").split("/", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return {"success": False, "error": "handler must be extension/name"}
+    controller = SchdController(config=config or {})
+    actor = str(user_id or "").strip()
+    if actor:
+        controller.AUC.set_invocation_user(actor)
+    return controller.handler_call(portfolio, org, parts[0], parts[1], dict(payload or {}))

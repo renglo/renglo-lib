@@ -1,5 +1,8 @@
-"""Finish an Event invoke: write the session and post the websocket.
+"""Finish an Event invoke: write the session, then continue the caller.
 
+A registered callback is asked to continue the agent. The tool result is
+already on the session. A call with no callback still pushes the websocket
+and sends the channel text from here.
 The hub has already returned a running receipt. This runs on the peer.
 """
 
@@ -15,6 +18,13 @@ DETACHED_DEADLINE_SECONDS = 14 * 60
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def callback_handler_name(event: dict[str, Any]) -> str:
+    raw = _completion(event).get("callback")
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("handler") or "").strip()
 
 
 def _completion(event: dict[str, Any]) -> dict[str, Any]:
@@ -140,9 +150,12 @@ def complete_detached(
     config: Optional[dict[str, Any]] = None,
     claims: Any = None,
 ) -> list[dict[str, Any]]:
-    """Persist and push the frames onto the turn that started the call."""
+    """Save the tool result, then continue a registered agent or answer the channel."""
     frames = frames_for_result(event, result, error=error, timed_out=timed_out)
     payload = _payload(event)
+    callback = callback_handler_name(event)
+    if callback:
+        frames = [frame for frame in frames if frame.get("_type") == "tool_result"]
     if config is None:
         try:
             from renglo.common import load_config
@@ -160,6 +173,13 @@ def complete_detached(
     sessions = SessionController(config=config)
     if claims is None and isinstance(payload, dict):
         claims = payload.get("_jwt_claims")
+    route = _completion(event).get("reply")
+    route = route if isinstance(route, dict) else {}
+    user_id = str(route.get("user_id") or "").strip()
+    if not user_id and isinstance(payload, dict):
+        user_id = str(payload.get("public_user") or payload.get("user_id") or "").strip()
+    if user_id:
+        sessions.set_invocation_user(user_id)
     stamp_invocation_jwt_claims(sessions, claims)
 
     for frame in frames:
@@ -177,4 +197,59 @@ def complete_detached(
             push_handler_error(config, payload, frame)
         except Exception as exc:
             print(f"push detached frame failed: {exc}")
+
+    if callback:
+        from renglo.schd.continuation import post_agent_callback
+
+        call_id = str(_completion(event).get("call_id") or "")
+        body = {
+            "callback": {"handler": callback},
+            "call_id": call_id,
+            "result": result if isinstance(result, dict) else {},
+            "reply": route or None,
+            "portfolio": str(payload.get("portfolio") or ""),
+            "org": str(payload.get("org") or ""),
+            "entity_type": str(payload.get("entity_type") or ""),
+            "entity_id": str(payload.get("entity_id") or ""),
+            "thread": str(payload.get("thread") or ""),
+            "turn_id": turn_id,
+            "connectionId": str(payload.get("connectionId") or payload.get("connection_id") or ""),
+            "user_id": user_id,
+            "public_user": str(payload.get("public_user") or ""),
+        }
+        try:
+            post_agent_callback(config, body)
+        except Exception as exc:
+            print(f"agent callback failed: {exc}")
+        return frames
+
+    handler = str(route.get("handler") or "").strip()
+    if handler:
+        from renglo.schd.channel_reply import deliver_channel_reply, text_for_channel
+
+        text = text_for_channel(frames)
+        if text:
+            related = ""
+            for frame in frames:
+                meta = frame.get("_meta") if isinstance(frame, dict) else None
+                if isinstance(meta, dict) and frame.get("_type") == "assistant_message":
+                    related = str(meta.get("event_id") or "")
+            if not related:
+                meta = frames[-1].get("_meta") if frames and isinstance(frames[-1], dict) else None
+                related = str((meta or {}).get("event_id") or "") if isinstance(meta, dict) else ""
+            body = {
+                "reply": route,
+                "text": text,
+                "portfolio": str(payload.get("portfolio") or ""),
+                "org": str(payload.get("org") or ""),
+                "entity_type": str(payload.get("entity_type") or ""),
+                "entity_id": str(payload.get("entity_id") or ""),
+                "thread": str(payload.get("thread") or ""),
+                "turn_id": turn_id,
+                "related_event_id": related,
+            }
+            try:
+                deliver_channel_reply(config, body)
+            except Exception as exc:
+                print(f"channel reply failed: {exc}")
     return frames
