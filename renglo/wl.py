@@ -1,8 +1,10 @@
 """Tenant white-label branding for controllers.
 
 The pack import name is always ``wl``. Product copy lives there
-(``appName``, invite email strings, logo files). ``WL_NAME`` is the
-environment id and must not be used as a display name.
+(``appName``, invite email strings, logo files, and any other locale
+keys). ``caption`` reads a dotted path from those locales and uses the
+caller's generic default when the pack or the key is missing.
+``WL_NAME`` is the environment id and must not be used as a display name.
 """
 
 from __future__ import annotations
@@ -72,6 +74,48 @@ def small_logo_path() -> Path | None:
         return None
     resolved = Path(path)
     return resolved if resolved.is_file() else None
+
+
+def _locale_node(locale: str = "en") -> object:
+    pack = load_wl_module()
+    if pack is None:
+        return None
+    locales = getattr(pack, "locales", None) or {}
+    if not isinstance(locales, dict):
+        return None
+    return locales.get(locale)
+
+
+def _walk(node: object, path: str) -> object:
+    current = node
+    for part in path.split("."):
+        if not part:
+            continue
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def caption(path: str, default: str = "", *, locale: str = "en") -> str:
+    """Dotted path into the white-label locale.
+
+    A missing or blank value uses ``default``, the same way invite copy
+    falls back when the pack is absent. Callers keep that generic caption
+    next to the call.
+    """
+    value = _walk(_locale_node(locale), path)
+    if isinstance(value, str) and value.strip():
+        return value
+    return default
+
+
+def caption_list(path: str, default: list[str] | None = None, *, locale: str = "en") -> list[str]:
+    """String list at a dotted path. An explicit list wins, including an empty one."""
+    value = _walk(_locale_node(locale), path)
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item.strip()]
+    return list(default or [])
 
 
 def invite_strings(locale: str = "en") -> dict[str, str]:
