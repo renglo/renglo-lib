@@ -16,6 +16,8 @@ from renglo.wl import (  # noqa: E402
     LOGO_CID,
     app_name,
     build_raw_email,
+    caption,
+    caption_list,
     invite_inline_images,
     invite_strings,
     render_invite_email,
@@ -102,6 +104,30 @@ class WlPackTests(unittest.TestCase):
         with patch("renglo.wl.load_wl_module", return_value=pack):
             strings = invite_strings()
             self.assertIn("{appName}", strings["subjectHint"])
+
+
+class CaptionTests(unittest.TestCase):
+    def test_missing_pack_uses_the_caller_default(self) -> None:
+        with patch("renglo.wl.load_wl_module", return_value=None):
+            self.assertEqual(caption("onboarding.start.title", "Start here"), "Start here")
+            self.assertEqual(caption_list("onboarding.entity.types", ["Other"]), ["Other"])
+
+    def test_pack_value_wins_and_blank_uses_default(self) -> None:
+        pack = _fake_wl()
+        pack.locales["en"]["onboarding"] = {
+            "start": {"title": "Start here", "kicker": "   "},
+            "entity": {"types": []},
+        }
+        with patch("renglo.wl.load_wl_module", return_value=pack):
+            self.assertEqual(caption("onboarding.start.title", "Welcome"), "Start here")
+            self.assertEqual(caption("onboarding.start.kicker", "Get started"), "Get started")
+            self.assertEqual(caption("onboarding.missing", "Fallback"), "Fallback")
+            self.assertEqual(caption_list("onboarding.entity.types", ["Movie"]), [])
+
+    def test_missing_list_uses_the_caller_default(self) -> None:
+        pack = _fake_wl()
+        with patch("renglo.wl.load_wl_module", return_value=pack):
+            self.assertEqual(caption_list("onboarding.entity.types", ["Other"]), ["Other"])
 
 
 class RawEmailTests(unittest.TestCase):
