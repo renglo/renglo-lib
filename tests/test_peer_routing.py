@@ -238,6 +238,74 @@ class PeerRoutingTests(unittest.TestCase):
             "arbitium0813-peer-lab-production",
         )
 
+    def test_extension_parameter_is_read_for_this_stage(self) -> None:
+        os.environ["WL_NAME"] = "arbitium0813"
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "arbitium0813-backend-staging"
+        extension_doc = {
+            "stages": {
+                "staging": {
+                    "arbitiumlab": {"lambda_function_name": "arbitium0813-peer-lab-staging"}
+                },
+                "production": {
+                    "arbitiumlab": {"lambda_function_name": "arbitium0813-peer-lab-production"}
+                },
+            },
+            "routes": {
+                "arbitiumlab": {"lambda_function_name": "arbitium0813-peer-lab-production"}
+            },
+        }
+        legacy = {"arbitiumlab": {"lambda_function_name": "arbitium0813-peer-lab"}}
+
+        def get_parameter(Name, WithDecryption=False):
+            if Name == "/arbitium0813/bootstrap/peer-routes/arbitiumlab":
+                return {"Parameter": {"Value": json.dumps(extension_doc)}}
+            if Name == "/arbitium0813/bootstrap/peer-routes":
+                return {"Parameter": {"Value": json.dumps(legacy)}}
+            raise AssertionError(Name)
+
+        try:
+            with patch("boto3.client") as client:
+                client.return_value.get_parameter.side_effect = get_parameter
+                self.assertEqual(
+                    _resolve_handlers_lambda_function_name("arbitiumlab"),
+                    "arbitium0813-peer-lab-staging",
+                )
+                requested = client.return_value.get_parameter.call_args.kwargs["Name"]
+                self.assertEqual(requested, "/arbitium0813/bootstrap/peer-routes/arbitiumlab")
+        finally:
+            os.environ.pop("WL_NAME", None)
+            os.environ.pop("AWS_LAMBDA_FUNCTION_NAME", None)
+
+    def test_missing_extension_parameter_uses_the_legacy_map(self) -> None:
+        os.environ["WL_NAME"] = "arbitium0813"
+        legacy = {
+            "stages": {
+                "production": {
+                    "arbitiumlab": {"lambda_function_name": "arbitium0813-peer-lab-production"}
+                }
+            },
+            "routes": {
+                "arbitiumlab": {"lambda_function_name": "arbitium0813-peer-lab-production"}
+            },
+        }
+
+        def get_parameter(Name, WithDecryption=False):
+            if Name == "/arbitium0813/bootstrap/peer-routes/arbitiumlab":
+                raise RuntimeError("missing")
+            if Name == "/arbitium0813/bootstrap/peer-routes":
+                return {"Parameter": {"Value": json.dumps(legacy)}}
+            raise AssertionError(Name)
+
+        try:
+            with patch("boto3.client") as client:
+                client.return_value.get_parameter.side_effect = get_parameter
+                self.assertEqual(
+                    get_peer_route("arbitiumlab")["lambda_function_name"],
+                    "arbitium0813-peer-lab-production",
+                )
+        finally:
+            os.environ.pop("WL_NAME", None)
+
     def test_flat_routes_still_resolve_when_there_is_no_stage_split(self) -> None:
         parsed = json.loads(TWO_PEERS)
         self.assertEqual(

@@ -6,7 +6,7 @@ which handles are placed on a peer and how to call that peer's Lambda. Handlers
 for a hub-placed extension stay in-process via SchdLoader.
 
 Loading order:
-    1. Peer route map (``PEER_ROUTES``, else SSM ``/{wl}/bootstrap/peer-routes``)
+    1. Peer route map (``PEER_ROUTES``, else SSM ``/{wl}/bootstrap/peer-routes/{handle}``)
     2. ``PEER_EXTENSIONS`` comma-separated handles (laptop / catalog)
     3. ``{HANDLE}_PEER_*`` fields
     4. ``DEFAULT_CONFIG`` in this file
@@ -164,27 +164,73 @@ def _routes_for_stage(parsed: Any, stage: str) -> Dict[str, Dict[str, Any]]:
     return _peer_map_from_mapping(parsed)
 
 
-def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
-    """Optional runtime SSM so the map can change without a backend BOM deploy."""
+def _peer_routes_prefix() -> str:
     path = (os.getenv(PEER_ROUTES_SSM_ENV) or os.getenv(PEER_ROUTES_SSM_ENV_PREV) or "").strip()
-    if not path:
-        wl = (os.getenv("WL_NAME") or "").strip()
-        if wl:
-            path = f"/{wl}/bootstrap/peer-routes"
+    if path:
+        return path.rstrip("/")
+    wl = (os.getenv("WL_NAME") or "").strip()
+    if wl:
+        return f"/{wl}/bootstrap/peer-routes"
+    return ""
+
+
+def _ssm_parameter_json(path: str) -> Any:
+    import boto3
+
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+    raw = boto3.client("ssm", region_name=region).get_parameter(Name=path, WithDecryption=True)
+    value = str(raw["Parameter"]["Value"]).strip()
+    if not value:
+        return None
+    return json.loads(value)
+
+
+def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
+    """Legacy combined parameter. New deploys write one parameter per handle."""
+    path = _peer_routes_prefix()
     if not path:
         return {}
     try:
-        import boto3
-
-        region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
-        raw = boto3.client("ssm", region_name=region).get_parameter(Name=path, WithDecryption=True)
-        value = str(raw["Parameter"]["Value"]).strip()
-        if not value:
+        parsed = _ssm_parameter_json(path)
+        if parsed is None:
             return {}
-        parsed = json.loads(value)
         return _routes_for_stage(parsed, deployment_stage())
     except Exception:
         return {}
+
+
+def _extension_route_from_ssm(handle: str) -> Optional[Dict[str, Any]]:
+    """``/{env}/bootstrap/peer-routes/{handle}`` for this stage."""
+    prefix = _peer_routes_prefix()
+    if not prefix or not handle:
+        return None
+    try:
+        parsed = _ssm_parameter_json(f"{prefix}/{handle}")
+        if not isinstance(parsed, dict):
+            return None
+        return _routes_for_stage(parsed, deployment_stage()).get(handle)
+    except Exception:
+        return None
+
+
+def _explicit_peer_map() -> Optional[Dict[str, Dict[str, Any]]]:
+    """Env or config map. Set means this source wins, including a missing handle."""
+    for key in (PEER_ROUTES_ENV, PEER_ROUTES_ENV_PREV):
+        mapped = _peer_map_from_raw(os.getenv(key) or "")
+        if mapped:
+            return mapped
+    try:
+        from renglo.common import load_config
+
+        cfg = load_config()
+        if isinstance(cfg, dict):
+            for key in (PEER_ROUTES_ENV, PEER_ROUTES_ENV_PREV):
+                mapped = _peer_map_from_raw(cfg.get(key))
+                if mapped:
+                    return mapped
+    except Exception:
+        pass
+    return None
 
 
 def _peer_map_from_raw(raw: Any) -> Dict[str, Dict[str, Any]]:
@@ -229,7 +275,13 @@ def get_peer_route(extension_name: str) -> Optional[Dict[str, Any]]:
     handle = (extension_name or "").strip().lower()
     if not handle:
         return None
-    return load_peer_map().get(handle)
+    explicit = _explicit_peer_map()
+    if explicit is not None:
+        return explicit.get(handle)
+    route = _extension_route_from_ssm(handle)
+    if route:
+        return route
+    return _peer_map_from_ssm().get(handle)
 
 
 def _function_name_from_lambda_arn(arn: str) -> str:
