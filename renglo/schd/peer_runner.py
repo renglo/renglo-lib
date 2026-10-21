@@ -1147,7 +1147,7 @@ def get_async_status(extension_name: str, request_id: str) -> Dict[str, Any]:
         obj = s3.get_object(Bucket=bucket, Key=status_key)
         body = json.loads(obj['Body'].read().decode())
         step = body.get('step')
-        return {'success': True, 'status': 'running', 'step': step}
+        return {'success': True, 'status': 'running', 'step': step, 'trace': body.get('trace')}
     except ClientError as e:
         if (e.response or {}).get('Error', {}).get('Code') == 'NoSuchKey':
             return {'success': True, 'status': 'pending', 'step': None}
