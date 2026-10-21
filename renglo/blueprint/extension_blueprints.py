@@ -128,15 +128,34 @@ def get_installed_blueprint(handle: str, name: str, version: str) -> dict | None
 
 
 def find_blueprints_dir(module_file: str) -> Path | None:
-    current = Path(module_file).resolve().parent
+    """Return the blueprint folder for this module.
+
+    A checkout keeps the source in ``<extension>/blueprints``. setuptools also
+    copies that folder into the package so a wheel can carry it. The copy is
+    nearer to the module, and an editable install would keep serving it after
+    the source changed. Prefer the folder outside the module directory.
+    """
+    start = Path(module_file).resolve().parent
+    found: list[Path] = []
+    current = start
     for _ in range(6):
         candidate = current / "blueprints"
         if candidate.is_dir() and any(candidate.glob("*.json")):
-            return candidate
+            found.append(candidate)
         if current.parent == current:
             break
         current = current.parent
-    return None
+    if not found:
+        return None
+    outside = []
+    for candidate in found:
+        try:
+            candidate.resolve().relative_to(start)
+        except ValueError:
+            outside.append(candidate)
+    if outside:
+        return outside[-1]
+    return found[0]
 
 
 def load_blueprint_files(blueprints_dir: Path) -> list[tuple[Path, dict]]:
