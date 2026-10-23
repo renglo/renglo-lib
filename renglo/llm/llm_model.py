@@ -57,12 +57,13 @@ _PROVIDER_FAMILIES = {
 
 
 class LlmModel:
-    def __init__(self, config=None, adapters=None, sleep=None):
+    def __init__(self, config=None, adapters=None, sleep=None, timeseries=None):
         self.config = config or {}
         self.registry = build_registry(self.config)
         self.adapters = adapters or default_adapters()
         self.sleep = sleep or time.sleep
         self.logger = get_logger()
+        self._timeseries = timeseries
 
     def generate(
         self,
@@ -346,7 +347,7 @@ class LlmModel:
                 "provider_output": {},
             }
             attempts.append(self._attempt(execution, deployment, outcome, 0))
-            self._log_attempt(attempts[-1])
+            self._note_attempt(execution, attempts[-1])
             return outcome
 
         credential, error = self._resolve_credential(deployment)
@@ -360,7 +361,7 @@ class LlmModel:
                 "provider_output": {},
             }
             attempts.append(self._attempt(execution, deployment, outcome, 0))
-            self._log_attempt(attempts[-1])
+            self._note_attempt(execution, attempts[-1])
             return outcome
 
         call = {
@@ -384,7 +385,7 @@ class LlmModel:
             )
             duration_ms = int((time.perf_counter() - started) * 1000)
             attempts.append(self._attempt(execution, deployment, outcome, duration_ms))
-            self._log_attempt(attempts[-1])
+            self._note_attempt(execution, attempts[-1])
             last = outcome
             if outcome["ok"] or outcome["error_type"] not in RETRYABLE_ERRORS:
                 return outcome
@@ -434,6 +435,61 @@ class LlmModel:
         cost = empty_cost(pricing.currency if pricing else "USD")
         cost["estimated"] = estimate_cost(usage, pricing)
         return cost
+
+    def _note_attempt(self, execution, attempt):
+        self._log_attempt(attempt)
+        self._record_usage(execution, attempt)
+
+    def _record_usage(self, execution, attempt):
+        recorder = self._usage_recorder()
+        if recorder is None:
+            return
+        context = (execution or {}).get("context") or {}
+        portfolio = context.get("portfolio_id")
+        org = context.get("org_id")
+        if not portfolio or not org:
+            return
+        usage = attempt.get("usage") or {}
+        dimensions = [
+            str(attempt.get("provider_id") or ""),
+            str(attempt.get("model_id") or ""),
+            str(context.get("extension_id") or ""),
+        ]
+        for field, series_key in (
+            ("input_tokens", "llm.input_tokens"),
+            ("output_tokens", "llm.output_tokens"),
+            ("reasoning_tokens", "llm.reasoning_tokens"),
+            ("cached_tokens", "llm.cached_tokens"),
+        ):
+            value = usage.get(field)
+            if value is None:
+                continue
+            try:
+                recorder.put(
+                    portfolio,
+                    org,
+                    key=series_key,
+                    value=value,
+                    dimensions=dimensions,
+                    resolution="day",
+                    idempotency_key=f"{attempt.get('attempt_id')}:{series_key}",
+                )
+            except Exception as exc:
+                self.logger.warning("timeseries put failed for %s: %s", series_key, exc)
+
+    def _usage_recorder(self):
+        if self._timeseries is not None:
+            return self._timeseries
+        if not self.config.get("DYNAMODB_TIMESERIES_TABLE"):
+            return None
+        try:
+            from renglo.timeseries import TimeSeriesController
+
+            self._timeseries = TimeSeriesController(config=self.config)
+        except Exception as exc:
+            self.logger.warning("timeseries controller unavailable: %s", exc)
+            return None
+        return self._timeseries
 
     def _log_attempt(self, attempt):
         usage = attempt.get("usage") or {}

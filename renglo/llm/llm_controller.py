@@ -7,9 +7,11 @@ from renglo.llm.types import BLOCK_TEXT
 
 
 class LlmController:
-    def __init__(self, config=None, adapters=None, sleep=None):
+    def __init__(self, config=None, adapters=None, sleep=None, timeseries=None):
         self.config = config or {}
-        self.LMM = LlmModel(self.config, adapters=adapters, sleep=sleep)
+        self.LMM = LlmModel(
+            self.config, adapters=adapters, sleep=sleep, timeseries=timeseries
+        )
 
     def generate(
         self,
