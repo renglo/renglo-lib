@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from renglo.llm.providers.errors import classify_provider_error, provider_error_message
-from renglo.llm.registry import CREDENTIAL_AWS_IAM
+from renglo.llm.registry import CallTarget, CatalogEntry, ProviderContribution, text_model
 from renglo.llm.types import (
     BLOCK_TEXT,
     ERROR_CONFIG,
@@ -12,6 +12,15 @@ from renglo.llm.types import (
     ROLE_USER,
     empty_usage,
 )
+
+# Default model id for this provider. Empty until namespaced config supplies one.
+DEFAULT_MODEL_ID = ""
+SECONDARY_MODEL_ID = ""
+PROVIDER_ID = "bedrock"
+AMBIENT_CREDENTIAL = "aws_iam"
+_PRIMARY_KEY = "BEDROCK_MODEL"
+_SECONDARY_KEY = "BEDROCK_CONVERSE_MODEL"
+_SOURCE = "Bedrock"
 
 _INFERENCE_KEYS = {
     "temperature": "temperature",
@@ -34,6 +43,7 @@ def _block_text(block) -> str:
 
 class BedrockConverseAdapter:
     api_family = "bedrock_converse"
+    provider_id = PROVIDER_ID
 
     def __init__(self, client=None):
         self.client = client
@@ -112,7 +122,7 @@ class BedrockConverseAdapter:
 
     def invoke(self, request, deployment, credential, timeout_seconds):
         self.last_credential = credential
-        if credential != CREDENTIAL_AWS_IAM:
+        if credential != AMBIENT_CREDENTIAL:
             return _failure(ERROR_CONFIG, "Bedrock Converse requires aws_iam")
         native = self.to_provider(request, deployment)
         client = self.client or self._runtime_client(deployment, timeout_seconds)
@@ -137,6 +147,74 @@ class BedrockConverseAdapter:
                 retries={"max_attempts": 1},
             ),
         )
+
+
+def _setting(config, key):
+    return str((config or {}).get(key) or "").strip()
+
+
+def _region(config):
+    return (
+        _setting(config, "AWS_REGION")
+        or _setting(config, "AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
+
+
+def create_adapter(client=None, **_ignored):
+    return BedrockConverseAdapter(client=client)
+
+
+def prepare(config, target):
+    """Hand the adapter its credential. Callers never see how this provider authenticates."""
+    return AMBIENT_CREDENTIAL, None
+
+
+def target_for(config, model_id):
+    model_id = str(model_id or "").strip()
+    if not model_id:
+        return None, "model is required"
+    return _target(config, model_id), None
+
+
+def contribute(config):
+    """Catalog rows for this provider. Namespaced config overrides the defaults."""
+    config = config or {}
+    primary = _setting(config, _PRIMARY_KEY) or DEFAULT_MODEL_ID
+    secondary = _setting(config, _SECONDARY_KEY) or SECONDARY_MODEL_ID
+    entries = [_entry(primary, _PRIMARY_KEY, is_default=True)]
+    targets = {}
+    models = {}
+    if primary:
+        targets[primary] = _target(config, primary)
+        models[primary] = text_model(primary)
+    if secondary and secondary != primary:
+        entries.append(_entry(secondary, _SECONDARY_KEY, is_default=False))
+        targets[secondary] = _target(config, secondary)
+        models[secondary] = text_model(secondary)
+    return ProviderContribution(entries=entries, targets=targets, models=models)
+
+
+def _entry(model_id, config_key, is_default):
+    available = bool(model_id)
+    return CatalogEntry(
+        provider_id=PROVIDER_ID,
+        model_id=model_id or None,
+        is_default=is_default,
+        available=available,
+        reason=None if available else f"{config_key} is not set",
+        source_label=_SOURCE,
+    )
+
+
+def _target(config, model_id):
+    return CallTarget(
+        provider_id=PROVIDER_ID,
+        model_id=model_id,
+        target_id=f"{PROVIDER_ID}:{model_id}",
+        endpoint=None,
+        region=_region(config),
+    )
 
 
 def _first(mapping, *keys):

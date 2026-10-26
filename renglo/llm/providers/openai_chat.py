@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 from renglo.llm.providers.errors import classify_provider_error, provider_error_message
+from renglo.llm.registry import CallTarget, CatalogEntry, ProviderContribution, text_model
 from renglo.llm.types import BLOCK_TEXT, ERROR_CONFIG, empty_usage
+
+# Default chat model. Override with OPENAI_MODEL in env_config.
+DEFAULT_MODEL_ID = "gpt-4o-mini"
+PUBLIC_ENDPOINT = "https://api.openai.com/v1"
+PROVIDER_ID = "openai"
+_MODEL_KEY = "OPENAI_MODEL"
+_ENDPOINT_KEY = "OPENAI_BASE_URL"
+_CREDENTIAL_KEY = "OPENAI_API_KEY"
+_SOURCE = "OpenAI API"
 
 _PROTECTED = {"model", "messages"}
 
@@ -16,6 +26,60 @@ def _block_text(message) -> str:
     return "\n".join(parts)
 
 
+def _setting(config, key):
+    return str((config or {}).get(key) or "").strip()
+
+
+def create_adapter(client_factory=None, **_ignored):
+    return OpenAIChatAdapter(client_factory=client_factory)
+
+
+def prepare(config, target):
+    """Hand the adapter its credential. Callers never see how this provider authenticates."""
+    secret = _setting(config, _CREDENTIAL_KEY)
+    if not secret:
+        return None, f"{_CREDENTIAL_KEY} is not set"
+    return secret, None
+
+
+def target_for(config, model_id):
+    model_id = str(model_id or "").strip()
+    if not model_id:
+        return None, "model is required"
+    return _target(config, model_id), None
+
+
+def contribute(config):
+    """Catalog rows for this provider. Namespaced config overrides the defaults."""
+    config = config or {}
+    model_id = _setting(config, _MODEL_KEY) or DEFAULT_MODEL_ID
+    secret = _setting(config, _CREDENTIAL_KEY)
+    available = bool(secret)
+    entry = CatalogEntry(
+        provider_id=PROVIDER_ID,
+        model_id=model_id,
+        is_default=True,
+        available=available,
+        reason=None if available else f"{_CREDENTIAL_KEY} is not set",
+        source_label=_SOURCE,
+    )
+    return ProviderContribution(
+        entries=[entry],
+        targets={model_id: _target(config, model_id)} if model_id else {},
+        models={model_id: text_model(model_id, max_output_tokens=16384)} if model_id else {},
+    )
+
+
+def _target(config, model_id):
+    return CallTarget(
+        provider_id=PROVIDER_ID,
+        model_id=model_id,
+        target_id=f"{PROVIDER_ID}:{model_id}",
+        endpoint=_setting(config, _ENDPOINT_KEY) or PUBLIC_ENDPOINT,
+        region=None,
+    )
+
+
 def _read(obj, key, default=None):
     if obj is None:
         return default
@@ -26,6 +90,7 @@ def _read(obj, key, default=None):
 
 class OpenAIChatAdapter:
     api_family = "openai_chat"
+    provider_id = PROVIDER_ID
 
     def __init__(self, client_factory=None):
         self.client_factory = client_factory

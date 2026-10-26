@@ -102,11 +102,37 @@ def make_controller(converse, openai_client, config=None, factory_log=None):
     return LlmController(
         config if config is not None else plane_config(),
         adapters={
-            "bedrock_converse": BedrockConverseAdapter(client=converse),
-            "openai_chat": OpenAIChatAdapter(client_factory=factory),
+            "bedrock": BedrockConverseAdapter(client=converse),
+            "openai": OpenAIChatAdapter(client_factory=factory),
         },
         sleep=lambda _seconds: None,
     )
+
+
+def test_provider_default_model_is_overridden_by_namespaced_config():
+    openai_client = FakeOpenAI([openai_ok("chosen")])
+    controller = make_controller(
+        FakeConverse([]),
+        openai_client,
+        config=plane_config(OPENAI_MODEL="gpt-4.1-mini"),
+    )
+    result = controller.generate(
+        messages=[{"role": "user", "content": "hi"}],
+        model="default",
+        provider="openai",
+    )
+    assert result["success"]
+    assert result["output"]["model"] == "gpt-4.1-mini"
+    assert openai_client.calls[0]["model"] == "gpt-4.1-mini"
+
+
+def test_registry_module_does_not_name_a_provider():
+    from pathlib import Path
+    import renglo.llm.registry as registry
+
+    text = Path(registry.__file__).read_text(encoding="utf-8").lower()
+    assert "bedrock" not in text
+    assert "openai" not in text
 
 
 def test_aliases_route_to_converse_effort_and_openai_fast():
@@ -114,10 +140,17 @@ def test_aliases_route_to_converse_effort_and_openai_fast():
     openai_client = FakeOpenAI([openai_ok("fast")])
     controller = make_controller(converse, openai_client)
 
-    low = controller.generate(messages=[{"role": "user", "content": "default please"}])
-    high = controller.generate(messages=[{"role": "user", "content": "think"}], model="reasoning")
-    claude = controller.generate(messages=[{"role": "user", "content": "claude"}], model="claude")
-    fast = controller.generate(messages=[{"role": "user", "content": "quick"}], model="fast")
+    low = controller.generate(
+        messages=[{"role": "user", "content": "default please"}],
+        provider_options={"reasoning": {"effort": "low"}},
+    )
+    high = controller.generate(
+        messages=[{"role": "user", "content": "think"}],
+        model="openai.gpt-5.5",
+        provider_options={"reasoning": {"effort": "high"}},
+    )
+    claude = controller.generate(messages=[{"role": "user", "content": "claude"}], model="anthropic.claude-sonnet-4")
+    fast = controller.generate(messages=[{"role": "user", "content": "quick"}], model="gpt-4o-mini")
 
     assert low["success"] and low["output"]["text"] == "low"
     assert converse.calls[0]["modelId"] == "openai.gpt-5.5"
@@ -135,7 +168,7 @@ def test_two_converse_model_ids_share_message_shape():
     controller = make_controller(converse, FakeOpenAI([]))
     messages = [{"role": "user", "content": "same shape"}]
     controller.generate(messages=messages, model="default")
-    controller.generate(messages=messages, model="claude")
+    controller.generate(messages=messages, model="anthropic.claude-sonnet-4")
     assert converse.calls[0]["modelId"] != converse.calls[1]["modelId"]
     assert converse.calls[0]["messages"] == converse.calls[1]["messages"]
 
@@ -149,7 +182,7 @@ def test_self_hosted_openai_base_url_is_the_endpoint():
         config=plane_config(OPENAI_BASE_URL="http://127.0.0.1:8080/v1"),
         factory_log=seen,
     )
-    result = controller.generate(messages=[{"role": "user", "content": "hi"}], model="economy")
+    result = controller.generate(messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini")
     assert result["output"]["text"] == "local"
     assert seen[0]["base_url"] == "http://127.0.0.1:8080/v1"
 
@@ -181,7 +214,7 @@ def test_same_canonical_messages_translate_differently():
         {"role": "assistant", "content": [{"type": "text", "text": "Earlier"}]},
     ]
     converse_result = controller.generate(messages=messages, model="default")
-    openai_result = controller.generate(messages=messages, model="fast")
+    openai_result = controller.generate(messages=messages, model="gpt-4o-mini")
 
     native = converse.calls[0]
     assert native["system"] == [{"text": "Be brief."}]
@@ -228,9 +261,9 @@ def test_adapters_receive_resolved_credentials_not_the_config_dict():
     config = plane_config(OPENAI_API_KEY="sk-resolved")
     controller = make_controller(converse, openai_client, config=config, factory_log=seen)
     controller.generate(messages=[{"role": "user", "content": "iam"}], model="default")
-    controller.generate(messages=[{"role": "user", "content": "key"}], model="fast")
-    bedrock = controller.LMM.adapters["bedrock_converse"]
-    openai = controller.LMM.adapters["openai_chat"]
+    controller.generate(messages=[{"role": "user", "content": "key"}], model="gpt-4o-mini")
+    bedrock = controller.LMM.adapters["bedrock"]
+    openai = controller.LMM.adapters["openai"]
     assert bedrock.last_credential == "aws_iam"
     assert seen[0]["api_key"] == "sk-resolved"
     assert openai.last_credential == "sk-resolved"
@@ -261,7 +294,7 @@ def test_400_does_not_retry_or_fall_back():
     controller = make_controller(converse, openai_client)
     result = controller.generate(
         messages=[{"role": "user", "content": "bad"}],
-        fallback=["economy"],
+        fallback=["gpt-4o-mini"],
     )
     assert result["success"] is False
     assert result["error_type"] == "invalid_request"
@@ -278,7 +311,7 @@ def test_fallback_economy_runs_after_converse_retries_are_exhausted():
     controller = make_controller(converse, openai_client)
     result = controller.generate(
         messages=[{"role": "user", "content": "please"}],
-        fallback=["economy"],
+        fallback=["gpt-4o-mini"],
     )
     assert result["success"]
     assert result["output"]["text"] == "saved"
@@ -334,7 +367,7 @@ def test_usage_and_estimated_cost_come_from_the_provider_and_registry():
 
 def test_openai_usage_tokens_are_copied():
     controller = make_controller(FakeConverse([]), FakeOpenAI([openai_ok("u")]))
-    result = controller.generate(messages=[{"role": "user", "content": "u"}], model="fast")
+    result = controller.generate(messages=[{"role": "user", "content": "u"}], model="gpt-4o-mini")
     usage = result["output"]["execution"]["usage"]
     assert usage["input_tokens"] == 11
     assert usage["output_tokens"] == 6
@@ -353,7 +386,7 @@ def test_logs_omit_api_key_and_prompt(caplog):
     )
     with caplog.at_level(logging.INFO, logger="renglo"):
         controller.generate(messages=[{"role": "user", "content": prompt}], model="default")
-        controller.generate(messages=[{"role": "user", "content": prompt}], model="fast")
+        controller.generate(messages=[{"role": "user", "content": prompt}], model="gpt-4o-mini")
     assert "llm_attempt" in caplog.text
     assert prompt not in caplog.text
     assert "sk-log-secret" not in caplog.text

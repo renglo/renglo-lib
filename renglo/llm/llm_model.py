@@ -7,16 +7,9 @@ import uuid
 
 from renglo.llm.providers import default_adapters
 from renglo.llm.registry import (
-    CREDENTIAL_AWS_IAM,
-    FAMILY_CONVERSE,
-    FAMILY_OPENAI_CHAT,
-    KNOWN_ALIASES,
-    PROVIDER_BEDROCK,
-    PROVIDER_OPENAI,
-    DeploymentRecord,
-    _text_model,
     build_registry,
     estimate_cost,
+    text_model,
 )
 from renglo.llm.types import (
     BLOCK_TEXT,
@@ -48,12 +41,6 @@ from renglo.logger import get_logger
 
 _MAX_EXTRA_RETRIES = 2
 _BACKOFF_SECONDS = (0.05, 0.1)
-_PROVIDER_FAMILIES = {
-    PROVIDER_BEDROCK: FAMILY_CONVERSE,
-    "bedrock_converse": FAMILY_CONVERSE,
-    PROVIDER_OPENAI: FAMILY_OPENAI_CHAT,
-    "openai_chat": FAMILY_OPENAI_CHAT,
-}
 
 
 class LlmModel:
@@ -98,7 +85,7 @@ class LlmModel:
         execution = self._new_execution(request["context"])
         self.enforce_policies(execution, request)
 
-        resolved, error_type, error = self._resolve_deployments(request)
+        resolved, error_type, error = self._resolve_targets(request)
         if error_type:
             execution["status"] = STATUS_FAILED
             return self._failure(
@@ -107,11 +94,11 @@ class LlmModel:
 
         required = self._required_capabilities(request)
         eligible = []
-        for deployment, effort in resolved:
-            model_record = self.registry.models.get(deployment.model_id)
+        for target in resolved:
+            model_record = self.registry.models.get(target.model_id)
             capabilities = list(model_record.capabilities) if model_record else [CAPABILITY_TEXT]
             if all(name in capabilities for name in required):
-                eligible.append((deployment, effort, model_record))
+                eligible.append((target, model_record))
         if not eligible:
             execution["status"] = STATUS_FAILED
             return self._failure(
@@ -128,9 +115,9 @@ class LlmModel:
 
         attempts = []
         last = None
-        for deployment, effort, model_record in eligible:
+        for target, model_record in eligible:
             outcome = self._run_deployment(
-                execution, request, deployment, effort, attempts
+                execution, request, target, attempts
             )
             last = outcome
             if outcome["ok"]:
@@ -144,7 +131,7 @@ class LlmModel:
                     execution,
                     attempts,
                     outcome,
-                    deployment,
+                    target,
                     model,
                 )
             error_type = outcome["error_type"]
@@ -159,7 +146,7 @@ class LlmModel:
                     outcome["error"],
                     error_type,
                     model,
-                    deployment,
+                    target,
                     outcome.get("provider_output"),
                 )
 
@@ -255,98 +242,87 @@ class LlmModel:
                     required.append(CAPABILITY_TOOL_CALLING)
         return list(dict.fromkeys(required))
 
-    def _resolve_deployments(self, request):
+    def _resolve_targets(self, request):
         provider = request.get("provider")
-        model_name = request["model"]
         if provider is not None and not isinstance(provider, str):
             return None, ERROR_INVALID, "provider must be a string"
         if isinstance(provider, str):
             provider = provider.strip() or None
             request["provider"] = provider
-
-        if model_name in KNOWN_ALIASES:
-            chain, error_type, error = self._alias_chain(model_name, request.get("fallback"))
+        names = [request["model"]]
+        for name in request.get("fallback") or []:
+            names.append(name)
+        selected = []
+        for index, name in enumerate(names):
+            target, error_type, error = self._one_target(name, provider if index == 0 else None)
             if error_type:
                 return None, error_type, error
-            selected = []
-            for alias in chain:
-                for deployment_id in alias.deployments:
-                    deployment = self.registry.deployments.get(deployment_id)
-                    if deployment is None or not deployment.enabled:
-                        continue
-                    if provider and deployment.provider_id != provider and deployment.api_family != provider:
-                        continue
-                    selected.append((deployment, alias.reasoning_effort))
-            if not selected:
-                if provider:
-                    return None, ERROR_CONFIG, f"No {provider} deployment for alias {model_name}"
-                return None, ERROR_CONFIG, f"Alias {model_name} has no deployment"
-            return selected, None, None
+            selected.append(target)
+        return selected, None, None
 
-        if not provider:
-            return None, ERROR_INVALID, f"Unknown alias {model_name}"
-        family = _PROVIDER_FAMILIES.get(provider)
-        if family is None:
+    def _one_target(self, model_name, provider):
+        if model_name in (None, "", "default"):
+            entry = self._default_entry(provider)
+            if entry is None:
+                return None, ERROR_CONFIG, "No default model is configured"
+            if not entry.available or not entry.model_id:
+                return None, ERROR_CONFIG, entry.reason or "The default model is not available"
+            return self._target_for_entry(entry)
+        matches = [
+            entry for entry in self.registry.catalog
+            if entry.model_id == model_name and (not provider or entry.provider_id == provider)
+        ]
+        if not matches:
+            if not provider:
+                return None, ERROR_INVALID, f"Unknown model {model_name}"
+            return self._off_catalog(provider, model_name)
+        if len(matches) > 1:
+            return None, ERROR_INVALID, f"Model {model_name} is offered by more than one provider"
+        entry = matches[0]
+        if not entry.available:
+            return None, ERROR_CONFIG, entry.reason or "The model is not available"
+        return self._target_for_entry(entry)
+
+    def _default_entry(self, provider):
+        rows = [
+            entry for entry in self.registry.catalog
+            if entry.is_default and (not provider or entry.provider_id == provider)
+        ]
+        available = [entry for entry in rows if entry.available and entry.model_id]
+        if available:
+            return available[0]
+        return rows[0] if rows else None
+
+    def _target_for_entry(self, entry):
+        target = self.registry.targets.get((entry.provider_id, entry.model_id))
+        if target is None:
+            return None, ERROR_CONFIG, "The model is not available"
+        return target, None, None
+
+    def _off_catalog(self, provider, model_name):
+        module = self.registry.modules.get(provider)
+        if module is None or not hasattr(module, "target_for"):
             return None, ERROR_INVALID, f"Unknown provider {provider}"
-        deployment = self._explicit_deployment(provider, family, model_name)
-        return [(deployment, None)], None, None
+        target, error = module.target_for(self.config, model_name)
+        if error:
+            return None, ERROR_INVALID, error
+        if model_name not in self.registry.models:
+            self.registry.models[model_name] = text_model(model_name)
+        return target, None, None
 
-    def _alias_chain(self, model_name, fallback):
-        primary = self.registry.aliases.get(model_name)
-        if primary is None:
-            return None, ERROR_INVALID, f"Unknown alias {model_name}"
-        if not primary.enabled:
-            return None, ERROR_CONFIG, f"Alias {model_name} is not enabled"
-        chain = [primary]
-        for name in fallback or []:
-            alias = self.registry.aliases.get(name)
-            if alias is None:
-                return None, ERROR_INVALID, f"Unknown fallback alias {name}"
-            if not alias.enabled:
-                return None, ERROR_CONFIG, f"Fallback alias {name} is not enabled"
-            chain.append(alias)
-        return chain, None, None
-
-    def _explicit_deployment(self, provider, family, model_id):
-        template = None
-        for deployment in self.registry.deployments.values():
-            if deployment.api_family == family and deployment.enabled:
-                template = deployment
-                break
-        endpoint = template.endpoint if template else None
-        credential_ref = template.credential_ref if template else (
-            CREDENTIAL_AWS_IAM if family == FAMILY_CONVERSE else "OPENAI_API_KEY"
-        )
-        region = template.region if template else self.registry.region
-        provider_id = template.provider_id if template else (
-            PROVIDER_BEDROCK if family == FAMILY_CONVERSE else PROVIDER_OPENAI
-        )
-        if model_id not in self.registry.models:
-            self.registry.models[model_id] = _text_model(model_id)
-        return DeploymentRecord(
-            deployment_id=f"explicit_{provider_id}_{model_id}",
-            provider_id=provider_id,
-            model_id=model_id,
-            api_family=family,
-            endpoint=endpoint,
-            credential_ref=credential_ref,
-            enabled=True,
-            region=region,
-        )
-
-    def _run_deployment(self, execution, request, deployment, effort, attempts):
-        adapter = self.adapters.get(deployment.api_family)
+    def _run_deployment(self, execution, request, deployment, attempts):
+        adapter = self.adapters.get(deployment.provider_id)
         if adapter is None:
             outcome = {
                 "ok": False,
                 "error_type": ERROR_CONFIG,
-                "error": f"No translator for {deployment.api_family}",
+                "error": f"No translator for {deployment.provider_id}",
                 "text": "",
                 "usage": empty_usage(),
                 "provider_output": {},
             }
             attempts.append(self._attempt(execution, deployment, outcome, 0))
-            self._log_attempt(attempts[-1])
+            self._note_attempt(execution, attempts[-1])
             return outcome
 
         credential, error = self._resolve_credential(deployment)
@@ -360,16 +336,15 @@ class LlmModel:
                 "provider_output": {},
             }
             attempts.append(self._attempt(execution, deployment, outcome, 0))
-            self._log_attempt(attempts[-1])
+            self._note_attempt(execution, attempts[-1])
             return outcome
 
+        options = request.get("provider_options") or {}
         call = {
             "messages": request["messages"],
             "max_output_tokens": request.get("max_output_tokens"),
-            "provider_options": request.get("provider_options") or {},
-            "reasoning_effort": effort,
+            "provider_options": options,
         }
-        options = request.get("provider_options") or {}
         if isinstance(options.get("reasoning"), dict) and options["reasoning"].get("effort"):
             call["reasoning_effort"] = options["reasoning"]["effort"]
 
@@ -384,7 +359,7 @@ class LlmModel:
             )
             duration_ms = int((time.perf_counter() - started) * 1000)
             attempts.append(self._attempt(execution, deployment, outcome, duration_ms))
-            self._log_attempt(attempts[-1])
+            self._note_attempt(execution, attempts[-1])
             last = outcome
             if outcome["ok"] or outcome["error_type"] not in RETRYABLE_ERRORS:
                 return outcome
@@ -393,13 +368,10 @@ class LlmModel:
         return last
 
     def _resolve_credential(self, deployment):
-        ref = deployment.credential_ref
-        if ref == CREDENTIAL_AWS_IAM:
-            return CREDENTIAL_AWS_IAM, None
-        value = self.config.get(ref)
-        if value is None or str(value).strip() == "":
-            return None, f"Credential {ref} is not set"
-        return str(value).strip(), None
+        module = self.registry.modules.get(deployment.provider_id)
+        if module is None or not hasattr(module, "prepare"):
+            return None, "The model is not available"
+        return module.prepare(self.config, deployment)
 
     def _new_execution(self, context):
         return {
@@ -419,7 +391,7 @@ class LlmModel:
         return {
             "attempt_id": f"llm_attempt_{uuid.uuid4().hex}",
             "execution_id": execution["execution_id"],
-            "deployment_id": deployment.deployment_id,
+            "deployment_id": deployment.target_id,
             "provider_id": deployment.provider_id,
             "model_id": deployment.model_id,
             "status": status,
@@ -434,6 +406,9 @@ class LlmModel:
         cost = empty_cost(pricing.currency if pricing else "USD")
         cost["estimated"] = estimate_cost(usage, pricing)
         return cost
+
+    def _note_attempt(self, execution, attempt):
+        self._log_attempt(attempt)
 
     def _log_attempt(self, attempt):
         usage = attempt.get("usage") or {}
