@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -47,7 +47,7 @@ class TimeSeriesModel:
         idempotency_key=None,
     ):
         dimensions = list(dimensions or [])
-        moment = int(time.time()) if timestamp is None else int(timestamp)
+        moment = _reading_time(timestamp)
         period = format_period(moment, resolution)
         number = _decimal(value)
         index = make_index(portfolio, org, key)
@@ -247,7 +247,7 @@ class TimeSeriesModel:
         idempotency_key,
         idempotency_keys,
     ):
-        names = {"#readings": "readings"}
+        names = {"#readings": "readings", "#segment": "segment"}
         values = {
             ":empty": [],
             ":reading": [reading],
@@ -260,13 +260,12 @@ class TimeSeriesModel:
             ":payload_bytes": int(payload_bytes),
             ":new_version": int(expected_version) + 1,
             ":expected_version": int(expected_version),
-            ":zero": 0,
             ":cap": self.reading_limit,
         }
         update = (
             "SET #readings = list_append(if_not_exists(#readings, :empty), :reading), "
             "resolution = :resolution, period = :period, dimensions = :dimensions, "
-            "segment = :segment, statistics = :statistics, "
+            "#segment = :segment, statistics = :statistics, "
             "reading_count = :reading_count, payload_bytes = :payload_bytes, "
             "version = :new_version"
         )
@@ -311,7 +310,10 @@ class TimeSeriesModel:
         while True:
             kwargs = {"KeyConditionExpression": expression}
             if projection:
-                kwargs["ProjectionExpression"] = projection
+                projected, names = _projection_expression(projection)
+                kwargs["ProjectionExpression"] = projected
+                if names:
+                    kwargs["ExpressionAttributeNames"] = names
             if start:
                 kwargs["ExclusiveStartKey"] = start
             response = self.table.query(**kwargs)
@@ -319,6 +321,19 @@ class TimeSeriesModel:
             start = response.get("LastEvaluatedKey")
             if not start:
                 return items
+
+
+def _projection_expression(projection):
+    """Alias DynamoDB reserved words. `segment` cannot appear bare in a projection."""
+    names = {}
+    fields = []
+    for field in [part.strip() for part in projection.split(",") if part.strip()]:
+        if field.lower() == "segment":
+            names["#segment"] = "segment"
+            fields.append("#segment")
+        else:
+            fields.append(field)
+    return ", ".join(fields), names
 
 
 def _stored(item, appended):
@@ -352,8 +367,14 @@ def _payload_bytes(readings):
     return total
 
 
+def _reading_time(timestamp):
+    """Unix seconds with millisecond precision, the resolution of a browser clock."""
+    raw = Decimal(str(time.time() if timestamp is None else timestamp))
+    return raw.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+
+
 def _apply_reading(statistics, timestamp, value):
-    moment = int(timestamp)
+    moment = _decimal(timestamp)
     number = _decimal(value)
     if not statistics:
         return {
@@ -372,8 +393,8 @@ def _apply_reading(statistics, timestamp, value):
     high = _decimal(statistics.get("max"))
     first = _decimal(statistics.get("first"))
     last = _decimal(statistics.get("last"))
-    first_timestamp = int(statistics.get("first_timestamp") or moment)
-    last_timestamp = int(statistics.get("last_timestamp") or moment)
+    first_timestamp = _decimal(statistics.get("first_timestamp") or moment)
+    last_timestamp = _decimal(statistics.get("last_timestamp") or moment)
     if number < low:
         low = number
     if number > high:
@@ -415,12 +436,12 @@ def _consolidate(stats_list):
         low = candidate_min if low is None else min(low, candidate_min)
         high = candidate_max if high is None else max(high, candidate_max)
         stamp = statistics.get("first_timestamp")
-        if stamp is not None and (first_timestamp is None or int(stamp) < int(first_timestamp)):
-            first_timestamp = int(stamp)
+        if stamp is not None and (first_timestamp is None or _decimal(stamp) < first_timestamp):
+            first_timestamp = _decimal(stamp)
             first = _decimal(statistics.get("first"))
         stamp = statistics.get("last_timestamp")
-        if stamp is not None and (last_timestamp is None or int(stamp) >= int(last_timestamp)):
-            last_timestamp = int(stamp)
+        if stamp is not None and (last_timestamp is None or _decimal(stamp) >= last_timestamp):
+            last_timestamp = _decimal(stamp)
             last = _decimal(statistics.get("last"))
     return {
         "count": count,

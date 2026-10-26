@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from renglo.llm.llm_model import LlmModel
+from renglo.llm import LlmController
 from renglo.llm.providers.bedrock_converse import BedrockConverseAdapter
+from renglo.llm.registry import INPUT_PER_MILLION, OUTPUT_PER_MILLION
 from renglo.timeseries.keys import READING_LIMIT, make_index
 from renglo.timeseries.timeseries_controller import TimeSeriesController
 from renglo.timeseries.timeseries_model import TimeSeriesModel
@@ -86,7 +87,13 @@ class MemoryTable:
                 stored["idempotency_keys"] = set(current["idempotency_keys"])
             self.items[key] = stored
 
-    def query(self, KeyConditionExpression, ExclusiveStartKey=None, ProjectionExpression=None):
+    def query(
+        self,
+        KeyConditionExpression,
+        ExclusiveStartKey=None,
+        ProjectionExpression=None,
+        ExpressionAttributeNames=None,
+    ):
         del ExclusiveStartKey
         expression = KeyConditionExpression.get_expression()
         equals, bound = expression["values"]
@@ -99,22 +106,24 @@ class MemoryTable:
                 if index != partition:
                     continue
                 if operator == "begins_with" and str(sort_key).startswith(values[1]):
-                    matched.append(_project(item, ProjectionExpression))
+                    matched.append(_project(item, ProjectionExpression, ExpressionAttributeNames))
                 elif operator == "BETWEEN" and values[1] <= sort_key <= values[2]:
-                    matched.append(_project(item, ProjectionExpression))
+                    matched.append(_project(item, ProjectionExpression, ExpressionAttributeNames))
             matched.sort(key=lambda item: item["metric_index"])
             return {"Items": matched}
 
 
-def _project(item, expression):
+def _project(item, expression, names=None):
     if not expression:
         return copy.deepcopy(item)
     fields = [part.strip() for part in expression.split(",")]
+    aliases = names or {}
     projected = {
         "index": item.get("index"),
         "metric_index": item.get("metric_index"),
     }
     for field in fields:
+        field = aliases.get(field, field)
         if field in item:
             value = item[field]
             projected[field] = list(value) if isinstance(value, list) else value
@@ -208,6 +217,23 @@ def test_concurrent_puts_keep_both_readings_and_the_sum():
     assert sorted(pair[1] for pair in readings) == [1, 2]
     assert loaded["output"]["statistics"]["count"] == 2
     assert loaded["output"]["statistics"]["sum"] == 3
+
+
+def test_put_keeps_millisecond_timestamp_from_the_caller():
+    _table, _model, controller = store()
+    moment = clock(2026, 10, 20) + 0.123
+    stored = controller.put(
+        "portfolio_y",
+        "org_x",
+        "room_temperature",
+        22.3,
+        dimensions=["zone37"],
+        timestamp=moment,
+    )
+    reading_time = stored["output"]["readings"][-1][0]
+    assert reading_time != int(reading_time)
+    assert abs(reading_time - moment) < 0.0005
+    assert stored["output"]["statistics"]["last_timestamp"] == reading_time
 
 
 def test_min_and_max_move_only_for_a_new_extreme_and_avg_is_computed():
@@ -501,7 +527,14 @@ def test_llm_usage_is_recorded_per_measure_and_cannot_fail_generate():
 
         def converse(self, **kwargs):
             self.calls.append(kwargs)
+            if isinstance(self.payload, Exception):
+                raise self.payload
             return self.payload
+
+    class BadRequest(Exception):
+        def __init__(self):
+            super().__init__("bad request")
+            self.status_code = 400
 
     payload = {
         "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
@@ -513,37 +546,71 @@ def test_llm_usage_is_recorded_per_measure_and_cannot_fail_generate():
             "cacheReadInputTokens": 4,
         },
     }
-    adapters = {"bedrock_converse": BedrockConverseAdapter(client=Converse(payload))}
+    config = {"BEDROCK_MODEL": "openai.gpt-5.5", "OPENAI_API_KEY": "sk-test"}
     recorder = Recorder()
-    model = LlmModel(
-        {
-            "BEDROCK_MODEL": "openai.gpt-5.5",
-            "OPENAI_API_KEY": "sk-test",
-        },
-        adapters=adapters,
+    controller = LlmController(
+        config,
+        adapters={"bedrock": BedrockConverseAdapter(client=Converse(payload))},
         sleep=lambda _seconds: None,
         timeseries=recorder,
     )
-    result = model.generate(
+    result = controller.generate(
         messages=[{"role": "user", "content": "hi"}],
         context={"portfolio_id": "portfolio_y", "org_id": "org_x", "extension_id": "lab"},
     )
     assert result["success"]
     recorded = {call["key"]: call for call in recorder.calls}
     assert set(recorded) == {
+        "llm.requests",
+        "llm.latency_ms",
         "llm.input_tokens",
         "llm.output_tokens",
         "llm.reasoning_tokens",
         "llm.cached_tokens",
+        "llm.cost_usd",
     }
+    assert "llm.errors" not in recorded
+    assert recorded["llm.requests"]["value"] == 1
     assert recorded["llm.input_tokens"]["value"] == 11
-    assert recorded["llm.input_tokens"]["dimensions"] == ["bedrock", "openai.gpt-5.5", "lab"]
+    assert recorded["llm.output_tokens"]["value"] == 6
+    assert recorded["llm.reasoning_tokens"]["value"] == 2
+    assert recorded["llm.cached_tokens"]["value"] == 4
+    assert recorded["llm.latency_ms"]["value"] >= 0
+    assert recorded["llm.cost_usd"]["value"] == (
+        (11 / 1_000_000) * INPUT_PER_MILLION + (6 / 1_000_000) * OUTPUT_PER_MILLION
+    )
+    dimensions = ["bedrock", "openai.gpt-5.5", "completed", "lab"]
+    assert recorded["llm.input_tokens"]["dimensions"] == dimensions
+    assert recorded["llm.requests"]["dimensions"] == dimensions
+    assert recorded["llm.input_tokens"]["portfolio"] == "portfolio_y"
+    assert recorded["llm.input_tokens"]["org"] == "org_x"
     assert recorded["llm.input_tokens"]["resolution"] == "day"
+    assert recorded["llm.input_tokens"]["idempotency_key"].startswith("llm_attempt_")
     assert recorded["llm.input_tokens"]["idempotency_key"].endswith(":llm.input_tokens")
 
-    broken = LlmModel(
-        {"BEDROCK_MODEL": "openai.gpt-5.5", "OPENAI_API_KEY": "sk-test"},
-        adapters={"bedrock_converse": BedrockConverseAdapter(client=Converse(payload))},
+    recorder.calls.clear()
+    assert controller.generate(messages=[{"role": "user", "content": "hi"}])["success"]
+    assert recorder.calls == []
+
+    failed = LlmController(
+        config,
+        adapters={"bedrock": BedrockConverseAdapter(client=Converse(BadRequest()))},
+        sleep=lambda _seconds: None,
+        timeseries=recorder,
+    )
+    failure = failed.generate(
+        messages=[{"role": "user", "content": "hi"}],
+        context={"portfolio_id": "portfolio_y", "org_id": "org_x", "extension_id": "lab"},
+    )
+    assert failure["success"] is False
+    failed_keys = {call["key"]: call for call in recorder.calls}
+    assert set(failed_keys) == {"llm.requests", "llm.errors", "llm.latency_ms"}
+    assert failed_keys["llm.errors"]["value"] == 1
+    assert failed_keys["llm.errors"]["dimensions"] == ["bedrock", "openai.gpt-5.5", "failed", "lab"]
+
+    broken = LlmController(
+        config,
+        adapters={"bedrock": BedrockConverseAdapter(client=Converse(payload))},
         sleep=lambda _seconds: None,
         timeseries=Broken(),
     )
