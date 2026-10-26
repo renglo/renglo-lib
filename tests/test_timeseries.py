@@ -546,7 +546,7 @@ def test_llm_usage_is_recorded_per_measure_and_cannot_fail_generate():
             "cacheReadInputTokens": 4,
         },
     }
-    config = {"BEDROCK_MODEL": "openai.gpt-5.5", "OPENAI_API_KEY": "sk-test"}
+    config = {"BEDROCK_MODELS": "openai.gpt-5.5", "OPENAI_API_KEY": "sk-test"}
     recorder = Recorder()
     controller = LlmController(
         config,
@@ -556,6 +556,7 @@ def test_llm_usage_is_recorded_per_measure_and_cannot_fail_generate():
     )
     result = controller.generate(
         messages=[{"role": "user", "content": "hi"}],
+        model="openai.gpt-5.5",
         context={"portfolio_id": "portfolio_y", "org_id": "org_x", "extension_id": "lab"},
     )
     assert result["success"]
@@ -589,7 +590,7 @@ def test_llm_usage_is_recorded_per_measure_and_cannot_fail_generate():
     assert recorded["llm.input_tokens"]["idempotency_key"].endswith(":llm.input_tokens")
 
     recorder.calls.clear()
-    assert controller.generate(messages=[{"role": "user", "content": "hi"}])["success"]
+    assert controller.generate(messages=[{"role": "user", "content": "hi"}], model="openai.gpt-5.5")["success"]
     assert recorder.calls == []
 
     failed = LlmController(
@@ -600,6 +601,7 @@ def test_llm_usage_is_recorded_per_measure_and_cannot_fail_generate():
     )
     failure = failed.generate(
         messages=[{"role": "user", "content": "hi"}],
+        model="openai.gpt-5.5",
         context={"portfolio_id": "portfolio_y", "org_id": "org_x", "extension_id": "lab"},
     )
     assert failure["success"] is False
@@ -616,6 +618,7 @@ def test_llm_usage_is_recorded_per_measure_and_cannot_fail_generate():
     )
     assert broken.generate(
         messages=[{"role": "user", "content": "hi"}],
+        model="openai.gpt-5.5",
         context={"portfolio_id": "portfolio_y", "org_id": "org_x", "extension_id": "lab"},
     )["success"]
 

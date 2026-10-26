@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from renglo.llm.providers.errors import classify_provider_error, provider_error_message
-from renglo.llm.registry import CallTarget, CatalogEntry, ProviderContribution, text_model
+from renglo.llm.registry import (
+    CallTarget,
+    CatalogEntry,
+    ProviderContribution,
+    configured_models,
+    text_model,
+)
 from renglo.llm.types import BLOCK_TEXT, ERROR_CONFIG, empty_usage
 
-# Default chat model. Override with OPENAI_MODEL in env_config.
-DEFAULT_MODEL_ID = "gpt-4o-mini"
 PUBLIC_ENDPOINT = "https://api.openai.com/v1"
 PROVIDER_ID = "openai"
-_MODEL_KEY = "OPENAI_MODEL"
+_MODELS_KEY = "OPENAI_MODELS"
 _ENDPOINT_KEY = "OPENAI_BASE_URL"
 _CREDENTIAL_KEY = "OPENAI_API_KEY"
 _SOURCE = "OpenAI API"
@@ -50,24 +54,41 @@ def target_for(config, model_id):
 
 
 def contribute(config):
-    """Catalog rows for this provider. Namespaced config overrides the defaults."""
+    """One catalog row per id in OPENAI_MODELS. Nothing is selected for the caller."""
     config = config or {}
-    model_id = _setting(config, _MODEL_KEY) or DEFAULT_MODEL_ID
+    model_ids = configured_models(config, _MODELS_KEY)
+    if not model_ids:
+        return ProviderContribution(
+            entries=[
+                CatalogEntry(
+                    provider_id=PROVIDER_ID,
+                    model_id=None,
+                    available=False,
+                    reason=f"{_MODELS_KEY} is not set",
+                    source_label=_SOURCE,
+                )
+            ],
+            targets={},
+            models={},
+        )
     secret = _setting(config, _CREDENTIAL_KEY)
     available = bool(secret)
-    entry = CatalogEntry(
-        provider_id=PROVIDER_ID,
-        model_id=model_id,
-        is_default=True,
-        available=available,
-        reason=None if available else f"{_CREDENTIAL_KEY} is not set",
-        source_label=_SOURCE,
-    )
-    return ProviderContribution(
-        entries=[entry],
-        targets={model_id: _target(config, model_id)} if model_id else {},
-        models={model_id: text_model(model_id, max_output_tokens=16384)} if model_id else {},
-    )
+    entries = []
+    targets = {}
+    models = {}
+    for model_id in model_ids:
+        entries.append(
+            CatalogEntry(
+                provider_id=PROVIDER_ID,
+                model_id=model_id,
+                available=available,
+                reason=None if available else f"{_CREDENTIAL_KEY} is not set",
+                source_label=_SOURCE,
+            )
+        )
+        targets[model_id] = _target(config, model_id)
+        models[model_id] = text_model(model_id, max_output_tokens=16384)
+    return ProviderContribution(entries=entries, targets=targets, models=models)
 
 
 def _target(config, model_id):

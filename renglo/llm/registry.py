@@ -71,6 +71,21 @@ class Registry:
     modules: dict
 
 
+def _split_model_ids(raw):
+    seen = []
+    for part in str(raw or "").replace("\n", ",").split(","):
+        model_id = part.strip()
+        if model_id and model_id not in seen:
+            seen.append(model_id)
+    return seen
+
+
+def configured_models(config, models_key):
+    """Model ids from one comma-separated config value. Callers name the id on each call."""
+    config = config or {}
+    return _split_model_ids(config.get(models_key))
+
+
 def text_model(model_id, context_window=128000, max_output_tokens=8192, capabilities=None):
     return ModelRecord(
         model_id=model_id,

@@ -54,7 +54,7 @@ class LlmModel:
     def generate(
         self,
         messages,
-        model="default",
+        model=None,
         provider=None,
         max_output_tokens=None,
         timeout_seconds=120,
@@ -262,12 +262,7 @@ class LlmModel:
 
     def _one_target(self, model_name, provider):
         if model_name in (None, "", "default"):
-            entry = self._default_entry(provider)
-            if entry is None:
-                return None, ERROR_CONFIG, "No default model is configured"
-            if not entry.available or not entry.model_id:
-                return None, ERROR_CONFIG, entry.reason or "The default model is not available"
-            return self._target_for_entry(entry)
+            return None, ERROR_INVALID, "model is required"
         matches = [
             entry for entry in self.registry.catalog
             if entry.model_id == model_name and (not provider or entry.provider_id == provider)
@@ -282,16 +277,6 @@ class LlmModel:
         if not entry.available:
             return None, ERROR_CONFIG, entry.reason or "The model is not available"
         return self._target_for_entry(entry)
-
-    def _default_entry(self, provider):
-        rows = [
-            entry for entry in self.registry.catalog
-            if entry.is_default and (not provider or entry.provider_id == provider)
-        ]
-        available = [entry for entry in rows if entry.available and entry.model_id]
-        if available:
-            return available[0]
-        return rows[0] if rows else None
 
     def _target_for_entry(self, entry):
         target = self.registry.targets.get((entry.provider_id, entry.model_id))

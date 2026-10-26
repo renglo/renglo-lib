@@ -24,7 +24,7 @@ class LlmController:
     def generate(
         self,
         messages,
-        model="default",
+        model=None,
         provider=None,
         max_output_tokens=None,
         timeout_seconds=120,

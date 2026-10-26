@@ -319,7 +319,7 @@ def load_config():
         'PEER_ROUTES', 'EXTERNAL_HANDLERS_PEER_MAP',
         'OPENSEARCH_ENDPOINT', 'OPENSEARCH_INDEX', 'OPENSEARCH_REFRESH',
         # Bedrock Converse and optional OpenAI-compatible chat
-        'BEDROCK_MODEL', 'BEDROCK_CONVERSE_MODEL', 'OPENAI_BASE_URL', 'OPENAI_MODEL',
+        'BEDROCK_MODELS', 'OPENAI_BASE_URL', 'OPENAI_MODELS',
         # Generic RAG / vectors platform knobs (values & index names are extension-owned)
         'KB_ID', 'RAG_MODEL_ARN', 'RAG_DATA_SOURCE_ID', 'RAG_DOCS_BUCKET', 'RAG_DOCS_PREFIX',
         'S3_VECTORS_BUCKET', 'EMBEDDING_MODEL_ID',

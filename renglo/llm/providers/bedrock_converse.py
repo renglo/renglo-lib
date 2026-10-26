@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from renglo.llm.providers.errors import classify_provider_error, provider_error_message
-from renglo.llm.registry import CallTarget, CatalogEntry, ProviderContribution, text_model
+from renglo.llm.registry import (
+    CallTarget,
+    CatalogEntry,
+    ProviderContribution,
+    configured_models,
+    text_model,
+)
 from renglo.llm.types import (
     BLOCK_TEXT,
     ERROR_CONFIG,
@@ -13,13 +19,9 @@ from renglo.llm.types import (
     empty_usage,
 )
 
-# Default model id for this provider. Empty until namespaced config supplies one.
-DEFAULT_MODEL_ID = ""
-SECONDARY_MODEL_ID = ""
 PROVIDER_ID = "bedrock"
 AMBIENT_CREDENTIAL = "aws_iam"
-_PRIMARY_KEY = "BEDROCK_MODEL"
-_SECONDARY_KEY = "BEDROCK_CONVERSE_MODEL"
+_MODELS_KEY = "BEDROCK_MODELS"
 _SOURCE = "Bedrock"
 
 _INFERENCE_KEYS = {
@@ -178,29 +180,30 @@ def target_for(config, model_id):
 
 
 def contribute(config):
-    """Catalog rows for this provider. Namespaced config overrides the defaults."""
+    """One catalog row per id in BEDROCK_MODELS. Nothing is selected for the caller."""
     config = config or {}
-    primary = _setting(config, _PRIMARY_KEY) or DEFAULT_MODEL_ID
-    secondary = _setting(config, _SECONDARY_KEY) or SECONDARY_MODEL_ID
-    entries = [_entry(primary, _PRIMARY_KEY, is_default=True)]
+    model_ids = configured_models(config, _MODELS_KEY)
+    if not model_ids:
+        return ProviderContribution(
+            entries=[_entry("", _MODELS_KEY)],
+            targets={},
+            models={},
+        )
+    entries = []
     targets = {}
     models = {}
-    if primary:
-        targets[primary] = _target(config, primary)
-        models[primary] = text_model(primary)
-    if secondary and secondary != primary:
-        entries.append(_entry(secondary, _SECONDARY_KEY, is_default=False))
-        targets[secondary] = _target(config, secondary)
-        models[secondary] = text_model(secondary)
+    for model_id in model_ids:
+        entries.append(_entry(model_id, _MODELS_KEY))
+        targets[model_id] = _target(config, model_id)
+        models[model_id] = text_model(model_id)
     return ProviderContribution(entries=entries, targets=targets, models=models)
 
 
-def _entry(model_id, config_key, is_default):
+def _entry(model_id, config_key):
     available = bool(model_id)
     return CatalogEntry(
         provider_id=PROVIDER_ID,
         model_id=model_id or None,
-        is_default=is_default,
         available=available,
         reason=None if available else f"{config_key} is not set",
         source_label=_SOURCE,

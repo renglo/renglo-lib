@@ -78,8 +78,8 @@ def openai_ok(text="hello", prompt_tokens=11, completion_tokens=6, cached=2, rea
 
 def plane_config(**overrides):
     config = {
-        "BEDROCK_MODEL": "openai.gpt-5.5",
-        "BEDROCK_CONVERSE_MODEL": "anthropic.claude-sonnet-4",
+        "BEDROCK_MODELS": "openai.gpt-5.5,anthropic.claude-sonnet-4",
+        "OPENAI_MODELS": "gpt-4o-mini",
         "OPENAI_API_KEY": "sk-test-key",
         "AWS_REGION": "us-east-1",
     }
@@ -109,21 +109,40 @@ def make_controller(converse, openai_client, config=None, factory_log=None):
     )
 
 
-def test_provider_default_model_is_overridden_by_namespaced_config():
+def test_named_openai_model_is_the_one_called():
     openai_client = FakeOpenAI([openai_ok("chosen")])
     controller = make_controller(
         FakeConverse([]),
         openai_client,
-        config=plane_config(OPENAI_MODEL="gpt-4.1-mini"),
+        config=plane_config(OPENAI_MODELS="gpt-4.1-mini,gpt-4o-mini"),
     )
     result = controller.generate(
         messages=[{"role": "user", "content": "hi"}],
-        model="default",
+        model="gpt-4.1-mini",
         provider="openai",
     )
     assert result["success"]
     assert result["output"]["model"] == "gpt-4.1-mini"
     assert openai_client.calls[0]["model"] == "gpt-4.1-mini"
+
+
+def test_provider_catalog_lists_every_configured_model():
+    from renglo.llm.registry import build_registry
+
+    registry = build_registry(
+        {
+            "BEDROCK_MODELS": "haiku, sonnet-4, sonnet-5",
+            "OPENAI_MODELS": "gpt-4o, gpt-4o-mini",
+            "OPENAI_API_KEY": "sk-test",
+        }
+    )
+    bedrock = [entry for entry in registry.catalog if entry.provider_id == "bedrock"]
+    openai = [entry for entry in registry.catalog if entry.provider_id == "openai"]
+    assert [entry.model_id for entry in bedrock] == ["haiku", "sonnet-4", "sonnet-5"]
+    assert all(entry.is_default is False for entry in bedrock)
+    assert all(entry.available for entry in bedrock)
+    assert [entry.model_id for entry in openai] == ["gpt-4o", "gpt-4o-mini"]
+    assert all(entry.is_default is False for entry in openai)
 
 
 def test_registry_module_does_not_name_a_provider():
@@ -142,6 +161,7 @@ def test_aliases_route_to_converse_effort_and_openai_fast():
 
     low = controller.generate(
         messages=[{"role": "user", "content": "default please"}],
+        model="openai.gpt-5.5",
         provider_options={"reasoning": {"effort": "low"}},
     )
     high = controller.generate(
@@ -167,7 +187,7 @@ def test_two_converse_model_ids_share_message_shape():
     converse = FakeConverse([converse_ok("a"), converse_ok("b")])
     controller = make_controller(converse, FakeOpenAI([]))
     messages = [{"role": "user", "content": "same shape"}]
-    controller.generate(messages=messages, model="default")
+    controller.generate(messages=messages, model="openai.gpt-5.5")
     controller.generate(messages=messages, model="anthropic.claude-sonnet-4")
     assert converse.calls[0]["modelId"] != converse.calls[1]["modelId"]
     assert converse.calls[0]["messages"] == converse.calls[1]["messages"]
@@ -213,7 +233,7 @@ def test_same_canonical_messages_translate_differently():
         {"role": "user", "content": [{"type": "text", "text": "Question"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "Earlier"}]},
     ]
-    converse_result = controller.generate(messages=messages, model="default")
+    converse_result = controller.generate(messages=messages, model="openai.gpt-5.5")
     openai_result = controller.generate(messages=messages, model="gpt-4o-mini")
 
     native = converse.calls[0]
@@ -247,7 +267,8 @@ def test_tool_call_block_is_unsupported_on_text_models():
                     }
                 ],
             }
-        ]
+        ],
+        model="openai.gpt-5.5",
     )
     assert result["success"] is False
     assert result["error_type"] == "unsupported"
@@ -260,7 +281,7 @@ def test_adapters_receive_resolved_credentials_not_the_config_dict():
     seen = []
     config = plane_config(OPENAI_API_KEY="sk-resolved")
     controller = make_controller(converse, openai_client, config=config, factory_log=seen)
-    controller.generate(messages=[{"role": "user", "content": "iam"}], model="default")
+    controller.generate(messages=[{"role": "user", "content": "iam"}], model="openai.gpt-5.5")
     controller.generate(messages=[{"role": "user", "content": "key"}], model="gpt-4o-mini")
     bedrock = controller.LMM.adapters["bedrock"]
     openai = controller.LMM.adapters["openai"]
@@ -276,7 +297,7 @@ def test_retry_429_then_200_is_two_attempts_and_one_execution():
         [StatusError(429, "slow down"), converse_ok("ok", input_tokens=9, output_tokens=2)]
     )
     controller = make_controller(converse, FakeOpenAI([]))
-    result = controller.generate(messages=[{"role": "user", "content": "retry"}])
+    result = controller.generate(messages=[{"role": "user", "content": "retry"}], model="openai.gpt-5.5")
     output = result["output"]
     assert result["success"]
     assert len(output["attempts"]) == 2
@@ -294,6 +315,7 @@ def test_400_does_not_retry_or_fall_back():
     controller = make_controller(converse, openai_client)
     result = controller.generate(
         messages=[{"role": "user", "content": "bad"}],
+        model="openai.gpt-5.5",
         fallback=["gpt-4o-mini"],
     )
     assert result["success"] is False
@@ -311,6 +333,7 @@ def test_fallback_economy_runs_after_converse_retries_are_exhausted():
     controller = make_controller(converse, openai_client)
     result = controller.generate(
         messages=[{"role": "user", "content": "please"}],
+        model="openai.gpt-5.5",
         fallback=["gpt-4o-mini"],
     )
     assert result["success"]
@@ -332,7 +355,7 @@ def test_stream_tools_and_output_schema_are_unsupported():
         {"tools": [{"name": "lookup"}]},
         {"output_schema": {"type": "object"}},
     ):
-        result = controller.generate(messages=messages, **kwargs)
+        result = controller.generate(messages=messages, model="openai.gpt-5.5", **kwargs)
         assert result["error_type"] == "unsupported"
     assert converse.calls == []
 
@@ -341,6 +364,7 @@ def test_context_is_copied_and_not_checked():
     controller = make_controller(FakeConverse([converse_ok()]), FakeOpenAI([]))
     result = controller.generate(
         messages=[{"role": "user", "content": "hi"}],
+        model="openai.gpt-5.5",
         context={"org_id": "org_1", "extension_id": "lab", "not_a_field": "ignored"},
     )
     assert result["output"]["execution"]["context"] == {
@@ -354,7 +378,7 @@ def test_usage_and_estimated_cost_come_from_the_provider_and_registry():
         FakeConverse([converse_ok("priced", input_tokens=1_000_000, output_tokens=500_000)]),
         FakeOpenAI([]),
     )
-    result = controller.generate(messages=[{"role": "user", "content": "cost"}])
+    result = controller.generate(messages=[{"role": "user", "content": "cost"}], model="openai.gpt-5.5")
     usage = result["output"]["execution"]["usage"]
     cost = result["output"]["execution"]["cost"]
     assert usage["input_tokens"] == 1_000_000
@@ -385,7 +409,7 @@ def test_logs_omit_api_key_and_prompt(caplog):
         config=config,
     )
     with caplog.at_level(logging.INFO, logger="renglo"):
-        controller.generate(messages=[{"role": "user", "content": prompt}], model="default")
+        controller.generate(messages=[{"role": "user", "content": prompt}], model="openai.gpt-5.5")
         controller.generate(messages=[{"role": "user", "content": prompt}], model="gpt-4o-mini")
     assert "llm_attempt" in caplog.text
     assert prompt not in caplog.text

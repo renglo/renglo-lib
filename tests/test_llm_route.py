@@ -81,9 +81,9 @@ def test_models_route_lists_enabled_models_and_blocks_a_missing_alias():
     payload = body.get_json()
     by_key = {(item["provider"], item["model"]): item for item in payload["output"]["models"]}
     assert by_key[("bedrock", None)]["enabled"] is False
-    assert by_key[("bedrock", None)]["reason"] == "BEDROCK_MODEL is not set"
-    assert by_key[("openai", "gpt-4o-mini")]["enabled"] is True
-    assert by_key[("openai", "gpt-4o-mini")]["source"] == "OpenAI API"
+    assert by_key[("bedrock", None)]["reason"] == "BEDROCK_MODELS is not set"
+    assert by_key[("openai", None)]["enabled"] is False
+    assert by_key[("openai", None)]["reason"] == "OPENAI_MODELS is not set"
     assert "sk-secret" not in json.dumps(payload)
 
     status, denied = post(
@@ -91,10 +91,10 @@ def test_models_route_lists_enabled_models_and_blocks_a_missing_alias():
         routes,
         "portfolio_y",
         "org_x",
-        {"messages": [{"role": "user", "content": "hi"}], "model": "default", "provider": "bedrock"},
+        {"messages": [{"role": "user", "content": "hi"}], "provider": "bedrock"},
     )
     assert status == 400
-    assert denied["error"] == "BEDROCK_MODEL is not set"
+    assert denied["error"] == "model is required"
 
 
 def post(app, routes, portfolio, org, payload):
