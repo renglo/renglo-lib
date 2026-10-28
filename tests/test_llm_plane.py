@@ -8,7 +8,6 @@ import pytest
 from renglo.llm import LlmController
 from renglo.llm.providers.bedrock_converse import BedrockConverseAdapter
 from renglo.llm.providers.openai_chat import OpenAIChatAdapter
-from renglo.llm.registry import INPUT_PER_MILLION, OUTPUT_PER_MILLION
 from renglo.llm.types import BLOCK_TOOL_CALL, SCHEMA_VERSION
 
 
@@ -373,17 +372,22 @@ def test_context_is_copied_and_not_checked():
     }
 
 
-def test_usage_and_estimated_cost_come_from_the_provider_and_registry():
+def test_usage_tokens_come_from_the_provider_and_cost_uses_the_rate_card():
     controller = make_controller(
-        FakeConverse([converse_ok("priced", input_tokens=1_000_000, output_tokens=500_000)]),
+        FakeConverse([
+            converse_ok("unpriced", input_tokens=1_000_000, output_tokens=500_000),
+            converse_ok("priced", input_tokens=1_000_000, output_tokens=500_000),
+        ]),
         FakeOpenAI([]),
     )
-    result = controller.generate(messages=[{"role": "user", "content": "cost"}], model="openai.gpt-5.5")
+    unpriced = controller.generate(messages=[{"role": "user", "content": "cost"}], model="openai.gpt-5.5")
+    assert unpriced["output"]["execution"]["cost"]["estimated"] is None
+    result = controller.generate(messages=[{"role": "user", "content": "cost"}], model="anthropic.claude-sonnet-4")
     usage = result["output"]["execution"]["usage"]
     cost = result["output"]["execution"]["cost"]
     assert usage["input_tokens"] == 1_000_000
     assert usage["output_tokens"] == 500_000
-    assert cost["estimated"] == INPUT_PER_MILLION + (500_000 / 1_000_000) * OUTPUT_PER_MILLION
+    assert cost["estimated"] == 3.0 + (500_000 / 1_000_000) * 15.0
     assert cost["provider_reported"] is None
     assert cost["reconciled"] is None
     assert result["schema_version"] == SCHEMA_VERSION == 1

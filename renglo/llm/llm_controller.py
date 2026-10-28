@@ -11,6 +11,8 @@ _TOKEN_SERIES = (
     ("output_tokens", "llm.output_tokens"),
     ("reasoning_tokens", "llm.reasoning_tokens"),
     ("cached_tokens", "llm.cached_tokens"),
+    ("cache_write_5m_tokens", "llm.cache_write_5m_tokens"),
+    ("cache_write_1h_tokens", "llm.cache_write_1h_tokens"),
 )
 
 
