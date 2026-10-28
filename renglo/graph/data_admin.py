@@ -619,7 +619,7 @@ def sanitize_ring_links(
     dry_run: bool = False,
 ) -> Dict[str, int]:
     try:
-        from arbitiumtriage.handlers.aid_element_helpers import sanitize_persisted_links
+        from arbitiumtriage.common.aid_element_helpers import sanitize_persisted_links
     except ImportError as exc:
         raise RuntimeError(
             "sanitize-ring-links requires the arbitiumtriage package to be installed"

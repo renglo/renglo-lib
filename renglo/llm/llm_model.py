@@ -6,9 +6,9 @@ import time
 import uuid
 
 from renglo.llm.providers import default_adapters
+from renglo.llm.providers.rates import estimate_cost
 from renglo.llm.registry import (
     build_registry,
-    estimate_cost,
     text_model,
 )
 from renglo.llm.types import (
@@ -115,14 +115,14 @@ class LlmModel:
 
         attempts = []
         last = None
-        for target, model_record in eligible:
+        for target, _model_record in eligible:
             outcome = self._run_deployment(
                 execution, request, target, attempts
             )
             last = outcome
             if outcome["ok"]:
                 usage = outcome["usage"]
-                cost = self._cost(usage, model_record)
+                cost = self._cost(outcome, target)
                 execution["usage"] = usage
                 execution["cost"] = cost
                 self.finalize_budget(execution)
@@ -369,7 +369,6 @@ class LlmModel:
 
     def _attempt(self, execution, deployment, outcome, duration_ms):
         usage = outcome.get("usage") or empty_usage()
-        model_record = self.registry.models.get(deployment.model_id)
         status = STATUS_COMPLETED if outcome.get("ok") else (
             STATUS_TIMED_OUT if outcome.get("error_type") == ERROR_TIMEOUT else STATUS_FAILED
         )
@@ -382,14 +381,25 @@ class LlmModel:
             "status": status,
             "error_type": outcome.get("error_type"),
             "usage": usage,
-            "cost": self._cost(usage, model_record) if outcome.get("ok") else empty_cost(),
+            "cost": self._cost(outcome, deployment) if outcome.get("ok") else empty_cost(),
             "duration_ms": duration_ms,
         }
 
-    def _cost(self, usage, model_record):
-        pricing = model_record.pricing if model_record else None
-        cost = empty_cost(pricing.currency if pricing else "USD")
-        cost["estimated"] = estimate_cost(usage, pricing)
+    def _cost(self, outcome, deployment):
+        """Price the call from the rate card for this provider and region."""
+        cost = empty_cost()
+        reported = _numeric(outcome.get("provider_reported_cost"))
+        if reported is not None:
+            cost["provider_reported"] = reported
+        estimated = estimate_cost(
+            deployment.model_id,
+            outcome.get("usage"),
+            region=getattr(deployment, "region", None),
+            provider=getattr(deployment, "provider_id", None),
+        )
+        if estimated is None:
+            estimated = reported
+        cost["estimated"] = estimated
         return cost
 
     def _note_attempt(self, execution, attempt):
@@ -454,3 +464,9 @@ class LlmModel:
             "error_type": error_type,
             "output": output,
         }
+
+
+def _numeric(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value

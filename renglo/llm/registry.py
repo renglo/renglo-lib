@@ -8,20 +8,6 @@ from dataclasses import dataclass, field
 
 from renglo.llm.types import CAPABILITY_TEXT
 
-PRICE_VERSION = "1"
-PRICE_EFFECTIVE_FROM = "2026-01-01"
-INPUT_PER_MILLION = 2.0
-OUTPUT_PER_MILLION = 8.0
-
-
-@dataclass
-class Pricing:
-    input_per_million: float
-    output_per_million: float
-    currency: str = "USD"
-    version: str = PRICE_VERSION
-    effective_from: str = PRICE_EFFECTIVE_FROM
-
 
 @dataclass
 class CatalogEntry:
@@ -53,7 +39,6 @@ class ModelRecord:
     capabilities: list
     context_window: int
     max_output_tokens: int
-    pricing: Pricing
 
 
 @dataclass
@@ -92,10 +77,6 @@ def text_model(model_id, context_window=128000, max_output_tokens=8192, capabili
         capabilities=list(capabilities or [CAPABILITY_TEXT]),
         context_window=context_window,
         max_output_tokens=max_output_tokens,
-        pricing=Pricing(
-            input_per_million=INPUT_PER_MILLION,
-            output_per_million=OUTPUT_PER_MILLION,
-        ),
     )
 
 
@@ -133,19 +114,3 @@ def build_registry(config) -> Registry:
         for model_id, model in (contribution.models or {}).items():
             models.setdefault(model_id, model)
     return Registry(catalog=catalog, targets=targets, models=models, modules=modules)
-
-
-def estimate_cost(usage, pricing):
-    """Fill estimated cost from reported input and output tokens and the registry price."""
-    if usage is None or pricing is None:
-        return None
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-    if input_tokens is None and output_tokens is None:
-        return None
-    input_tokens = input_tokens or 0
-    output_tokens = output_tokens or 0
-    return (
-        (input_tokens / 1_000_000) * pricing.input_per_million
-        + (output_tokens / 1_000_000) * pricing.output_per_million
-    )
