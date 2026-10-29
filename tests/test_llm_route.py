@@ -86,6 +86,29 @@ def test_models_route_lists_enabled_models_and_blocks_a_missing_alias():
     assert by_key[("openai", None)]["reason"] == "OPENAI_MODELS is not set"
     assert "sk-secret" not in json.dumps(payload)
 
+    routes.LLC = LlmController(config={
+        "OPENAI_API_KEY": "sk-secret",
+        "OPENAI_MODELS": "gpt-4o-mini",
+        "AWS_REGION": "us-east-1",
+        "BEDROCK_MODELS": "us.anthropic.claude-haiku-5-5,us.amazon.nova-2-lite-v1:0",
+    })
+    with app.test_request_context("/_llm/portfolio_y/org_x/models"):
+        priced_body, priced_status = routes.route_models.__wrapped__("portfolio_y", "org_x")
+    assert priced_status == 200
+    priced = {
+        (item["provider"], item["model"]): item
+        for item in priced_body.get_json()["output"]["models"]
+    }
+    assert priced[("openai", "gpt-4o-mini")]["enabled"] is True
+    assert priced[("openai", "gpt-4o-mini")]["rates"]["input_per_million"] == 0.15
+    assert priced[("openai", "gpt-4o-mini")]["rates"]["output_per_million"] == 0.60
+    assert priced[("openai", "gpt-4o-mini")]["rates"]["cache_read_per_million"] == 0.075
+    assert priced[("bedrock", "us.anthropic.claude-haiku-5-5")]["rates"]["input_per_million"] == 0.10
+    assert priced[("bedrock", "us.anthropic.claude-haiku-5-5")]["rates"]["output_per_million"] == 0.50
+    assert priced[("bedrock", "us.amazon.nova-2-lite-v1:0")]["rates"]["region"] == "us-east-1"
+    assert priced[("bedrock", "us.amazon.nova-2-lite-v1:0")]["rates"]["input_per_million"] == 0.30
+    assert priced[("bedrock", "us.amazon.nova-2-lite-v1:0")]["rates"]["output_per_million"] == 2.50
+
     status, denied = post(
         app,
         routes,

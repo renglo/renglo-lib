@@ -114,8 +114,18 @@ class BedrockConverseAdapter:
         usage["output_tokens"] = _first(raw_usage, "outputTokens", "output_tokens")
         usage["reasoning_tokens"] = _first(raw_usage, "reasoningTokens", "reasoning_tokens")
         usage["cached_tokens"] = _first(
-            raw_usage, "cacheReadInputTokens", "cached_tokens"
+            raw_usage, "cacheReadInputTokens", "cache_read_input_tokens", "cached_tokens"
         )
+        usage["cache_write_5m_tokens"] = _first(
+            raw_usage, "cacheWriteInputTokens5m", "cache_write_5m_tokens"
+        )
+        usage["cache_write_1h_tokens"] = _first(
+            raw_usage, "cacheWriteInputTokens1h", "cache_write_1h_tokens"
+        )
+        if usage["cache_write_5m_tokens"] is None and usage["cache_write_1h_tokens"] is None:
+            usage["cache_write_5m_tokens"] = _first(
+                raw_usage, "cacheWriteInputTokens", "cache_creation_input_tokens"
+            )
         return {
             "text": "".join(text_parts),
             "usage": usage,
