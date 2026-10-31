@@ -22,6 +22,7 @@ import json
 import re
 import tomllib
 import uuid
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -199,8 +200,19 @@ def _blueprint_exists(bpc: Any, document: dict, path: Path) -> bool:
     return bool(existing.get("irn") or existing.get("fields") or existing.get("name"))
 
 
+def _dynamo_numbers(value: Any) -> Any:
+    """DynamoDB rejects float. JSON numbers with a fraction are stored as Decimal."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: _dynamo_numbers(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_dynamo_numbers(inner) for inner in value]
+    return value
+
+
 def _prepare_blueprint(document: dict, path: Path) -> dict:
-    item = dict(document)
+    item = _dynamo_numbers(document)
     handle = _blueprint_handle(item)
     name = _blueprint_name(item, path)
     item.setdefault("handle", handle)
