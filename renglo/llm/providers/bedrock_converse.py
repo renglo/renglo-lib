@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from renglo.llm.providers.errors import classify_provider_error, provider_error_message
 from renglo.llm.registry import (
     CallTarget,
@@ -30,6 +32,41 @@ _INFERENCE_KEYS = {
     "top_p": "topP",
     "stopSequences": "stopSequences",
 }
+_SAMPLING_OPTIONS = frozenset({"temperature", "topP", "top_p", "topK", "top_k"})
+_SAMPLING_INFERENCE = frozenset({"temperature", "topP"})
+# Claude 4.6 and every 5+ generation reject temperature, top_p, and top_k.
+_CLAUDE_GENERATION = re.compile(
+    r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?",
+    re.IGNORECASE,
+)
+
+
+def _drops_sampling(model_id: str) -> bool:
+    match = _CLAUDE_GENERATION.search(model_id or "")
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return major > 4 or (major == 4 and minor >= 6)
+
+
+def _sampling_deprecated(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "deprecated" in text and any(
+        name in text for name in ("temperature", "top_p", "top_k", "topp", "topk")
+    )
+
+
+def _without_sampling(native: dict) -> dict:
+    cleaned = dict(native)
+    inference = dict(cleaned.get("inferenceConfig") or {})
+    for key in _SAMPLING_INFERENCE:
+        inference.pop(key, None)
+    if inference:
+        cleaned["inferenceConfig"] = inference
+    else:
+        cleaned.pop("inferenceConfig", None)
+    return cleaned
 
 
 def _is_openai_gpt(model_id: str) -> bool:
@@ -83,7 +120,10 @@ class BedrockConverseAdapter:
         if effort and _is_openai_gpt(deployment.model_id):
             additional["reasoning"] = {"effort": effort}
 
+        drop_sampling = _drops_sampling(deployment.model_id)
         for key, value in (request.get("provider_options") or {}).items():
+            if drop_sampling and key in _SAMPLING_OPTIONS:
+                continue
             mapped = _INFERENCE_KEYS.get(key)
             if mapped:
                 inference[mapped] = value
@@ -141,7 +181,16 @@ class BedrockConverseAdapter:
         try:
             response = client.converse(**native)
         except Exception as exc:
-            return _failure(classify_provider_error(exc), provider_error_message(exc))
+            if _sampling_deprecated(exc):
+                try:
+                    response = client.converse(**_without_sampling(native))
+                except Exception as retry_exc:
+                    return _failure(
+                        classify_provider_error(retry_exc),
+                        provider_error_message(retry_exc),
+                    )
+            else:
+                return _failure(classify_provider_error(exc), provider_error_message(exc))
         parsed = self.from_provider(response)
         return {"ok": True, "error_type": None, "error": None, **parsed}
 

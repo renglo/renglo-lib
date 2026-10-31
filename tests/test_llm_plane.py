@@ -433,3 +433,58 @@ def test_controller_has_no_openai_call():
     controller = LlmController(plane_config())
     assert not hasattr(controller, "openai_call")
     assert not hasattr(LlmController, "openai_call")
+
+
+def test_claude_5_omits_temperature_and_sonnet_4_5_keeps_it():
+    converse = FakeConverse([converse_ok("five"), converse_ok("four")])
+    controller = make_controller(
+        converse,
+        FakeOpenAI([]),
+        config=plane_config(
+            BEDROCK_MODELS=(
+                "us.anthropic.claude-sonnet-5-5,"
+                "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            )
+        ),
+    )
+    sonnet_5 = controller.generate(
+        messages=[{"role": "user", "content": "hi"}],
+        model="us.anthropic.claude-sonnet-5-5",
+        provider_options={"temperature": 0.1, "top_p": 0.9},
+        max_output_tokens=128,
+    )
+    sonnet_4 = controller.generate(
+        messages=[{"role": "user", "content": "hi"}],
+        model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        provider_options={"temperature": 0.1},
+    )
+    assert sonnet_5["success"] and sonnet_4["success"]
+    assert converse.calls[0]["inferenceConfig"] == {"maxTokens": 128}
+    assert converse.calls[1]["inferenceConfig"]["temperature"] == 0.1
+
+
+def test_converse_retries_once_when_the_model_rejects_temperature():
+    converse = FakeConverse(
+        [
+            StatusError(
+                400,
+                "The model returned the following errors: `temperature` is deprecated for this model.",
+            ),
+            converse_ok("retried"),
+        ]
+    )
+    controller = make_controller(
+        converse,
+        FakeOpenAI([]),
+        config=plane_config(BEDROCK_MODELS="anthropic.claude-sonnet-4"),
+    )
+    result = controller.generate(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic.claude-sonnet-4",
+        provider_options={"temperature": 0.1},
+        max_output_tokens=64,
+    )
+    assert result["success"]
+    assert result["output"]["text"] == "retried"
+    assert converse.calls[0]["inferenceConfig"]["temperature"] == 0.1
+    assert converse.calls[1]["inferenceConfig"] == {"maxTokens": 64}
