@@ -13,6 +13,7 @@ import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from renglo.config_names import setting
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
 from renglo.graph.graph_model import (
@@ -915,7 +916,7 @@ class GraphController:
         table = getattr(self, "_ring_data_table", None)
         if table is not None:
             return table
-        table_name = str(self.config.get("DYNAMODB_RINGDATA_TABLE", "")).strip()
+        table_name = str(setting(self.config, "DATA_TABLE", "") or "").strip()
         if not table_name:
             return None
         self._ring_data_table = self.dynamodb.Table(table_name)
@@ -1360,7 +1361,7 @@ class GraphController:
 
 
 if __name__ == "__main__":
-    graph = GraphController(config={"DYNAMODB_GRAPH_TABLE": "renglo_graph", "AWS_REGION": "us-east-1"})
+    graph = GraphController(config={"GRAPH_TABLE": "renglo_graph", "REGION": "us-east-1"})
 
     portfolio = "p_acme"
     org = "o_hotelco"

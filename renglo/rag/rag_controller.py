@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 from typing import Any, Dict, List, Optional, Union
 
-import boto3
-
+from renglo.config_names import setting
 from renglo.logger import get_logger
+from renglo.rag.rag_model import RagModel
 
 
 class RagConfigError(Exception):
@@ -31,13 +31,14 @@ class RagController:
         if self.docs_prefix and not self.docs_prefix.endswith("/"):
             self.docs_prefix = f"{self.docs_prefix}/"
         self.data_source_id = (self.config.get("RAG_DATA_SOURCE_ID") or "").strip()
-        resolved_region = region_name or self.config.get("AWS_REGION", "us-east-1")
+        resolved_region = region_name or setting(self.config, "REGION", "us-east-1")
         self.region = resolved_region
-        self.client = bedrock_client or boto3.client(
-            "bedrock-agent-runtime",
+        self.rag = RagModel(
+            config=self.config,
             region_name=resolved_region,
+            bedrock_client=bedrock_client,
         )
-        self._s3 = None
+        self.client = self.rag.client
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -50,11 +51,6 @@ class RagController:
             "rag_data_source_id": self.data_source_id or None,
             "configured": bool(self.kb_id),
         }
-
-    def _s3_client(self):
-        if self._s3 is None:
-            self._s3 = boto3.client("s3", region_name=self.region)
-        return self._s3
 
     def _require_kb_id(self) -> str:
         if not self.kb_id:
@@ -143,7 +139,7 @@ class RagController:
             params["nextToken"] = next_token
 
         try:
-            response = self.client.retrieve(**params)
+            response = self.rag.retrieve(**params)
             results = self._normalize_retrieval_results(response.get("retrievalResults") or [])
             return {
                 "success": True,
@@ -211,7 +207,7 @@ class RagController:
             params["sessionId"] = session_id
 
         try:
-            response = self.client.retrieve_and_generate(**params)
+            response = self.rag.retrieve_and_generate(**params)
             output = response.get("output") or {}
             return {
                 "success": True,
@@ -255,14 +251,15 @@ class RagController:
         sub = str(subpath or "runbooks").strip().strip("/")
         key = f"{docs_prefix}{sub}/{name}" if sub else f"{docs_prefix}{name}"
         try:
-            put_kwargs: Dict[str, Any] = {
-                "Bucket": docs_bucket,
-                "Key": key,
-                "Body": bytes(body),
-            }
-            if content_type:
-                put_kwargs["ContentType"] = content_type
-            self._s3_client().put_object(**put_kwargs)
+            from renglo.files.files_model import FilesModel
+
+            FilesModel(config=self.config).put_bytes(
+                key,
+                bytes(body),
+                content_type=content_type,
+                bucket=docs_bucket,
+                region=self.region,
+            )
             return {
                 "success": True,
                 "action": action,
@@ -328,14 +325,13 @@ class RagController:
                 "error": "RAG_DATA_SOURCE_ID (or data_source_id) is required",
             }
         try:
-            agent = boto3.client("bedrock-agent", region_name=self.region)
             params: Dict[str, Any] = {
                 "knowledgeBaseId": kb_id,
                 "dataSourceId": ds_id,
             }
             if description:
                 params["description"] = str(description)[:200]
-            response = agent.start_ingestion_job(**params)
+            response = self.rag.start_ingestion_job(**params)
             job = response.get("ingestionJob") or {}
             return {
                 "success": True,
@@ -370,8 +366,7 @@ class RagController:
                 "error": "data_source_id and ingestion_job_id are required",
             }
         try:
-            agent = boto3.client("bedrock-agent", region_name=self.region)
-            response = agent.get_ingestion_job(
+            response = self.rag.get_ingestion_job(
                 knowledgeBaseId=kb_id,
                 dataSourceId=ds_id,
                 ingestionJobId=job_id,

@@ -1,5 +1,6 @@
 import json
 
+from renglo.config_names import setting
 import boto3
 import requests
 
@@ -22,8 +23,8 @@ class SchdModel:
 
     def _events_client(self):
         if self.client is None:
-            aws_region = self.config.get('AWS_REGION', 'us-east-1')
-            self.client = boto3.client('events', region_name=aws_region)
+            region = setting(self.config, "REGION", "us-east-1")
+            self.client = boto3.client('events', region_name=region)
         return self.client
 
     def _local_request(self, method, path, body=None, params=None):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import uuid
@@ -22,7 +21,7 @@ def try_invoke_async_ingress_worker(handler_route: str, payload: dict[str, Any])
         return {"success": False, "error": "not running on Lambda"}
 
     try:
-        import boto3
+        from renglo.schd.peer_model import PeerModel
     except ImportError:
         return {"success": False, "error": "boto3 unavailable"}
 
@@ -39,12 +38,7 @@ def try_invoke_async_ingress_worker(handler_route: str, payload: dict[str, Any])
         or "us-east-1"
     )
     try:
-        client = boto3.client("lambda", region_name=region)
-        response = client.invoke(
-            FunctionName=function_name,
-            InvocationType="Event",
-            Payload=json.dumps(event).encode("utf-8"),
-        )
+        response = PeerModel().invoke(function_name, event, "Event", region)
     except Exception as exc:
         _logger.exception("Async ingress self-invoke failed")
         return {"success": False, "error": f"Lambda invoke failed: {exc}"}

@@ -7,8 +7,6 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-import boto3
-
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
 from renglo.chat.chat_model import ChatModel
@@ -69,61 +67,19 @@ class ChatController:
 
     def error_chat(self, error, connection_id):
 
-    
+        from renglo.agent.websocket_client import WebSocketClient
 
-        try:
+        websocket_url = self.config.get('WEBSOCKET_CONNECTIONS', '')
+        client = WebSocketClient(websocket_url)
+        if not client.is_configured():
+            print(f"Error initializing WebSocket client: endpoint missing or invalid")
+            return False
 
-            websocket_url = self.config.get('WEBSOCKET_CONNECTIONS', '')
-
-            self.apigw_client = boto3.client("apigatewaymanagementapi", endpoint_url=websocket_url)
-
-        
-
-        except Exception as e:
-
-            print(f"Error initializing WebSocket client: {e}")
-
-            self.apigw_client = None
-
-        
-
-     
-
-        try:
-
-            print(f'Sending Error Message to:{connection_id}')
-
-            
-
-            # WebSocket
-
-            self.apigw_client.post_to_connection(
-
-                ConnectionId=connection_id,
-
-                Data=error
-
-            )
-
-               
-
+        print(f'Sending Error Message to:{connection_id}')
+        sent = client.send_message(connection_id, error)
+        if sent:
             print(f'Error Message has been sent: {error}')
-
-            return True
-
-        
-
-        except self.apigw_client.exceptions.GoneException:
-
-            print(f'Connection is no longer available')
-
-            return False
-
-        except Exception as e:
-
-            print(f'Error sending message: {str(e)}')
-
-            return False
+        return sent
 
         
 
@@ -181,7 +137,9 @@ class ChatController:
 
         try:
 
-            from flask_cognito import current_cognito_jwt
+            from renglo.auth.request_identity import current_claims
+
+            claims = current_claims()
 
         except Exception:
 
@@ -189,13 +147,13 @@ class ChatController:
 
         self.logger.debug("Getting user")
 
-        if "cognito:username" in current_cognito_jwt:
+        if "cognito:username" in claims:
 
-            user_id = create_md5_hash(current_cognito_jwt["cognito:username"], 9)
+            user_id = create_md5_hash(claims["cognito:username"], 9)
 
         else:
 
-            user_id = create_md5_hash(current_cognito_jwt["username"], 9)
+            user_id = create_md5_hash(claims["username"], 9)
 
         self.logger.debug("User Id:%s", user_id)
 

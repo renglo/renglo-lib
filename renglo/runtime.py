@@ -62,10 +62,11 @@ def get_current_jwt_claims() -> Optional[Dict[str, Any]]:
 
         if not has_app_context():
             return None
-        from flask_cognito import current_cognito_jwt  # type: ignore
+        from renglo.auth.request_identity import current_claims
 
-        if current_cognito_jwt:
-            return dict(current_cognito_jwt)
+        claims = current_claims()
+        if claims:
+            return claims
     except Exception:
         pass
     return None

@@ -5,6 +5,7 @@ from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import BotoCoreError, ClientError
 from decimal import Decimal
 import json
+from renglo.config_names import setting
 from renglo.logger import get_logger
 
 class DecimalEncoder(json.JSONEncoder):
@@ -20,19 +21,19 @@ class SessionModel:
         Initialize SessionModel with configuration.
         
         Args:
-            config (dict): Configuration dictionary containing self.DYNAMODB_SESSION_TABLE
+            config (dict): Configuration dictionary containing SESSION_TABLE
             tid: Transaction ID (optional)
             ip: IP address (optional)
         """
         self.config = config or {}
         self.logger = get_logger()
         
-        region = self.config.get('AWS_REGION', 'us-east-1')
+        region = setting(self.config, "REGION", "us-east-1")
         self.dynamodb = boto3.resource('dynamodb', region_name=region)
         
-        table_name = self.config.get('DYNAMODB_SESSION_TABLE', 'default_session_table')
+        table_name = setting(self.config, "SESSION_TABLE", "default_session_table")
         self.session_table = self.dynamodb.Table(table_name)
-        self.DYNAMODB_SESSION_TABLE = table_name
+        self.table_name = table_name
 
     def sanitize(self, obj):
         if isinstance(obj, list):
@@ -334,5 +335,22 @@ class SessionModel:
                 "status" : e.response['ResponseMetadata']['HTTPStatusCode']
                 }
 
-            
-    
+    def put_continuation_lock(self, index, entity_index, holder, now, lease):
+        self.session_table.put_item(
+            Item={
+                "index": index,
+                "entity_index": entity_index,
+                "holder": holder,
+                "lease_until": lease,
+            },
+            ConditionExpression="attribute_not_exists(#idx) OR lease_until < :now",
+            ExpressionAttributeNames={"#idx": "index"},
+            ExpressionAttributeValues={":now": now},
+        )
+
+    def delete_continuation_lock(self, index, entity_index, holder):
+        self.session_table.delete_item(
+            Key={"index": index, "entity_index": entity_index},
+            ConditionExpression="holder = :holder",
+            ExpressionAttributeValues={":holder": holder},
+        )

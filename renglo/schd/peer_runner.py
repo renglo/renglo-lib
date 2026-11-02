@@ -14,14 +14,6 @@ import shlex
 from typing import Dict, Any, Optional
 from pathlib import Path
 
-try:
-    import boto3
-    from botocore.exceptions import ClientError
-    BOTO3_AVAILABLE = True
-except ImportError:
-    BOTO3_AVAILABLE = False
-    ClientError = Exception  # type: ignore
-
 from renglo.schd.peer_config import (
     get_lambda_config,
     get_local_config,
@@ -588,11 +580,6 @@ def invoke_peer_event(
             }
         return {'success': True, 'status': response.status_code}
 
-    if not BOTO3_AVAILABLE:
-        return {
-            'success': False,
-            'error': 'boto3 is not available. Install it to use Lambda handlers.'
-        }
     config = get_lambda_config(extension_name)
     if not config:
         return {
@@ -600,11 +587,11 @@ def invoke_peer_event(
             'error': f'No peer Lambda for extension: {extension_name}'
         }
     try:
-        lambda_client = boto3.client('lambda', region_name=config['region'])
-        response = lambda_client.invoke(
-            FunctionName=config['function_name'],
-            InvocationType='Event',
-            Payload=json.dumps(event)
+        response = _peer().invoke(
+            config['function_name'],
+            event,
+            'Event',
+            config['region'],
         )
     except Exception as e:
         return {
@@ -639,12 +626,6 @@ def call_lambda_handler(
     Returns:
         Response dict with 'success', 'output', etc.
     """
-    if not BOTO3_AVAILABLE:
-        return {
-            'success': False,
-            'error': 'boto3 is not available. Install it to use Lambda handlers.'
-        }
-    
     config = get_lambda_config(extension_name)
     if not config:
         return {
@@ -655,9 +636,8 @@ def call_lambda_handler(
     function_name = config['function_name']
     region = config['region']
     
-    # Create Lambda client
     try:
-        lambda_client = boto3.client('lambda', region_name=region)
+        peer = _peer()
     except Exception as e:
         return {
             'success': False,
@@ -679,13 +659,18 @@ def call_lambda_handler(
     # Check if critical config variables are missing from Lambda function
     # and update them if needed (only updates once, not on every invocation)
     try:
-        func_config = lambda_client.get_function_configuration(FunctionName=function_name)
+        func_config = peer.function_configuration(function_name, region)
         current_env = func_config.get('Environment', {}).get('Variables', {})
         
-        # Check if critical config variables are missing
-        critical_vars = ['DYNAMODB_RINGDATA_TABLE', 'DYNAMODB_ENTITY_TABLE']
-        missing_critical = [k for k in critical_vars 
-                           if k not in current_env and k in config and config[k]]
+        # A function that already has either name is left alone.
+        from renglo.config_names import LEGACY, setting
+        missing_critical = [
+            key
+            for key in ("DATA_TABLE", "ENTITY_TABLE")
+            if key not in current_env
+            and LEGACY[key] not in current_env
+            and setting(config, key)
+        ]
         
         # Check for any other config vars that should be in Lambda but aren't.
         # IMPORTANT: Do NOT try to set reserved AWS_* keys (like AWS_REGION),
@@ -711,10 +696,7 @@ def call_lambda_handler(
             # Update Lambda function environment variables with missing critical vars
             # Merge with existing env vars to avoid overwriting
             updated_env = {**current_env, **vars_to_update}
-            lambda_client.update_function_configuration(
-                FunctionName=function_name,
-                Environment={'Variables': updated_env}
-            )
+            peer.update_environment(function_name, region, updated_env)
             # Wait a moment for the update to propagate
             import time
             time.sleep(1)
@@ -731,11 +713,7 @@ def call_lambda_handler(
     
     try:
         # Invoke the function
-        response = lambda_client.invoke(
-            FunctionName=function_name,
-            InvocationType='RequestResponse',  # Synchronous
-            Payload=json.dumps(event)
-        )
+        response = peer.invoke(function_name, event, 'RequestResponse', region)
         
         # Read the response
         response_payload = json.loads(response['Payload'].read())
@@ -777,11 +755,6 @@ def call_ecs_handler(
     Call a handler via ECS run_task. Payload is written to S3, task reads it and
     writes result to S3; this function polls for the result.
     """
-    if not BOTO3_AVAILABLE:
-        return {
-            'success': False,
-            'error': 'boto3 is not available. Install it to use ECS handlers.'
-        }
     import uuid
     import time
     ecs_cfg = get_ecs_config(extension_name)
@@ -799,14 +772,8 @@ def call_ecs_handler(
     result_key = f"{result_prefix}/{request_id}.json"
     event = {'handler': handler_name, 'payload': payload}
     try:
-        s3 = boto3.client('s3', region_name=region)
-        ecs = boto3.client('ecs', region_name=region)
-        s3.put_object(
-            Bucket=bucket,
-            Key=payload_key,
-            Body=json.dumps(event),
-            ContentType='application/json',
-        )
+        store = _object_store(ecs_cfg)
+        store.put_json(payload_key, event, bucket=bucket, region=region)
         status_key = f"status/{request_id}.json"
         overrides = {
             'containerOverrides': [{
@@ -822,7 +789,7 @@ def call_ecs_handler(
                 ]
             }]
         }
-        resp = ecs.run_task(**_ecs_run_task_params(ecs_cfg, overrides))
+        resp = _peer().run_task(region, **_ecs_run_task_params(ecs_cfg, overrides))
         failures = resp.get('failures', [])
         if failures:
             return {
@@ -838,20 +805,17 @@ def call_ecs_handler(
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
             try:
-                obj = s3.get_object(Bucket=bucket, Key=result_key)
-                body = json.loads(obj['Body'].read().decode())
-                if body.get('statusCode') == 200 and body.get('success'):
-                    return {'success': True, 'output': body.get('body', {})}
-                return {
-                    'success': False,
-                    'output': body.get('error') or body.get('body', {}),
-                    'error': body.get('error', 'ECS handler failed')
-                }
-            except ClientError as e:
-                if (e.response or {}).get('Error', {}).get('Code') == 'NoSuchKey':
+                body = store.get_json(result_key, bucket=bucket, region=region)
+                if body is None:
                     pass
+                elif body.get('statusCode') == 200 and body.get('success'):
+                    return {'success': True, 'output': body.get('body', {})}
                 else:
-                    print(f"ECS result poll error: {e}", file=sys.stderr)
+                    return {
+                        'success': False,
+                        'output': body.get('error') or body.get('body', {}),
+                        'error': body.get('error', 'ECS handler failed')
+                    }
             except Exception as e:
                 print(f"ECS result poll error: {e}", file=sys.stderr)
             time.sleep(poll_interval)
@@ -875,11 +839,6 @@ def call_ecs_handler_async(
     Start an ECS handler and return immediately with request_id and task_id.
     Used for batch (e.g. lab_batch_processor) so the client can poll result and logs.
     """
-    if not BOTO3_AVAILABLE:
-        return {
-            'success': False,
-            'error': 'boto3 is not available. Install it to use ECS handlers.'
-        }
     import uuid
     ecs_cfg = get_ecs_config(extension_name)
     if not ecs_cfg:
@@ -897,14 +856,7 @@ def call_ecs_handler_async(
     status_key = f"status/{request_id}.json"
     event = {'handler': handler_name, 'payload': payload}
     try:
-        s3 = boto3.client('s3', region_name=region)
-        ecs = boto3.client('ecs', region_name=region)
-        s3.put_object(
-            Bucket=bucket,
-            Key=payload_key,
-            Body=json.dumps(event),
-            ContentType='application/json',
-        )
+        _object_store(ecs_cfg).put_json(payload_key, event, bucket=bucket, region=region)
         overrides = {
             'containerOverrides': [{
                 'name': 'handler',
@@ -919,7 +871,7 @@ def call_ecs_handler_async(
                 ]
             }]
         }
-        resp = ecs.run_task(**_ecs_run_task_params(ecs_cfg, overrides))
+        resp = _peer().run_task(region, **_ecs_run_task_params(ecs_cfg, overrides))
         failures = resp.get('failures', [])
         if failures:
             return {
@@ -955,8 +907,6 @@ def call_local_docker_handler_async_start(
     payload from S3 and writes result/status to S3. Uses same bucket as ECS/local.
     """
     import uuid
-    if not BOTO3_AVAILABLE:
-        return {'success': False, 'error': 'boto3 not available'}
     s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch (set ECS_RESULTS_BUCKET or ECS config)'}
@@ -984,13 +934,7 @@ def call_local_docker_handler_async_start(
     event = {'handler': handler_name, 'payload': payload}
 
     try:
-        s3 = boto3.client('s3', region_name=region)
-        s3.put_object(
-            Bucket=bucket,
-            Key=payload_key,
-            Body=json.dumps(event),
-            ContentType='application/json',
-        )
+        _object_store(s3_cfg).put_json(payload_key, event, bucket=bucket, region=region)
     except Exception as e:
         return {'success': False, 'error': f'Failed to write payload to S3: {e}'}
 
@@ -1056,20 +1000,26 @@ def call_local_docker_handler_async_start(
     return {'success': True, 'request_id': request_id, 'task_id': None}
 
 
+def _object_store(_s3_cfg: Dict[str, Any]):
+    from renglo.files.files_model import FilesModel
+
+    return FilesModel(config={})
+
+
+def _peer():
+    from renglo.schd.peer_model import PeerModel
+
+    return PeerModel()
+
+
 def write_async_payload(extension_name: str, request_id: str, event: Dict[str, Any]) -> None:
     """Write async payload to S3 (payloads/<request_id>.json). Raises on failure."""
     s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
-    if not s3_cfg or not BOTO3_AVAILABLE:
-        raise RuntimeError('No S3 config or boto3 for batch payload')
+    if not s3_cfg:
+        raise RuntimeError('No object store config for batch payload')
     prefix = s3_cfg.get('payload_prefix', 'payloads')
     key = f"{prefix}/{request_id}.json"
-    s3 = boto3.client('s3', region_name=s3_cfg['region'])
-    s3.put_object(
-        Bucket=s3_cfg['s3_bucket'],
-        Key=key,
-        Body=json.dumps(event),
-        ContentType='application/json',
-    )
+    _object_store(s3_cfg).put_json(key, event, bucket=s3_cfg['s3_bucket'], region=s3_cfg['region'])
 
 
 def write_async_result(extension_name: str, request_id: str, run_response: Dict[str, Any]) -> None:
@@ -1078,21 +1028,15 @@ def write_async_result(extension_name: str, request_id: str, run_response: Dict[
     run_response: dict from SchdLoader.load_and_run (success, output, ...).
     """
     s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
-    if not s3_cfg or not BOTO3_AVAILABLE:
-        raise RuntimeError('No S3 config or boto3 for batch result')
+    if not s3_cfg:
+        raise RuntimeError('No object store config for batch result')
     success = run_response.get('success', False)
     output = run_response.get('output', run_response)
     body = {'statusCode': 200 if success else 500, 'success': success, 'body': output}
     if not success and run_response.get('error'):
         body['error'] = run_response['error']
     key = f"{s3_cfg.get('result_prefix', 'results')}/{request_id}.json"
-    s3 = boto3.client('s3', region_name=s3_cfg['region'])
-    s3.put_object(
-        Bucket=s3_cfg['s3_bucket'],
-        Key=key,
-        Body=json.dumps(body),
-        ContentType='application/json',
-    )
+    _object_store(s3_cfg).put_json(key, body, bucket=s3_cfg['s3_bucket'], region=s3_cfg['region'])
 
 
 def get_async_result(extension_name: str, request_id: str) -> Dict[str, Any]:
@@ -1100,8 +1044,6 @@ def get_async_result(extension_name: str, request_id: str) -> Dict[str, Any]:
     Read async result from S3 (results/<request_id>.json). Returns pending if not found.
     Uses get_ecs_config or get_async_s3_config so local and dev Docker async results work.
     """
-    if not BOTO3_AVAILABLE:
-        return {'success': False, 'error': 'boto3 not available', 'status': 'error'}
     s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch results', 'status': 'error'}
@@ -1110,9 +1052,9 @@ def get_async_result(extension_name: str, request_id: str) -> Dict[str, Any]:
     result_prefix = s3_cfg.get('result_prefix', 'results')
     result_key = f"{result_prefix}/{request_id}.json"
     try:
-        s3 = boto3.client('s3', region_name=region)
-        obj = s3.get_object(Bucket=bucket, Key=result_key)
-        body = json.loads(obj['Body'].read().decode())
+        body = _object_store(s3_cfg).get_json(result_key, bucket=bucket, region=region)
+        if body is None:
+            return {'success': True, 'status': 'pending'}
         if body.get('statusCode') == 200 and body.get('success'):
             return {'success': True, 'status': 'completed', 'output': body.get('body', body)}
         return {
@@ -1121,10 +1063,6 @@ def get_async_result(extension_name: str, request_id: str) -> Dict[str, Any]:
             'output': body.get('error') or body.get('body', {}),
             'error': body.get('error', 'ECS handler failed'),
         }
-    except ClientError as e:
-        if (e.response or {}).get('Error', {}).get('Code') == 'NoSuchKey':
-            return {'success': True, 'status': 'pending'}
-        return {'success': False, 'error': str(e), 'status': 'error'}
     except Exception as e:
         return {'success': False, 'error': str(e), 'status': 'error'}
 
@@ -1134,8 +1072,6 @@ def get_async_status(extension_name: str, request_id: str) -> Dict[str, Any]:
     Read async progress from S3 (status/<request_id>.json). Returns pending if not found.
     Uses get_ecs_config or get_async_s3_config so local and dev Docker async status works.
     """
-    if not BOTO3_AVAILABLE:
-        return {'success': False, 'error': 'boto3 not available', 'status': 'error', 'step': None}
     s3_cfg = get_ecs_config(extension_name) or get_async_s3_config(extension_name)
     if not s3_cfg:
         return {'success': False, 'error': 'No S3 config for batch status', 'status': 'error', 'step': None}
@@ -1143,15 +1079,11 @@ def get_async_status(extension_name: str, request_id: str) -> Dict[str, Any]:
     region = s3_cfg['region']
     status_key = f"status/{request_id}.json"
     try:
-        s3 = boto3.client('s3', region_name=region)
-        obj = s3.get_object(Bucket=bucket, Key=status_key)
-        body = json.loads(obj['Body'].read().decode())
+        body = _object_store(s3_cfg).get_json(status_key, bucket=bucket, region=region)
+        if body is None:
+            return {'success': True, 'status': 'pending', 'step': None}
         step = body.get('step')
         return {'success': True, 'status': 'running', 'step': step, 'trace': body.get('trace')}
-    except ClientError as e:
-        if (e.response or {}).get('Error', {}).get('Code') == 'NoSuchKey':
-            return {'success': True, 'status': 'pending', 'step': None}
-        return {'success': False, 'error': str(e), 'status': 'error', 'step': None}
     except Exception as e:
         return {'success': False, 'error': str(e), 'status': 'error', 'step': None}
 

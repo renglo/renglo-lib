@@ -4,24 +4,43 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 from datetime import datetime
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from renglo.config_names import setting
 from renglo.auth.auth_controller import AuthController
 from renglo.blueprint.blueprint_controller import BlueprintController
 
 
+def _dynamodb_resource(config, region, dynamodb_resource=None):
+    if dynamodb_resource is not None:
+        return dynamodb_resource
+    profile = str(setting(config, "PROFILE") or "").strip()
+    if profile:
+        session = boto3.session.Session(profile_name=profile)
+        return session.resource("dynamodb", region_name=region)
+    return boto3.resource("dynamodb", region_name=region)
+
+
 class DataModel:
 
-    def __init__(self, config=None, tid=False, ip=False):
+    def __init__(self, config=None, tid=False, ip=False, region_name=None, dynamodb_resource=None, bind_auth=True):
         self.config = config or {}
-        
-        self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
-        self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
 
-        self.dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Adjust region if needed
-        table_name = self.config.get('DYNAMODB_RINGDATA_TABLE')
+        if bind_auth:
+            self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
+            self.BPC = BlueprintController(config=self.config, tid=tid, ip=ip)
+        else:
+            self.AUC = None
+            self.BPC = None
+
+        # Callers that omit region_name keep the historical us-east-1 client.
+        resolved_region = region_name or "us-east-1"
+        self.region = resolved_region
+        self.dynamodb = _dynamodb_resource(self.config, resolved_region, dynamodb_resource)
+        table_name = setting(self.config, "DATA_TABLE")
         if not table_name:
-            raise ValueError("DYNAMODB_RINGDATA_TABLE configuration is required but not found")
+            raise ValueError("DATA_TABLE configuration is required but not found")
         self.data_table = self.dynamodb.Table(table_name)
-        self.DYNAMODB_RINGDATA_TABLE = table_name  
+        self.table_name = table_name  
             
     
    
@@ -55,7 +74,7 @@ class DataModel:
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
-                'TableName': self.DYNAMODB_RINGDATA_TABLE,
+                'TableName': self.table_name,
                 'KeyConditionExpression': Key('portfolio_index').eq(portfolio_index) & Key('doc_index').begins_with(prefix_doc_index),
                 'Limit': limit
             }
@@ -101,7 +120,7 @@ class DataModel:
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
-                'TableName': self.DYNAMODB_RINGDATA_TABLE,
+                'TableName': self.table_name,
                 'KeyConditionExpression': Key('portfolio_index').eq(portfolio_index) & Key('doc_index').begins_with(prefix_doc_index),
                 'Limit': limit
             }
@@ -267,7 +286,7 @@ class DataModel:
         try:
             # Build the query parameters with KeyConditionExpression
             query_params = {
-                'TableName': self.DYNAMODB_RINGDATA_TABLE,  # Make sure this references the correct DynamoDB table
+                'TableName': self.table_name,  # Make sure this references the correct DynamoDB table
                 'IndexName': 'path_index',  # Specify the name of your secondary index
                 'KeyConditionExpression': Key('portfolio_index').eq(portfolio_index) & Key('path_index').begins_with(path_index),  # Include both keys
                 'Limit': query['limit'],
@@ -312,6 +331,91 @@ class DataModel:
     def get_a_b_equalto(self,portfolio_index,path_index):
         
         return {'message': 'This feature is not implemented yet'}
+
+    def describe_table(self, logical_name="Ring data"):
+        _describe_or_raise(
+            self.dynamodb.meta.client,
+            self.table_name,
+            self.region,
+            logical_name,
+        )
+
+    def scan_projected(self, fields: Iterable[str]) -> Iterator[Dict[str, Any]]:
+        yield from _scan_projected(self.data_table, fields)
+
+    def query_path_prefix_page(
+        self,
+        portfolio: str,
+        org: str,
+        ring: str,
+        limit: int,
+        last_evaluated_key: Optional[Dict] = None,
+    ) -> Tuple[List[Dict], Optional[Dict]]:
+        portfolio_index = f"irn:data:{portfolio}"
+        path_index_prefix = f"irn:h_index:{org}:{ring}"
+        kwargs = {
+            "IndexName": "path_index",
+            "KeyConditionExpression": Key("portfolio_index").eq(portfolio_index)
+            & Key("path_index").begins_with(path_index_prefix),
+            "Limit": limit,
+        }
+        if last_evaluated_key:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        response = self.data_table.query(**kwargs)
+        return response.get("Items", []), response.get("LastEvaluatedKey")
+
+    def delete_document(self, portfolio_index, doc_index):
+        self.data_table.delete_item(
+            Key={"portfolio_index": portfolio_index, "doc_index": doc_index}
+        )
+
+    def batch_get(self, keys: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        client = self.data_table.meta.client
+        table_name = self.data_table.name
+        found: List[Dict[str, Any]] = []
+        for start in range(0, len(keys), 100):
+            pending = keys[start : start + 100]
+            while pending:
+                response = client.batch_get_item(RequestItems={table_name: {"Keys": pending}})
+                found.extend(response.get("Responses", {}).get(table_name, []))
+                pending = response.get("UnprocessedKeys", {}).get(table_name, {}).get("Keys", [])
+        return found
+
+
+def _describe_or_raise(dynamodb_client, table_name: str, region: str, logical_name: str) -> None:
+    try:
+        dynamodb_client.describe_table(TableName=table_name)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "Unknown")
+        msg = exc.response.get("Error", {}).get("Message", str(exc))
+        if code == "ResourceNotFoundException":
+            raise RuntimeError(
+                f"{logical_name} table '{table_name}' was not found in region '{region}'. "
+                f"Use --region, --env, --ring-table, or --graph-table."
+            ) from exc
+        raise RuntimeError(
+            f"Failed to describe {logical_name} table '{table_name}' in region '{region}': {code} {msg}"
+        ) from exc
+
+
+def _scan_projected(table, fields: Iterable[str]) -> Iterator[Dict[str, Any]]:
+    names = list(fields)
+    expr_attr_names = {f"#f{i}": field for i, field in enumerate(names)}
+    projection_expression = ", ".join(expr_attr_names.keys())
+    last_evaluated_key = None
+    while True:
+        kwargs: Dict[str, Any] = {
+            "ProjectionExpression": projection_expression,
+            "ExpressionAttributeNames": expr_attr_names,
+        }
+        if last_evaluated_key:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        response = table.scan(**kwargs)
+        for item in response.get("Items", []):
+            yield item
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
     
     
     

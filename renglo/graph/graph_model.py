@@ -10,10 +10,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
+from renglo.config_names import setting
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 
 class GraphQueryCancelled(Exception):
@@ -104,14 +106,15 @@ class GraphModel:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config or {}
-        resolved_region = region_name or self.config.get("AWS_REGION", "us-east-1")
-        resolved_table_name = self.config.get("DYNAMODB_GRAPH_TABLE")
+        resolved_region = region_name or setting(self.config, "REGION", "us-east-1")
+        resolved_table_name = setting(self.config, "GRAPH_TABLE")
         if not resolved_table_name:
-            raise ValueError("DYNAMODB_GRAPH_TABLE configuration is required but not found")
+            raise ValueError("GRAPH_TABLE configuration is required but not found")
 
-        self.dynamodb = dynamodb_resource or boto3.resource("dynamodb", region_name=resolved_region)
+        self.region = resolved_region
+        self.dynamodb = dynamodb_resource or _dynamodb_resource(self.config, resolved_region)
         self.table = self.dynamodb.Table(resolved_table_name)
-        self.DYNAMODB_GRAPH_TABLE = resolved_table_name
+        self.table_name = resolved_table_name
         self.reverse_index_name = reverse_index_name
         self.clock = clock
 
@@ -975,3 +978,97 @@ class GraphModel:
             "desired": len(desired_by_key),
             "existing_before": len(existing_by_key),
         }
+
+    def describe_table(self, logical_name="Graph"):
+        _describe_or_raise(
+            self.dynamodb.meta.client,
+            self.table_name,
+            self.region,
+            logical_name,
+        )
+
+    def scan_projected(self, fields: Iterable[str]) -> Iterator[Dict[str, Any]]:
+        yield from _scan_projected(self.table, fields)
+
+    def iter_partition_keys(self, graph_index: str) -> Iterator[Dict[str, Any]]:
+        last_evaluated_key = None
+        while True:
+            query_kwargs: Dict[str, Any] = {
+                "KeyConditionExpression": Key("graph_index").eq(graph_index),
+                "ProjectionExpression": "graph_index, forward_index",
+            }
+            if last_evaluated_key:
+                query_kwargs["ExclusiveStartKey"] = last_evaluated_key
+            response = self.table.query(**query_kwargs)
+            for item in response.get("Items", []):
+                yield item
+            last_evaluated_key = response.get("LastEvaluatedKey")
+            if not last_evaluated_key:
+                break
+
+    def clear_edges(self, portfolio: Optional[str] = None, org: Optional[str] = None) -> int:
+        deleted = 0
+        with self.table.batch_writer() as batch:
+            if portfolio and org:
+                for item in self.iter_partition_keys(f"irn:edge:{portfolio}:{org}"):
+                    batch.delete_item(
+                        Key={
+                            "graph_index": item["graph_index"],
+                            "forward_index": item["forward_index"],
+                        }
+                    )
+                    deleted += 1
+                return deleted
+            for item in self.scan_projected(["graph_index", "forward_index"]):
+                batch.delete_item(
+                    Key={
+                        "graph_index": item["graph_index"],
+                        "forward_index": item["forward_index"],
+                    }
+                )
+                deleted += 1
+        return deleted
+
+
+def _dynamodb_resource(config, region):
+    profile = str(setting(config, "PROFILE") or "").strip()
+    if profile:
+        session = boto3.session.Session(profile_name=profile)
+        return session.resource("dynamodb", region_name=region)
+    return boto3.resource("dynamodb", region_name=region)
+
+
+def _describe_or_raise(dynamodb_client, table_name: str, region: str, logical_name: str) -> None:
+    try:
+        dynamodb_client.describe_table(TableName=table_name)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "Unknown")
+        msg = exc.response.get("Error", {}).get("Message", str(exc))
+        if code == "ResourceNotFoundException":
+            raise RuntimeError(
+                f"{logical_name} table '{table_name}' was not found in region '{region}'. "
+                f"Use --region, --env, --ring-table, or --graph-table."
+            ) from exc
+        raise RuntimeError(
+            f"Failed to describe {logical_name} table '{table_name}' in region '{region}': {code} {msg}"
+        ) from exc
+
+
+def _scan_projected(table, fields: Iterable[str]):
+    names = list(fields)
+    expr_attr_names = {f"#f{i}": field for i, field in enumerate(names)}
+    projection_expression = ", ".join(expr_attr_names.keys())
+    last_evaluated_key = None
+    while True:
+        kwargs: Dict[str, Any] = {
+            "ProjectionExpression": projection_expression,
+            "ExpressionAttributeNames": expr_attr_names,
+        }
+        if last_evaluated_key:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        response = table.scan(**kwargs)
+        for item in response.get("Items", []):
+            yield item
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break

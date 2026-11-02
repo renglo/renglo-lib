@@ -8,6 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import boto3
 from boto3.dynamodb.conditions import Key
 
+from renglo.config_names import setting
 from renglo.logger import get_logger
 from renglo.timeseries.keys import (
     ITEM_SOFT_LIMIT,
@@ -29,10 +30,10 @@ class TimeSeriesModel:
         if table is not None:
             self.table = table
             return
-        region = self.config.get("AWS_REGION", "us-east-1")
-        table_name = self.config.get("DYNAMODB_TIMESERIES_TABLE")
+        region = setting(self.config, "REGION", "us-east-1")
+        table_name = setting(self.config, "TIMESERIES_TABLE")
         if not table_name:
-            raise ValueError("DYNAMODB_TIMESERIES_TABLE configuration is required but not found")
+            raise ValueError("TIMESERIES_TABLE configuration is required but not found")
         self.table = boto3.resource("dynamodb", region_name=region).Table(table_name)
 
     def put(

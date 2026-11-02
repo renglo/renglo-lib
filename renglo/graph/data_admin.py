@@ -73,7 +73,7 @@ Ring documents in *_data
 Edges for other portfolio/org pairs
 Use when you want an empty graph for P/O before re-ingesting or rebuilding. Pair with sync-graph-edges or regenerate-graph-edges if you want edges back.
 
-Note: this example omits --env; table names come from config (DYNAMODB_GRAPH_TABLE) unless you pass --env arbitium or --graph-table.
+Note: this example omits --env; table names come from config (GRAPH_TABLE) unless you pass --env arbitium or --graph-table.
 
 4. sync-graph-edges
 python dev/renglo-lib/renglo/graph/data_admin.py sync-graph-edges \
@@ -116,13 +116,12 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
-import boto3
-from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
-
 from renglo.common import load_config
+from renglo.config_names import setting
 from renglo.data.data_controller import DataController
+from renglo.data.data_model import DataModel
 from renglo.graph.graph_controller import GraphController
+from renglo.graph.graph_model import GraphModel
 
 
 # ---------------------------------------------------------------------------
@@ -170,10 +169,8 @@ class AdminContext:
     profile: Optional[str]
     ring_table_name: str
     graph_table_name: str
-    dynamodb: Any
-    dynamodb_client: Any
-    ring_table: Any
-    graph_table: Any
+    data_model: DataModel
+    graph_model: GraphModel
     grc: GraphController
 
 
@@ -188,23 +185,7 @@ def _resolve_table_name(
         return override
     if env_prefix:
         return f"{env_prefix}_{env_suffix}"
-    return config.get(config_key)
-
-
-def _describe_table_or_raise(dynamodb_client, table_name: str, region: str, logical_name: str) -> None:
-    try:
-        dynamodb_client.describe_table(TableName=table_name)
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "Unknown")
-        msg = exc.response.get("Error", {}).get("Message", str(exc))
-        if code == "ResourceNotFoundException":
-            raise RuntimeError(
-                f"{logical_name} table '{table_name}' was not found in region '{region}'. "
-                f"Use --region, --env, --ring-table, or --graph-table."
-            ) from exc
-        raise RuntimeError(
-            f"Failed to describe {logical_name} table '{table_name}' in region '{region}': {code} {msg}"
-        ) from exc
+    return setting(config, config_key)
 
 
 def build_admin_context(
@@ -217,30 +198,34 @@ def build_admin_context(
     verify_tables: bool = True,
 ) -> AdminContext:
     config = load_config()
-    resolved_region = region or config.get("AWS_REGION") or get_profile_region(profile or "default")
-    ring_table_name = _resolve_table_name(ring_table, env, "data", config, "DYNAMODB_RINGDATA_TABLE")
-    graph_table_name = _resolve_table_name(graph_table, env, "graph", config, "DYNAMODB_GRAPH_TABLE")
+    resolved_region = region or setting(config, "REGION") or get_profile_region(profile or "default")
+    ring_table_name = _resolve_table_name(ring_table, env, "data", config, "DATA_TABLE")
+    graph_table_name = _resolve_table_name(graph_table, env, "graph", config, "GRAPH_TABLE")
     if not ring_table_name or not graph_table_name:
         raise RuntimeError(
-            "Missing ring/graph table names. Set DYNAMODB_RINGDATA_TABLE and DYNAMODB_GRAPH_TABLE "
+            "Missing ring/graph table names. Set DATA_TABLE and GRAPH_TABLE "
             "in config, or pass --env, --ring-table, and --graph-table."
         )
 
-    session_kwargs: Dict[str, Any] = {}
+    runtime = dict(config)
     if profile:
-        session_kwargs["profile_name"] = profile
-    session = boto3.session.Session(**session_kwargs)
-    dynamodb = session.resource("dynamodb", region_name=resolved_region)
-    dynamodb_client = session.client("dynamodb", region_name=resolved_region)
-
+        runtime["PROFILE"] = profile
+    runtime["DATA_TABLE"] = ring_table_name
+    runtime["GRAPH_TABLE"] = graph_table_name
+    data_model = DataModel(
+        config=runtime,
+        region_name=resolved_region,
+        bind_auth=False,
+    )
+    graph_model = GraphModel(config=runtime, region_name=resolved_region)
     if verify_tables:
-        _describe_table_or_raise(dynamodb_client, ring_table_name, resolved_region, "Ring data")
-        _describe_table_or_raise(dynamodb_client, graph_table_name, resolved_region, "Graph")
+        data_model.describe_table("Ring data")
+        graph_model.describe_table("Graph")
 
     grc = GraphController(
-        config={**config, "DYNAMODB_GRAPH_TABLE": graph_table_name},
+        config=runtime,
         region_name=resolved_region,
-        dynamodb_resource=dynamodb,
+        dynamodb_resource=graph_model.dynamodb,
     )
 
     return AdminContext(
@@ -249,10 +234,8 @@ def build_admin_context(
         profile=profile,
         ring_table_name=ring_table_name,
         graph_table_name=graph_table_name,
-        dynamodb=dynamodb,
-        dynamodb_client=dynamodb_client,
-        ring_table=dynamodb.Table(ring_table_name),
-        graph_table=dynamodb.Table(graph_table_name),
+        data_model=data_model,
+        graph_model=graph_model,
         grc=grc,
     )
 
@@ -300,33 +283,13 @@ def _parse_blueprint_handle(blueprint_uri: Any) -> Optional[str]:
     return parts[0]
 
 
-def _scan_all(table, projection_fields: Iterable[str]) -> Iterator[Dict[str, Any]]:
-    fields = list(projection_fields)
-    expr_attr_names = {f"#f{i}": field for i, field in enumerate(fields)}
-    projection_expression = ", ".join(expr_attr_names.keys())
-    last_evaluated_key = None
-    while True:
-        kwargs: Dict[str, Any] = {
-            "ProjectionExpression": projection_expression,
-            "ExpressionAttributeNames": expr_attr_names,
-        }
-        if last_evaluated_key:
-            kwargs["ExclusiveStartKey"] = last_evaluated_key
-        response = table.scan(**kwargs)
-        for item in response.get("Items", []):
-            yield item
-        last_evaluated_key = response.get("LastEvaluatedKey")
-        if not last_evaluated_key:
-            break
-
-
 def _iter_documents(
-    ring_table,
+    data_model: DataModel,
     portfolio_filter: Optional[str],
     org_filter: Optional[str],
     ring_filter: Optional[str],
 ) -> Iterator[Tuple[str, str, str, str, Optional[str], Dict[str, Any]]]:
-    for item in _scan_all(ring_table, ["portfolio_index", "doc_index", "_id", "blueprint", "attributes"]):
+    for item in data_model.scan_projected(["portfolio_index", "doc_index", "_id", "blueprint", "attributes"]):
         portfolio = _parse_portfolio(item.get("portfolio_index"))
         doc_bits = _parse_doc_index(item.get("doc_index"))
         if not portfolio or not doc_bits:
@@ -346,38 +309,15 @@ def _iter_documents(
         yield portfolio, org, ring, doc_id, blueprint_handle, attributes
 
 
-def _query_ring_items_page(
-    table,
-    portfolio: str,
-    org: str,
-    ring: str,
-    limit: int,
-    last_evaluated_key: Optional[Dict] = None,
-) -> Tuple[List[Dict], Optional[Dict]]:
-    portfolio_index = f"irn:data:{portfolio}"
-    path_index_prefix = f"irn:h_index:{org}:{ring}"
-    kwargs = {
-        "IndexName": "path_index",
-        "KeyConditionExpression": Key("portfolio_index").eq(portfolio_index)
-        & Key("path_index").begins_with(path_index_prefix),
-        "Limit": limit,
-    }
-    if last_evaluated_key:
-        kwargs["ExclusiveStartKey"] = last_evaluated_key
-    response = table.query(**kwargs)
-    return response.get("Items", []), response.get("LastEvaluatedKey")
-
-
-def _iter_ring_items(table, portfolio: str, org: str, ring: str, page_limit: int):
+def _iter_ring_items(data_model: DataModel, portfolio: str, org: str, ring: str, page_limit: int):
     last_key: Optional[Dict] = None
     while True:
-        items, last_key = _query_ring_items_page(
-            table=table,
-            portfolio=portfolio,
-            org=org,
-            ring=ring,
-            limit=page_limit,
-            last_evaluated_key=last_key,
+        items, last_key = data_model.query_path_prefix_page(
+            portfolio,
+            org,
+            ring,
+            page_limit,
+            last_key,
         )
         for item in items:
             yield item
@@ -391,45 +331,11 @@ def _iter_ring_items(table, portfolio: str, org: str, ring: str, page_limit: int
 
 
 def clear_graph_edges(
-    graph_table,
+    graph_model: GraphModel,
     portfolio: Optional[str] = None,
     org: Optional[str] = None,
 ) -> int:
-    deleted = 0
-    with graph_table.batch_writer() as batch:
-        if portfolio and org:
-            graph_index = f"irn:edge:{portfolio}:{org}"
-            last_evaluated_key = None
-            while True:
-                query_kwargs = {
-                    "KeyConditionExpression": Key("graph_index").eq(graph_index),
-                    "ProjectionExpression": "graph_index, forward_index",
-                }
-                if last_evaluated_key:
-                    query_kwargs["ExclusiveStartKey"] = last_evaluated_key
-                response = graph_table.query(**query_kwargs)
-                for item in response.get("Items", []):
-                    batch.delete_item(
-                        Key={
-                            "graph_index": item["graph_index"],
-                            "forward_index": item["forward_index"],
-                        }
-                    )
-                    deleted += 1
-                last_evaluated_key = response.get("LastEvaluatedKey")
-                if not last_evaluated_key:
-                    break
-            return deleted
-
-        for item in _scan_all(graph_table, ["graph_index", "forward_index"]):
-            batch.delete_item(
-                Key={
-                    "graph_index": item["graph_index"],
-                    "forward_index": item["forward_index"],
-                }
-            )
-            deleted += 1
-    return deleted
+    return graph_model.clear_edges(portfolio, org)
 
 
 def _diagnose_document_edges(
@@ -533,7 +439,7 @@ def sync_graph_edges(
     debug_printed = 0
 
     for doc_portfolio, doc_org, doc_ring, idx, blueprint_handle, attributes in _iter_documents(
-        ctx.ring_table,
+        ctx.data_model,
         portfolio,
         org,
         ring,
@@ -632,7 +538,7 @@ def sanitize_ring_links(
     failed = 0
 
     for doc_portfolio, doc_org, doc_ring, idx, _blueprint_handle, attributes in _iter_documents(
-        ctx.ring_table,
+        ctx.data_model,
         portfolio,
         org,
         ring,
@@ -687,12 +593,6 @@ def refresh_ring_cache(
     config: Dict[str, Any],
 ) -> bool:
     try:
-        session_kwargs: Dict[str, Any] = {}
-        if profile:
-            session_kwargs["profile_name"] = profile
-        boto3.session.Session(**session_kwargs)
-        from renglo.data.data_controller import DataController
-
         dac = DataController(config=config)
         dac.refresh_s3_cache(portfolio, org, ring, None)
         print(f"Refreshed cache for ring={ring} portfolio={portfolio} org={org}")
@@ -729,7 +629,7 @@ def purge_ring(
     if with_graph_edges:
         print("Graph edges will be removed per document before delete.")
 
-    for item in _iter_ring_items(ctx.ring_table, portfolio, org, ring, page_limit):
+    for item in _iter_ring_items(ctx.data_model, portfolio, org, ring, page_limit):
         scanned += 1
         portfolio_index = item.get("portfolio_index")
         doc_index = item.get("doc_index")
@@ -773,12 +673,7 @@ def purge_ring(
                 print(f"[WARN] graph cleanup failed for _id={doc_id}: {exc}")
 
         try:
-            ctx.ring_table.delete_item(
-                Key={
-                    "portfolio_index": portfolio_index,
-                    "doc_index": doc_index,
-                }
-            )
+            ctx.data_model.delete_document(portfolio_index, doc_index)
             deleted += 1
             if deleted % 100 == 0:
                 print(f"Deleted {deleted} documents...")
@@ -987,7 +882,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Dry run: would clear graph edges for {scope}.")
             return 0
 
-        deleted = clear_graph_edges(ctx.graph_table, args.portfolio, args.org)
+        deleted = clear_graph_edges(ctx.graph_model, args.portfolio, args.org)
         print(f"Cleared {deleted} graph edges ({scope}).")
         return 0
 
@@ -997,7 +892,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.command == "regenerate-graph-edges" and not args.no_clear:
             if not args.portfolio or not args.org:
                 parser.error("regenerate-graph-edges requires --portfolio and --org when clearing")
-            deleted = clear_graph_edges(ctx.graph_table, args.portfolio, args.org)
+            deleted = clear_graph_edges(ctx.graph_model, args.portfolio, args.org)
             print(f"Cleared {deleted} graph edges.")
         elif args.command == "regenerate-graph-edges":
             print("Skipping graph clear (--no-clear).")
