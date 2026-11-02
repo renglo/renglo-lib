@@ -12,22 +12,22 @@ API_ROOT = Path(__file__).resolve().parents[2] / "renglo-api" / "renglo_api"
 
 # Paths are relative to each walked tree (renglo/ or renglo_api/).
 ALLOWLIST = {
-    "timeseries/timeseries_model.py",
-    "auth/auth_model.py",
-    "session/session_model.py",
-    "blueprint/blueprint_model.py",
-    "vector/vector_model.py",
-    "data/data_model.py",
-    "files/files_model.py",
-    "schd/schd_model.py",
-    "state/state_model.py",
-    "search/search_model.py",
-    "graph/graph_model.py",
-    "chat/chat_model.py",
+    "timeseries/submodels/timeseries_model_aws.py",
+    "auth/submodels/auth_model_aws.py",
+    "session/submodels/session_model_aws.py",
+    "blueprint/submodels/blueprint_model_aws.py",
+    "vector/submodels/vector_model_aws.py",
+    "data/submodels/data_model_aws.py",
+    "files/submodels/files_model_aws.py",
+    "schd/submodels/schd_model_aws.py",
+    "state/submodels/state_model_aws.py",
+    "search/submodels/search_model_aws.py",
+    "graph/submodels/graph_model_aws.py",
+    "chat/submodels/chat_model_aws.py",
     "llm/providers/bedrock_converse.py",
-    "chat/connection_model.py",
-    "schd/peer_model.py",
-    "rag/rag_model.py",
+    "chat/submodels/connection_model_aws.py",
+    "schd/submodels/peer_model_aws.py",
+    "rag/submodels/rag_model_aws.py",
 }
 
 
