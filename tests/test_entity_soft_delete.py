@@ -366,7 +366,7 @@ class SoftDeleteControllerTests(unittest.TestCase):
 
 class AuthModelHardDeleteTests(unittest.TestCase):
     def test_model_refuses_portfolio_and_org_and_deletes_a_team(self):
-        with patch("renglo.auth.auth_model.boto3"):
+        with patch("renglo.auth.submodels.auth_model_aws.boto3"):
             from renglo.auth.auth_model import AuthModel
 
             model = AuthModel(config={})
