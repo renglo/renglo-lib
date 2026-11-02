@@ -1,12 +1,13 @@
 import json
 import re
 import unicodedata
-import boto3
+from renglo.data.data_model import DataModel
 from urllib.parse import quote
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from renglo.config_names import setting
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
 from renglo.logger import get_logger
@@ -54,8 +55,8 @@ class SearchController:
         self.index_service: Optional[SearchIndexService] = None
         self.dynamodb_resource = dynamodb_resource
         self.region_name = region_name
-        self._ring_data_table = None
-        self.enabled = bool(self.config.get("DYNAMODB_SEARCH_TABLE"))
+        self._data_model = None
+        self.enabled = bool(setting(self.config, "SEARCH_TABLE"))
         if self.enabled:
             self.model = SearchModel(
                 config=self.config,
@@ -68,7 +69,7 @@ class SearchController:
                 region_name=region_name,
             )
         else:
-            self.logger.warning("Search disabled: DYNAMODB_SEARCH_TABLE configuration not found")
+            self.logger.warning("Search disabled: SEARCH_TABLE configuration not found")
 
     def is_enabled(self) -> bool:
         return self.enabled and self.model is not None
@@ -211,18 +212,18 @@ class SearchController:
             return [str(v).strip() for v in config_defaults if str(v).strip()]
         return []
 
-    def _get_ring_data_table(self):
-        if self._ring_data_table is not None:
-            return self._ring_data_table
-        table_name = self.config.get("DYNAMODB_RINGDATA_TABLE")
-        if not table_name:
+    def _documents(self):
+        if self._data_model is not None:
+            return self._data_model
+        if not setting(self.config, "DATA_TABLE"):
             return None
-        dynamodb = self.dynamodb_resource or boto3.resource(
-            "dynamodb",
-            region_name=self.region_name or self.config.get("AWS_REGION", "us-east-1"),
+        self._data_model = DataModel(
+            config=self.config,
+            region_name=self.region_name or setting(self.config, "REGION", "us-east-1"),
+            dynamodb_resource=self.dynamodb_resource,
+            bind_auth=False,
         )
-        self._ring_data_table = dynamodb.Table(table_name)
-        return self._ring_data_table
+        return self._data_model
 
     def _resolve_documents_for_hits(
         self,
@@ -233,9 +234,9 @@ class SearchController:
         if not hits:
             return hits
 
-        table = self._get_ring_data_table()
-        if table is None:
-            self.logger.warning("Search resolve requested but DYNAMODB_RINGDATA_TABLE is not configured")
+        documents = self._documents()
+        if documents is None:
+            self.logger.warning("Search resolve requested but DATA_TABLE is not configured")
             return hits
 
         keys = []
@@ -255,26 +256,18 @@ class SearchController:
         if not keys:
             return hits
 
-        client = table.meta.client
-        table_name = table.name
         resolved_map: Dict[str, Dict[str, Any]] = {}
-
-        for start in range(0, len(keys), 100):
-            pending_keys = keys[start : start + 100]
-            while pending_keys:
-                response = client.batch_get_item(RequestItems={table_name: {"Keys": pending_keys}})
-                for item in response.get("Responses", {}).get(table_name, []):
-                    doc_index = str(item.get("doc_index", ""))
-                    key = f"{portfolio}|{doc_index}"
-                    resolved_map[key] = {
-                        "_id": item.get("_id"),
-                        "_modified": item.get("modified", ""),
-                        "_index": item.get("path_index", ""),
-                        "attributes": item.get("attributes", {}),
-                        "blueprint": item.get("blueprint"),
-                        "ring": doc_index.split(":")[1] if ":" in doc_index else None,
-                    }
-                pending_keys = response.get("UnprocessedKeys", {}).get(table_name, {}).get("Keys", [])
+        for item in documents.batch_get(keys):
+            doc_index = str(item.get("doc_index", ""))
+            key = f"{portfolio}|{doc_index}"
+            resolved_map[key] = {
+                "_id": item.get("_id"),
+                "_modified": item.get("modified", ""),
+                "_index": item.get("path_index", ""),
+                "attributes": item.get("attributes", {}),
+                "blueprint": item.get("blueprint"),
+                "ring": doc_index.split(":")[1] if ":" in doc_index else None,
+            }
 
         resolved_hits: List[Dict[str, Any]] = []
         for hit in hits:

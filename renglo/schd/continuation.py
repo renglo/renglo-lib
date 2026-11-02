@@ -6,7 +6,6 @@ to continue the turn, then sends whatever reply that handler returns.
 
 from __future__ import annotations
 
-import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -214,40 +213,31 @@ def _lock_key(body: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _table(config: dict[str, Any]):
-    import boto3
+def _locks(config: dict[str, Any]):
+    from renglo.session.session_model import SessionModel
 
-    region = str((config or {}).get("AWS_REGION") or os.getenv("AWS_REGION") or "us-east-1")
-    name = str(
-        (config or {}).get("DYNAMODB_SESSION_TABLE")
-        or os.getenv("DYNAMODB_SESSION_TABLE")
-        or ""
-    ).strip()
+    from renglo.config_names import setting
+
+    region = str(setting(config, "REGION", environ=True) or "us-east-1")
+    name = str(setting(config, "SESSION_TABLE", environ=True) or "").strip()
     if not name:
         return None
-    return boto3.resource("dynamodb", region_name=region).Table(name)
+    merged = dict(config or {})
+    merged["REGION"] = region
+    merged["SESSION_TABLE"] = name
+    return SessionModel(config=merged)
 
 
 def _acquire_lock(config: dict[str, Any], body: dict[str, Any]) -> Optional[str]:
-    table = _table(config)
-    if table is None:
+    locks = _locks(config)
+    if locks is None:
         return str(uuid.uuid4())
     index, entity_index = _lock_key(body)
     holder = str(uuid.uuid4())
     now = Decimal(str(time.time()))
     lease = Decimal(str(time.time() + LEASE_SECONDS))
     try:
-        table.put_item(
-            Item={
-                "index": index,
-                "entity_index": entity_index,
-                "holder": holder,
-                "lease_until": lease,
-            },
-            ConditionExpression="attribute_not_exists(#idx) OR lease_until < :now",
-            ExpressionAttributeNames={"#idx": "index"},
-            ExpressionAttributeValues={":now": now},
-        )
+        locks.put_continuation_lock(index, entity_index, holder, now, lease)
     except Exception as exc:
         code = getattr(getattr(exc, "response", {}), "get", lambda *_: {})("Error", {}).get("Code")
         if code == "ConditionalCheckFailedException" or "ConditionalCheckFailed" in str(exc):
@@ -258,16 +248,12 @@ def _acquire_lock(config: dict[str, Any], body: dict[str, Any]) -> Optional[str]
 
 
 def _release_lock(config: dict[str, Any], body: dict[str, Any], holder: str) -> None:
-    table = _table(config)
-    if table is None or not holder:
+    locks = _locks(config)
+    if locks is None or not holder:
         return
     index, entity_index = _lock_key(body)
     try:
-        table.delete_item(
-            Key={"index": index, "entity_index": entity_index},
-            ConditionExpression="holder = :holder",
-            ExpressionAttributeValues={":holder": holder},
-        )
+        locks.delete_continuation_lock(index, entity_index, holder)
     except Exception as exc:
         print(f"continuation unlock failed: {exc}")
 

@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from renglo.config_names import setting
+
 log = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0"
@@ -160,9 +162,7 @@ class VectorModel:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.config = config or {}
-        self.region = str(
-            self.config.get("AWS_REGION") or os.environ.get("AWS_REGION") or "us-east-1"
-        )
+        self.region = str(setting(self.config, "REGION", "us-east-1", environ=True))
         self.bucket = str(self.config.get("S3_VECTORS_BUCKET") or "").strip()
         self.embedding_model_id = str(
             self.config.get("EMBEDDING_MODEL_ID") or DEFAULT_EMBEDDING_MODEL

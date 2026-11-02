@@ -2,7 +2,6 @@
 import copy
 import uuid
 import json
-import boto3
 import traceback
 from decimal import Decimal
 

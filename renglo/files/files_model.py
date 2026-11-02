@@ -1,6 +1,11 @@
-import boto3
+import json
 import uuid
 from datetime import datetime
+
+import boto3
+from botocore.exceptions import ClientError
+
+from renglo.config_names import setting
 from renglo.logger import get_logger
 
 class FilesModel:
@@ -8,9 +13,10 @@ class FilesModel:
     # HTTP GETs redirect to a signed S3 URL. Signing is local HMAC; no GetObject.
     PRESIGN_EXPIRES_IN = 3600
 
-    def __init__(self, config=None, tid=False, ip=False):
+    def __init__(self, config=None, tid=False, ip=False, s3_client=None):
         self.config = config or {}
         self.logger = get_logger()
+        self._injected_client = s3_client
         self.valid_types = {
             'image/jpeg':'jpg', 
             'image/png':'png', 
@@ -23,13 +29,71 @@ class FilesModel:
  
     
     def _bucket_name(self):
-        bucket_name = self.config.get('S3_BUCKET_NAME')
+        bucket_name = setting(self.config, "FILES_BUCKET")
         if not bucket_name:
-            raise ValueError("S3_BUCKET_NAME configuration is required")
+            raise ValueError("FILES_BUCKET configuration is required")
         return bucket_name
 
-    def _s3_client(self):
+    def _bucket(self, bucket=None):
+        if bucket:
+            return bucket
+        return self._bucket_name()
+
+    def _s3_client(self, region=None):
+        if self._injected_client is not None and not region:
+            return self._injected_client
+        if region:
+            return boto3.client('s3', region_name=region)
         return boto3.client('s3')
+
+    @staticmethod
+    def _missing(exc):
+        if isinstance(exc, ClientError):
+            code = str((exc.response.get("Error") or {}).get("Code") or "")
+            return code in ("NoSuchKey", "404", "NotFound")
+        response = getattr(exc, "response", None) or {}
+        code = str((response.get("Error") or {}).get("Code") or "")
+        return code in ("NoSuchKey", "404", "NotFound")
+
+    def head(self, key, bucket=None, region=None):
+        """Return True when the object exists. Missing objects return False."""
+        client = self._s3_client(region)
+        try:
+            client.head_object(Bucket=self._bucket(bucket), Key=key)
+            return True
+        except Exception as exc:
+            if self._missing(exc):
+                return False
+            raise
+
+    def get_bytes(self, key, bucket=None, region=None):
+        """Return object bytes, or None when the object is missing."""
+        client = self._s3_client(region)
+        try:
+            document = client.get_object(Bucket=self._bucket(bucket), Key=key)
+            return document["Body"].read()
+        except Exception as exc:
+            if self._missing(exc):
+                return None
+            raise
+
+    def put_bytes(self, key, body, content_type=None, bucket=None, region=None):
+        params = {"Bucket": self._bucket(bucket), "Key": key, "Body": body}
+        if content_type:
+            params["ContentType"] = content_type
+        self._s3_client(region).put_object(**params)
+
+    def get_json(self, key, bucket=None, region=None):
+        raw = self.get_bytes(key, bucket=bucket, region=region)
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        return json.loads(raw)
+
+    def put_json(self, key, document, bucket=None, region=None, content_type="application/json", default=None):
+        body = json.dumps(document, default=default)
+        self.put_bytes(key, body, content_type=content_type, bucket=bucket, region=region)
 
     def presign_get(self, file_path, expires_in=None):
         """Return a time-limited S3 GET URL. Does not check that the object exists."""

@@ -5,6 +5,7 @@ from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import BotoCoreError, ClientError
 from decimal import Decimal
 import json
+from renglo.config_names import setting
 from renglo.logger import get_logger
 
 class DecimalEncoder(json.JSONEncoder):
@@ -20,7 +21,7 @@ class ChatModel:
         Initialize ChatModel with configuration.
         
         Args:
-            config (dict): Configuration dictionary containing self.DYNAMODB_CHAT_TABLE
+            config (dict): Configuration dictionary containing CHAT_TABLE
             tid: Transaction ID (optional)
             ip: IP address (optional)
         """
@@ -29,9 +30,9 @@ class ChatModel:
         
         self.dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Adjust region if needed
         
-        table_name = self.config.get('DYNAMODB_CHAT_TABLE', 'default_chat_table')
+        table_name = setting(self.config, "CHAT_TABLE", "default_chat_table")
         self.chat_table = self.dynamodb.Table(table_name)
-        self.DYNAMODB_CHAT_TABLE = table_name  
+        self.table_name = table_name  
 
     def sanitize(self, obj):
         if isinstance(obj, list):
@@ -67,7 +68,7 @@ class ChatModel:
                 if entity_index_prefix:
 
                     query_params = {
-                        'TableName': self.DYNAMODB_CHAT_TABLE,
+                        'TableName': self.table_name,
                         'KeyConditionExpression': Key('index').eq(index) & Key('entity_index').begins_with(entity_index_prefix),
                         'Limit': page_limit,
                         "ScanIndexForward": True if sort == 'asc' else False
@@ -76,7 +77,7 @@ class ChatModel:
                 else:
                     # Handle case when no prefix is provided
                     query_params = {
-                        'TableName': self.DYNAMODB_CHAT_TABLE,
+                        'TableName': self.table_name,
                         'KeyConditionExpression': Key('index').eq(index),  # Only query by index
                         'Limit': page_limit,
                         "ScanIndexForward": True if sort == 'asc' else False
@@ -126,7 +127,7 @@ class ChatModel:
             while True:
                 # Build the query parameters with KeyConditionExpression using LSI
                 query_params = {
-                    'TableName': self.DYNAMODB_CHAT_TABLE,
+                    'TableName': self.table_name,
                     'KeyConditionExpression': Key('index').eq(index) & Key('entity_index').eq(entity_index),
                     'Limit': limit,
                     "ScanIndexForward": True if sort == 'asc' else False
@@ -178,7 +179,7 @@ class ChatModel:
 
             
             query_params = {
-                'TableName': self.DYNAMODB_CHAT_TABLE,
+                'TableName': self.table_name,
                 'KeyConditionExpression': Key('index').eq(index) & Key('entity_index').eq(entity_index),
                 'FilterExpression': Attr('_id').eq(message_id)
             }

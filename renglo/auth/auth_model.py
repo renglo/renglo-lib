@@ -2,6 +2,7 @@ import logging
 import secrets
 import string
 
+from renglo.config_names import setting
 import boto3
 from botocore.exceptions import ClientError
 from datetime import datetime
@@ -35,8 +36,8 @@ class AuthModel:
         
         #Dynamo
         self.dynamodb = boto3.resource('dynamodb')
-        entity_table_name = self.config.get('DYNAMODB_ENTITY_TABLE', 'default_entity_table')
-        rel_table_name = self.config.get('DYNAMODB_REL_TABLE', 'default_rel_table')
+        entity_table_name = setting(self.config, "ENTITY_TABLE", "default_entity_table")
+        rel_table_name = setting(self.config, "REL_TABLE", "default_rel_table")
         self.entity_table = self.dynamodb.Table(entity_table_name)
         self.rel_table = self.dynamodb.Table(rel_table_name)
 
@@ -350,7 +351,7 @@ class AuthModel:
         inline_images=None,
     ):
         region = (
-            self.config.get('AWS_REGION')
+            setting(self.config, "REGION")
             or self.config.get('AWS_DEFAULT_REGION')
             or self.config.get('COGNITO_REGION')
             or 'us-east-1'

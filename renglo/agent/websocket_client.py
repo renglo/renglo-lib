@@ -2,9 +2,8 @@
 WebSocket client wrapper that supports both AWS API Gateway and local dev WebSocket service.
 """
 import json
-import boto3
 import requests
-from typing import Dict, Any, Optional
+from typing import Any
 from decimal import Decimal
 
 
@@ -34,7 +33,6 @@ class WebSocketClient:
         self.websocket_url = websocket_url
         self.is_local = False
         self.local_ws_url = None
-        self.apigw_client = None
         
         if not websocket_url:
             return
@@ -51,22 +49,15 @@ class WebSocketClient:
             self.local_ws_url = self.local_ws_url.rstrip('/').replace('/ws', '')
         else:
             print('Initializing AWS API Gateway Websocket service')
-            # AWS API Gateway
             self.is_local = False
-            try:
-                self.apigw_client = boto3.client("apigatewaymanagementapi", endpoint_url=websocket_url)
-            except Exception as e:
-                print(f"Error initializing AWS API Gateway client: {e}")
-                self.apigw_client = None
     
     def is_configured(self) -> bool:
         """Check if WebSocket client is properly configured."""
         if self.is_local:
             return self.local_ws_url is not None
-        else:
-            return self.apigw_client is not None
+        return bool(self.websocket_url)
     
-    def send_message(self, connection_id: str, payload: Dict[str, Any]) -> bool:
+    def send_message(self, connection_id: str, payload: Any) -> bool:
         """
         Send a message to a WebSocket connection.
         
@@ -98,12 +89,11 @@ class WebSocketClient:
                     print(f'Error sending message to local WebSocket: {result.get("error", "Unknown error")}')
                     return False
             else:
-                # AWS API Gateway
+                # Cloud socket. Strings and bytes are posted unchanged.
+                from renglo.chat.connection_model import ConnectionModel
+
                 print(f"Posting to AWS WSS")
-                self.apigw_client.post_to_connection(
-                    ConnectionId=connection_id,
-                    Data=json.dumps(payload, cls=DecimalEncoder)
-                )
+                ConnectionModel(endpoint_url=self.websocket_url).post(connection_id, payload)
             
             return True
             
@@ -112,7 +102,7 @@ class WebSocketClient:
             return False
         except Exception as e:
             # Handle AWS API Gateway exceptions
-            if not self.is_local and self.apigw_client:
+            if not self.is_local:
                 # Check if it's a GoneException (connection closed)
                 exception_name = type(e).__name__
                 if exception_name == 'GoneException':

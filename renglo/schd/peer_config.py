@@ -39,23 +39,11 @@ def _get_default_vpc_network_config(region: str) -> Dict[str, Any]:
     """
     result: Dict[str, Any] = {"subnets": [], "security_groups": []}
     try:
-        import boto3
-        ec2 = boto3.client("ec2", region_name=region)
-        vpcs = ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}]).get("Vpcs", [])
-        if not vpcs:
-            return result
-        vpc_id = vpcs[0]["VpcId"]
-        subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])\
-            .get("Subnets", [])
-        result["subnets"] = [s["SubnetId"] for s in subnets if s.get("SubnetId")]
-        sgs = ec2.describe_security_groups(
-            Filters=[
-                {"Name": "vpc-id", "Values": [vpc_id]},
-                {"Name": "group-name", "Values": ["default"]},
-            ]
-        ).get("SecurityGroups", [])
-        if sgs and sgs[0].get("GroupId"):
-            result["security_groups"] = [sgs[0]["GroupId"]]
+        from renglo.schd.peer_model import PeerModel
+
+        found = PeerModel().default_network(region)
+        if found:
+            return found
     except Exception:
         pass
     return result
@@ -175,14 +163,10 @@ def _peer_routes_prefix() -> str:
 
 
 def _ssm_parameter_json(path: str) -> Any:
-    import boto3
+    from renglo.schd.peer_model import PeerModel
 
     region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
-    raw = boto3.client("ssm", region_name=region).get_parameter(Name=path, WithDecryption=True)
-    value = str(raw["Parameter"]["Value"]).strip()
-    if not value:
-        return None
-    return json.loads(value)
+    return PeerModel().parameter_json(path, region)
 
 
 def _peer_map_from_ssm() -> Dict[str, Dict[str, Any]]:
@@ -706,9 +690,15 @@ def get_async_s3_config(extension_name: str) -> Optional[Dict[str, Any]]:
         config = load_config()
     except Exception:
         config = {}
+    from renglo.config_names import setting
+
     bucket = (config.get("ECS_RESULTS_BUCKET") or os.getenv("ECS_RESULTS_BUCKET") or "").strip()
-    region = (config.get("AWS_REGION") or config.get("AWS_DEFAULT_REGION") or
-              os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1")
+    region = (
+        setting(config, "REGION", environ=True)
+        or config.get("AWS_DEFAULT_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
     if not bucket:
         return None
     return {

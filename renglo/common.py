@@ -354,8 +354,10 @@ def load_config():
         print(f"Loaded {env_loaded_count} config values from environment variables")
     
     # Validate critical config exists
-    critical_keys = ['DYNAMODB_RINGDATA_TABLE', 'DYNAMODB_ENTITY_TABLE']
-    missing_keys = [key for key in critical_keys if key not in config]
+    from renglo.config_names import setting
+
+    critical_keys = ["DATA_TABLE", "ENTITY_TABLE"]
+    missing_keys = [key for key in critical_keys if not setting(config, key)]
     
     if missing_keys:
         raise RuntimeError(

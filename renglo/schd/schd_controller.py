@@ -621,24 +621,6 @@ class SchdController(SchdScheduleMixin):
 
     get_batch_status = get_async_status
 
-    def delete_rule(self, rule_name):
-        try:
-            # List rules before deletion
-            rules_before = eventbridge.list_rules(NamePrefix=rule_name)
-            logger.info(f"Rules before deletion: {rules_before}")
-            
-            # Delete the rule
-            response = eventbridge.delete_rule(Name=rule_name)
-            
-            # List rules after deletion to confirm
-            rules_after = eventbridge.list_rules(NamePrefix=rule_name)
-            logger.info(f"Rules after deletion: {rules_after}")
-            
-            return response
-        except Exception as e:
-            logger.error(f"Error deleting rule: {str(e)}")
-            raise
-
 
 def call_handler(
     config: dict,

@@ -23,11 +23,9 @@ import argparse
 from datetime import datetime
 from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
-import boto3
-from botocore.exceptions import ClientError
-from boto3.dynamodb.conditions import Key
-
 from renglo.common import load_config
+from renglo.config_names import setting
+from renglo.data.data_model import DataModel
 from renglo.search.search_controller import SearchController
 from renglo.search.search_model import SearchModel
 
@@ -58,34 +56,14 @@ def _extract_blueprint_handle(blueprint_uri: Any) -> Optional[str]:
     return parts[0]
 
 
-def _scan_all(table, projection_fields: Iterable[str]) -> Iterator[Dict[str, Any]]:
-    fields = list(projection_fields)
-    expr_attr_names = {f"#f{i}": field for i, field in enumerate(fields)}
-    projection_expression = ", ".join(expr_attr_names.keys())
-    last_evaluated_key = None
-    while True:
-        kwargs: Dict[str, Any] = {
-            "ProjectionExpression": projection_expression,
-            "ExpressionAttributeNames": expr_attr_names,
-        }
-        if last_evaluated_key:
-            kwargs["ExclusiveStartKey"] = last_evaluated_key
-        response = table.scan(**kwargs)
-        for item in response.get("Items", []):
-            yield item
-        last_evaluated_key = response.get("LastEvaluatedKey")
-        if not last_evaluated_key:
-            break
-
-
 def _iter_documents(
-    ring_table,
+    data_model: DataModel,
     portfolio_filter: Optional[str],
     org_filter: Optional[str],
     ring_filter: Optional[str],
 ) -> Iterable[Tuple[str, str, str, str, Dict[str, Any]]]:
     projection = ["portfolio_index", "doc_index", "_id", "attributes", "modified", "updated_at", "added", "blueprint"]
-    for item in _scan_all(ring_table, projection):
+    for item in data_model.scan_projected(projection):
         portfolio = _parse_portfolio(item.get("portfolio_index"))
         doc_bits = _parse_doc_index(item.get("doc_index"))
         if not portfolio or not doc_bits:
@@ -129,32 +107,14 @@ def _doc_updated_at(doc: Dict[str, Any]) -> Optional[datetime]:
 
 
 def _get_doc_index_health(
-    search_table,
+    search_model: SearchModel,
     portfolio: str,
     org: str,
     ring: str,
     doc_id: str,
 ) -> Dict[str, Any]:
-    doc_ref_pk = SearchModel.make_doc_ref_pk(portfolio, org, ring)
-    ref_items = []
-    cursor = None
-    pk_name = SearchModel.KEY_PK
+    ref_items = search_model.query_doc_refs(portfolio, org, ring, doc_id)
     sk_name = SearchModel.KEY_SK
-    while True:
-        query_kwargs: Dict[str, Any] = {
-            "KeyConditionExpression": Key(pk_name).eq(doc_ref_pk)
-            & Key(sk_name).begins_with(f"{doc_id}#"),
-            "ProjectionExpression": "#pk, #sk",
-            "ExpressionAttributeNames": {"#pk": pk_name, "#sk": sk_name},
-            "Limit": 200,
-        }
-        if cursor:
-            query_kwargs["ExclusiveStartKey"] = cursor
-        response = search_table.query(**query_kwargs)
-        ref_items.extend(response.get("Items", []))
-        cursor = response.get("LastEvaluatedKey")
-        if not cursor:
-            break
 
     if not ref_items:
         return {"status": "missing", "row_count": 0, "max_source_updated_at": None}
@@ -170,12 +130,10 @@ def _get_doc_index_health(
             missing_token_rows += 1
             continue
         _, field, token = parts
-        token_item = search_table.get_item(
-            Key={
-                pk_name: SearchModel.make_pk(portfolio, org, ring, token),
-                sk_name: SearchModel.make_sk(field, doc_id),
-            }
-        ).get("Item")
+        token_item = search_model.get_item(
+            SearchModel.make_pk(portfolio, org, ring, token),
+            SearchModel.make_sk(field, doc_id),
+        )
         if not token_item:
             missing_token_rows += 1
             continue
@@ -214,47 +172,47 @@ def _should_reindex_sync(doc: Dict[str, Any], health: Dict[str, Any]) -> Tuple[b
     return False, "up_to_date"
 
 
+def _row_in_scope(index_value: str, portfolio, org, ring) -> bool:
+    if not portfolio and not org and not ring:
+        return True
+    parts = index_value.split("#", 3)
+    if len(parts) != 4:
+        return False
+    row_portfolio, row_org, row_ring, _ = parts
+    if portfolio and row_portfolio != portfolio:
+        return False
+    if org and row_org != org:
+        return False
+    if ring and row_ring != ring:
+        return False
+    return True
+
+
 def _clear_search_rows_for_scope(
-    search_table,
+    search_model: SearchModel,
     portfolio: Optional[str],
     org: Optional[str],
     ring: Optional[str],
 ) -> int:
-    deleted = 0
     pk_name = SearchModel.KEY_PK
     sk_name = SearchModel.KEY_SK
-    with search_table.batch_writer() as batch:
-        for item in _scan_all(search_table, [pk_name, sk_name]):
-            index_value = str(item.get(pk_name, ""))
-            # Full rebuild with no scope filters should clear every row, regardless of key shape.
-            if not portfolio and not org and not ring:
-                batch.delete_item(Key={pk_name: index_value, sk_name: item[sk_name]})
-                deleted += 1
-                continue
-            parts = index_value.split("#", 3)
-            if len(parts) != 4:
-                continue
-            row_portfolio, row_org, row_ring, _ = parts
-            if portfolio and row_portfolio != portfolio:
-                continue
-            if org and row_org != org:
-                continue
-            if ring and row_ring != ring:
-                continue
-            batch.delete_item(Key={pk_name: index_value, sk_name: item[sk_name]})
-            deleted += 1
-    return deleted
+    doomed = []
+    for item in search_model.scan_projected([pk_name, sk_name]):
+        index_value = str(item.get(pk_name, ""))
+        if _row_in_scope(index_value, portfolio, org, ring):
+            doomed.append(item)
+    return search_model.delete_items(doomed)
 
 
 def _count_search_rows_for_scope(
-    search_table,
+    search_model: SearchModel,
     portfolio: Optional[str],
     org: Optional[str],
     ring: Optional[str],
 ) -> int:
     count = 0
     pk_name = SearchModel.KEY_PK
-    for item in _scan_all(search_table, [pk_name]):
+    for item in search_model.scan_projected([pk_name]):
         index_value = str(item.get(pk_name, ""))
         if not portfolio and not org and not ring:
             count += 1
@@ -271,22 +229,6 @@ def _count_search_rows_for_scope(
             continue
         count += 1
     return count
-
-
-def _describe_table_or_raise(dynamodb_client, table_name: str, region: str, logical_name: str) -> None:
-    try:
-        dynamodb_client.describe_table(TableName=table_name)
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "Unknown")
-        msg = exc.response.get("Error", {}).get("Message", str(exc))
-        if code == "ResourceNotFoundException":
-            raise RuntimeError(
-                f"{logical_name} table '{table_name}' was not found in region '{region}'. "
-                f"Use --region (and optionally --profile) to target the right environment."
-            ) from exc
-        raise RuntimeError(
-            f"Failed to describe {logical_name} table '{table_name}' in region '{region}': {code} {msg}"
-        ) from exc
 
 
 def main() -> int:
@@ -310,11 +252,11 @@ def main() -> int:
         action="store_true",
         help="Do not write/delete search rows. Only report actions.",
     )
-    parser.add_argument("--region", help="AWS region override (default: config AWS_REGION).")
+    parser.add_argument("--region", help="Region override (default: config REGION).")
     parser.add_argument(
         "--profile",
         required=True,
-        help="AWS profile to use (required).",
+        help="Credential profile to use (required).",
     )
     parser.add_argument("--max-docs", type=int, default=0, help="Optional cap on documents processed (0 = no cap).")
     parser.add_argument(
@@ -330,52 +272,47 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config()
-    region = args.region or config.get("AWS_REGION", "us-east-1")
+    region = args.region or setting(config, "REGION", "us-east-1")
     ring_table_name = f"{args.environment_name}_data"
     search_table_name = f"{args.environment_name}_search"
 
-    session_kwargs: Dict[str, Any] = {}
-    if args.profile:
-        session_kwargs["profile_name"] = args.profile
-    session = boto3.session.Session(**session_kwargs)
-    dynamodb = session.resource("dynamodb", region_name=region)
-    dynamodb_client = session.client("dynamodb", region_name=region)
-    _describe_table_or_raise(dynamodb_client, ring_table_name, region, "Ring data")
-    _describe_table_or_raise(dynamodb_client, search_table_name, region, "Search")
+    runtime_config = dict(config)
+    runtime_config["PROFILE"] = args.profile
+    runtime_config["DATA_TABLE"] = ring_table_name
+    runtime_config["SEARCH_TABLE"] = search_table_name
+    data_model = DataModel(config=runtime_config, region_name=region, bind_auth=False)
+    search_model = SearchModel(config=runtime_config, region_name=region)
+    data_model.describe_table("Ring data")
+    search_model.describe_table("Search")
 
     print(
         f"Using region={region}, ring_table={ring_table_name}, search_table={search_table_name}, "
         f"mode={args.mode}, dry_run={args.dry_run}"
     )
     if args.profile:
-        print(f"Using AWS profile={args.profile}")
+        print(f"Using profile={args.profile}")
     print(
         f"Scope filters: portfolio={args.portfolio or '*'} org={args.org or '*'} ring={args.ring or '*'} "
         f"max_docs={args.max_docs or 'unlimited'} verbose={args.verbose} debug_plan={args.debug_plan}"
     )
 
-    ring_table = dynamodb.Table(ring_table_name)
-    search_table = dynamodb.Table(search_table_name)
-
-    runtime_config = dict(config)
-    runtime_config["DYNAMODB_SEARCH_TABLE"] = search_table_name
     shc = SearchController(
         config=runtime_config,
         region_name=region,
-        dynamodb_resource=dynamodb,
+        dynamodb_resource=search_model.dynamodb,
     )
 
     if args.mode == "rebuild" and not args.dry_run:
-        deleted = _clear_search_rows_for_scope(search_table, args.portfolio, args.org, args.ring)
+        deleted = _clear_search_rows_for_scope(search_model, args.portfolio, args.org, args.ring)
         print(f"Cleared {deleted} search rows in selected scope.")
     elif args.mode == "rebuild" and args.dry_run:
         print("Dry run rebuild: skipping clear/write.")
     elif args.mode == "clear":
         if args.dry_run:
-            to_clear = _count_search_rows_for_scope(search_table, args.portfolio, args.org, args.ring)
+            to_clear = _count_search_rows_for_scope(search_model, args.portfolio, args.org, args.ring)
             print(f"Dry run clear: would clear {to_clear} search rows in selected scope.")
         else:
-            deleted = _clear_search_rows_for_scope(search_table, args.portfolio, args.org, args.ring)
+            deleted = _clear_search_rows_for_scope(search_model, args.portfolio, args.org, args.ring)
             print(f"Cleared {deleted} search rows in selected scope.")
         return 0
 
@@ -387,7 +324,7 @@ def main() -> int:
     printed_plan_keys = set()
 
     for portfolio, org, ring, doc_id, doc in _iter_documents(
-        ring_table,
+        data_model,
         args.portfolio,
         args.org,
         args.ring,
@@ -420,7 +357,7 @@ def main() -> int:
             should_index, reason = True, "rebuild"
         else:
             try:
-                health = _get_doc_index_health(search_table, portfolio, org, ring, doc_id)
+                health = _get_doc_index_health(search_model, portfolio, org, ring, doc_id)
                 should_index, reason = _should_reindex_sync(doc, health)
                 if args.verbose:
                     print(

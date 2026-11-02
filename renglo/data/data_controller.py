@@ -4,11 +4,12 @@ from datetime import datetime
 import uuid
 import re
 import json, collections
-import boto3
 from decimal import Decimal
 from botocore.exceptions import ClientError
 
+from renglo.config_names import setting
 from renglo.data.data_model import DataModel
+from renglo.files.files_model import FilesModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
@@ -25,6 +26,12 @@ class DecimalEncoder(json.JSONEncoder):
         if isinstance(obj, Decimal):
             return str(obj)
         return super(DecimalEncoder, self).default(obj)
+
+
+def _cache_json_default(obj):
+    if isinstance(obj, Decimal):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def convert_js_to_json(js_string):
@@ -192,20 +199,20 @@ class DataController:
     def _run_search_operation(self, op_name, operation):
         """Best-effort inverted-index write. Never raises.
 
-        This is the reverse index in `DYNAMODB_SEARCH_TABLE`, not the ring
+        This is the reverse index in `SEARCH_TABLE`, not the ring
         store and not the graph. A failure here means full-text search will
         not see this document until it is reindexed. The document itself is
         already saved.
         """
-        table = str(self.config.get('DYNAMODB_SEARCH_TABLE') or '').strip()
+        table = str(setting(self.config, "SEARCH_TABLE") or "").strip()
         if not table or not self.search_controller or not self.search_controller.is_enabled():
             self.logger.warning(
-                f"Search index operation '{op_name}' skipped: DYNAMODB_SEARCH_TABLE is not set"
+                f"Search index operation '{op_name}' skipped: SEARCH_TABLE is not set"
             )
             return {
                 'success': True,
                 'skipped': True,
-                'reason': 'Search index disabled: DYNAMODB_SEARCH_TABLE is not set',
+                'reason': 'Search index disabled: SEARCH_TABLE is not set',
                 'table': table,
             }
 
@@ -413,7 +420,7 @@ class DataController:
         self.graph_db_enabled = self.config.get('GRAPH_DB_ENABLED', True)
         if not isinstance(self.graph_db_enabled, bool):
             raise ValueError("GRAPH_DB_ENABLED must be a boolean (True/False)")
-        if self.graph_db_enabled and self.config.get('DYNAMODB_GRAPH_TABLE'):
+        if self.graph_db_enabled and setting(self.config, "GRAPH_TABLE"):
             self.GRC = GraphController(config=self.config)
         # One auth identity for the document, the index, and the edges.
         # Separate controllers would authorize the ring write and then refuse
@@ -423,10 +430,9 @@ class DataController:
             
         
     def _refresh_s3_cache_impl(self, portfolio, org, ring, sort=None):
-        s3_client = boto3.client('s3')
-        bucket_name = self.config.get('S3_BUCKET_NAME')
-        if not bucket_name:
-            raise ValueError("S3_BUCKET_NAME not found in config")
+        if not setting(self.config, "FILES_BUCKET"):
+            raise ValueError("FILES_BUCKET not found in config")
+        files = FilesModel(config=self.config)
         self.logger.debug('Refreshing s3 cache')
         response = []
         max_iterations = 50
@@ -453,11 +459,7 @@ class DataController:
             "success": True
         }
 
-        s3_client.put_object(
-            Bucket=bucket_name,
-            Key=file_path,
-            Body=json.dumps(result, cls=DecimalEncoder)
-        )
+        files.put_json(file_path, result, default=_cache_json_default)
 
         return result, 201
 
@@ -914,7 +916,7 @@ class DataController:
             )
             raise ValueError(
                 f"Blueprint for ring '{ring}' not found or invalid ({missing}). "
-                f"Expected irn:blueprint:irma:{ring} with a 'fields' array in {self.config.get('DYNAMODB_BLUEPRINT_TABLE', 'blueprints table')}."
+                f"Expected irn:blueprint:irma:{ring} with a 'fields' array in {setting(self.config, 'BLUEPRINT_TABLE', 'blueprints table')}."
             )
 
         item_values = {}

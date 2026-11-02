@@ -13,9 +13,9 @@ import json
 from contextlib import contextmanager
 from functools import wraps
 
-import boto3
-
 from renglo.auth.entity_status import entity_is_deleted
+from renglo.config_names import setting
+from renglo.files.files_model import FilesModel
 
 TREE_KINDS = ("user", "team", "portfolio")
 INVITE_REL_TYPES = frozenset({
@@ -57,7 +57,7 @@ class MemoryTreeS3:
             raise _MissingTree()
         return {"Body": io.BytesIO(body)}
 
-    def put_object(self, Bucket, Key, Body):
+    def put_object(self, Bucket, Key, Body, **_ignored):
         if self.fail_put:
             raise RuntimeError("s3 put failed")
         if isinstance(Body, str):
@@ -503,21 +503,29 @@ class AuthTreeStore:
         self._dirty.add((kind, str(ident)))
 
     def _bucket(self):
-        return (self.controller.config or {}).get("S3_BUCKET_NAME")
+        return setting(self.controller.config, "FILES_BUCKET")
 
-    def _s3(self):
-        if self._client is not None:
-            return self._client
-        return boto3.client("s3")
+    def _files(self):
+        client = self._client
+        cached = getattr(self, "_files_model", None)
+        if cached is not None and getattr(self, "_files_client", None) is client:
+            return cached
+        self._files_model = FilesModel(
+            config=self.controller.config or {},
+            s3_client=client,
+        )
+        self._files_client = client
+        return self._files_model
 
     def _get_raw(self, kind, ident):
         bucket = self._bucket()
         if not bucket:
-            return None, _failure("S3_BUCKET_NAME not configured", 500)
+            return None, _failure("FILES_BUCKET not configured", 500)
         try:
-            response = self._s3().get_object(Bucket=bucket, Key=self.key(kind, ident))
-            body = response["Body"].read()
-            return json.loads(body), None
+            document = self._files().get_json(self.key(kind, ident))
+            if document is None:
+                return None, None
+            return document, None
         except Exception as exc:
             if _is_missing(exc):
                 return None, None
@@ -529,13 +537,9 @@ class AuthTreeStore:
     def _put(self, kind, ident, document):
         bucket = self._bucket()
         if not bucket:
-            return _failure("S3_BUCKET_NAME not configured", 500)
+            return _failure("FILES_BUCKET not configured", 500)
         try:
-            self._s3().put_object(
-                Bucket=bucket,
-                Key=self.key(kind, ident),
-                Body=json.dumps(document, default=str),
-            )
+            self._files().put_json(self.key(kind, ident), document, default=str)
         except Exception as exc:
             self.controller.logger.error(
                 "Failed to upload auth tree %s/%s: %s", kind, ident, exc

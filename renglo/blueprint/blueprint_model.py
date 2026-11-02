@@ -1,4 +1,5 @@
 import boto3
+from renglo.config_names import setting
 from renglo.logger import get_logger
 from botocore.exceptions import ClientError
 
@@ -16,9 +17,9 @@ class BlueprintModel:
     ):
         self.config = config or {}
         self.logger = get_logger()
-        resolved_region = region_name or self.config.get("AWS_REGION", "us-east-1")
+        resolved_region = region_name or setting(self.config, "REGION", "us-east-1")
         self.dynamodb = dynamodb_resource or boto3.resource('dynamodb', region_name=resolved_region)
-        table_name = self.config.get('DYNAMODB_BLUEPRINT_TABLE', 'default_blueprint_table')
+        table_name = setting(self.config, "BLUEPRINT_TABLE", "default_blueprint_table")
         self.blueprints_table = self.dynamodb.Table(table_name)
             
 

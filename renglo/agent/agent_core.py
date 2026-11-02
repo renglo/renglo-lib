@@ -11,7 +11,6 @@ from openai import OpenAI
 
 import random
 import json
-import boto3
 from datetime import datetime
 from typing import List, Dict, Any, Callable
 import re
