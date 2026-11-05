@@ -1,9 +1,9 @@
-"""Load the submodel for a Renglo model.
+"""Load the submodel for a Renglo service that is not a document store.
 
-The application constructs FilesModel, ConnectionModel, SchdModel, and the
-other Renglo classes. Each class calls ``load_submodel`` with its package
-and file stem. ``CLOUD`` in config selects ``<stem>_<cloud>.py`` in that
-package. The default is aws, which loads ``<stem>_aws.py``.
+Document models use ``renglo.document_stores.select.open_store`` instead.
+Files, connections, schedule, vector, and the other service clients still
+call ``load_submodel``. ``CLOUD`` selects ``<stem>_<cloud>.py``. The default
+is aws.
 """
 
 from __future__ import annotations

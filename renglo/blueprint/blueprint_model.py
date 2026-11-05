@@ -1,39 +1,75 @@
-"""BlueprintModel interface.
-
-Callers construct this class. CLOUD in config selects
-renglo.blueprint.submodels.blueprint_model_<implementation>: aws, azure, or another submodel.
-"""
-
-from __future__ import annotations
-
-from renglo.submodel import load_submodel
-
-def _submodel(config):
-    return load_submodel("renglo.blueprint.submodels", "blueprint_model", "BlueprintModel", config)
+from renglo.config_names import setting
+from renglo.document_stores.select import StoreError, open_store
+from renglo.logger import get_logger
 
 
 class BlueprintModel:
-    def __init__(self, config=None, tid=False, ip=False, *, dynamodb_resource=None, region_name=None):
-        cls = _submodel(config)
-        object.__setattr__(self, "_impl", cls(config, tid, ip, dynamodb_resource=dynamodb_resource, region_name=region_name))
+
+    def __init__(
+        self,
+        config=None,
+        tid=False,
+        ip=False,
+        *,
+        dynamodb_resource=None,
+        region_name=None,
+        store=None,
+    ):
+        self.config = config or {}
+        self.logger = get_logger()
+        resolved_region = region_name or setting(self.config, "REGION", "us-east-1")
+        table_name = setting(self.config, "BLUEPRINT_TABLE", "default_blueprint_table")
+        self.store = store or open_store(
+            self.config,
+            "blueprint",
+            table_name,
+            "irn",
+            "version",
+            resource=dynamodb_resource,
+            region_name=resolved_region,
+            use_profile=False,
+        )
 
     def put_blueprint(self, data):
-        return self._impl.put_blueprint(data)
+        try:
+            self.store.put(data)
+            return {"success": True, "message": "Document created", "document": data, "status": 201}
+        except StoreError as exc:
+            return {"success": False, "error": exc.message, "status": 500}
 
     def get_blueprint(self, handle, name, v):
-        return self._impl.get_blueprint(handle, name, v)
+        irn = "irn:blueprint:" + handle + ":" + name
+        legacy_irn = "blueprint:" + handle + ":" + name
+        self.logger.debug("Get Blueprint " + irn + " v:" + v)
+        try:
+            if v == "last":
+                items, _token = self.store.query(irn, descending=True)
+                if len(items) == 0:
+                    items, _token = self.store.query(legacy_irn, descending=True)
+                if len(items) == 0:
+                    return {"success": False, "message": "Document not found"}
+                item = items[0]
+            else:
+                item = self.store.get(irn, v)
+                if not item:
+                    item = self.store.get(legacy_irn, v)
+            if item:
+                return item
+            return {"success": False, "message": "Document not found"}
+        except StoreError as exc:
+            return {"error": exc.message}
 
     def update_blueprint(self, data):
-        return self._impl.update_blueprint(data)
+        try:
+            self.store.put(data)
+            return {"success": True, "message": "Document updated", "document": data, "status": 200}
+        except StoreError as exc:
+            return {"success": False, "error": exc.message, "status": 500}
 
     def delete_blueprint(self, handle, name, v):
-        return self._impl.delete_blueprint(handle, name, v)
-
-    def __getattr__(self, name):
-        return getattr(object.__getattribute__(self, "_impl"), name)
-
-    def __setattr__(self, name, value):
-        if name == "_impl":
-            object.__setattr__(self, name, value)
-            return
-        setattr(self._impl, name, value)
+        pk = "irn:blueprint:" + handle + ":" + name
+        try:
+            self.store.delete(pk, v)
+            return {"success": True, "message": "Document deleted", "status": 200}
+        except StoreError as exc:
+            return {"success": False, "error": exc.message, "status": 500}

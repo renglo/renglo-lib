@@ -366,11 +366,10 @@ class SoftDeleteControllerTests(unittest.TestCase):
 
 class AuthModelHardDeleteTests(unittest.TestCase):
     def test_model_refuses_portfolio_and_org_and_deletes_a_team(self):
-        with patch("renglo.auth.submodels.auth_model_aws.boto3"):
-            from renglo.auth.auth_model import AuthModel
+        from renglo.auth.auth_model import AuthModel
 
-            model = AuthModel(config={})
-        model.entity_table = MagicMock()
+        model = AuthModel(config={})
+        model.entity_store = MagicMock()
 
         refused = model.delete_entity(
             index="irn:entity:portfolio:*",
@@ -379,25 +378,23 @@ class AuthModelHardDeleteTests(unittest.TestCase):
         )
         self.assertFalse(refused["success"])
         self.assertEqual(refused["status"], 400)
-        model.entity_table.delete_item.assert_not_called()
+        model.entity_store.delete.assert_not_called()
 
         refused_org = model.delete_entity(
             index="irn:entity:portfolio/org:p1/*",
             _id="o1",
         )
         self.assertEqual(refused_org["message"], HARD_DELETE_REFUSED)
-        model.entity_table.delete_item.assert_not_called()
+        model.entity_store.delete.assert_not_called()
 
-        model.entity_table.delete_item.return_value = {
-            "ResponseMetadata": {"HTTPStatusCode": 200}
-        }
+        model.entity_store.delete.return_value = 200
         deleted = model.delete_entity(
             index="irn:entity:portfolio/team:p1/*",
             _id="t1",
             type="team",
         )
         self.assertTrue(deleted["success"])
-        model.entity_table.delete_item.assert_called_once()
+        model.entity_store.delete.assert_called_once()
 
 
 if __name__ == "__main__":

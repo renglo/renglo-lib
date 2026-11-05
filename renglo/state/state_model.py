@@ -1,30 +1,37 @@
-"""StateModel interface.
-
-Callers construct this class. CLOUD in config selects
-renglo.state.submodels.state_model_<implementation>: aws, azure, or another submodel.
-"""
-
-from __future__ import annotations
-
-from renglo.submodel import load_submodel
-
-def _submodel(config):
-    return load_submodel("renglo.state.submodels", "state_model", "StateModel", config)
+from renglo.config_names import setting
+from renglo.document_stores.select import StoreError, open_store
+from renglo.logger import get_logger
 
 
 class StateModel:
-    def __init__(self, config=None, tid=False, ip=False):
-        cls = _submodel(config)
-        object.__setattr__(self, "_impl", cls(config, tid, ip))
+
+    def __init__(self, config=None, tid=False, ip=False, *, store=None):
+        self.config = config or {}
+        self.logger = get_logger()
+        table_name = setting(self.config, "BLUEPRINT_TABLE", "default_blueprint_table")
+        self.store = store or open_store(
+            self.config,
+            "state",
+            table_name,
+            "irn",
+            "version",
+            region_name="us-east-1",
+            use_profile=False,
+        )
 
     def get_state(self, name, v):
-        return self._impl.get_state(name, v)
-
-    def __getattr__(self, name):
-        return getattr(object.__getattribute__(self, "_impl"), name)
-
-    def __setattr__(self, name, value):
-        if name == "_impl":
-            object.__setattr__(self, name, value)
-            return
-        setattr(self._impl, name, value)
+        irn = "irn:state:irma:" + name
+        self.logger.debug("Get State " + irn + " v:" + v)
+        try:
+            if v == "last":
+                items, _token = self.store.query(irn, descending=True)
+                if len(items) == 0:
+                    return {"success": False, "message": "Document not found"}
+                item = items[0]
+            else:
+                item = self.store.get(irn, v)
+            if item:
+                return item
+            return {"success": False, "message": "Document not found"}
+        except StoreError as exc:
+            return {"error": exc.message}

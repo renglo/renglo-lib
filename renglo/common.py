@@ -326,6 +326,12 @@ def load_config():
         'RENGLO_INGRESS_SECRET',
         'WEBHOOK_EDGE_BASE_URL',
         'RENGLO_INGRESS_DESTINATION',
+        'CLOUD',
+        'AZURE_COSMOS_ACCOUNT_ENDPOINT',
+        'AZURE_COSMOS_DATABASE_NAME',
+        'AZURE_COSMOS_KEY',
+        'AZURE_COSMOS_CONNECTION_STRING',
+        'AZURE_CLIENT_ID',
     ]
     # Any env var under these prefixes is absorbed so extensions can export
     # custom index/KB names via CDK without changing renglo-lib.
