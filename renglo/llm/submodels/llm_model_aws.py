@@ -329,6 +329,7 @@ class LlmModel:
             "messages": request["messages"],
             "max_output_tokens": request.get("max_output_tokens"),
             "provider_options": options,
+            "tools": request.get("tools"),
         }
         if isinstance(options.get("reasoning"), dict) and options["reasoning"].get("effort"):
             call["reasoning_effort"] = options["reasoning"]["effort"]
@@ -422,12 +423,17 @@ class LlmModel:
         )
 
     def _success(self, execution, attempts, outcome, deployment, requested_model):
+        text = outcome.get("text") or ""
+        content = outcome.get("content")
+        if not isinstance(content, list):
+            content = [{"type": BLOCK_TEXT, "text": text}] if text else []
         return {
             "success": True,
             "action": "generate",
             "schema_version": SCHEMA_VERSION,
             "output": {
-                "text": outcome.get("text") or "",
+                "text": text,
+                "content": content,
                 "provider": deployment.provider_id,
                 "requested_model": requested_model,
                 "model": deployment.model_id,
@@ -449,6 +455,7 @@ class LlmModel:
     ):
         output = {
             "text": "",
+            "content": [],
             "provider": deployment.provider_id if deployment else None,
             "requested_model": requested_model,
             "model": deployment.model_id if deployment else None,
