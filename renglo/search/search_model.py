@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.search.keys import (
     DOC_REF_TOKEN,
     make_doc_ref_pk,
@@ -47,9 +47,11 @@ class SearchModel:
     ) -> None:
         self.config = config or {}
         resolved_region = region_name or setting(self.config, "REGION", "us-east-1")
-        resolved_table_name = setting(self.config, "SEARCH_TABLE")
+        resolved_table_name = table_name(self.config, "SEARCH_TABLE")
         if not resolved_table_name:
-            raise ValueError("SEARCH_TABLE configuration is required but not found")
+            raise ValueError(
+                "SEARCH_TABLE is not set and no environment name was found (WL_NAME or renglo.yaml name)"
+            )
 
         self.region = resolved_region
         self.table_name = resolved_table_name

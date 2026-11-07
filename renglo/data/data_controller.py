@@ -7,7 +7,7 @@ import json, collections
 from decimal import Decimal
 from botocore.exceptions import ClientError
 
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.data.data_model import DataModel
 from renglo.files.files_model import FilesModel
 from renglo.blueprint.blueprint_controller import BlueprintController
@@ -204,7 +204,7 @@ class DataController:
         not see this document until it is reindexed. The document itself is
         already saved.
         """
-        table = str(setting(self.config, "SEARCH_TABLE") or "").strip()
+        table = str(table_name(self.config, "SEARCH_TABLE") or "").strip()
         if not table or not self.search_controller or not self.search_controller.is_enabled():
             self.logger.warning(
                 f"Search index operation '{op_name}' skipped: SEARCH_TABLE is not set"
@@ -420,7 +420,7 @@ class DataController:
         self.graph_db_enabled = self.config.get('GRAPH_DB_ENABLED', True)
         if not isinstance(self.graph_db_enabled, bool):
             raise ValueError("GRAPH_DB_ENABLED must be a boolean (True/False)")
-        if self.graph_db_enabled and setting(self.config, "GRAPH_TABLE"):
+        if self.graph_db_enabled and table_name(self.config, "GRAPH_TABLE"):
             self.GRC = GraphController(config=self.config)
         # One auth identity for the document, the index, and the edges.
         # Separate controllers would authorize the ring write and then refuse
@@ -916,7 +916,7 @@ class DataController:
             )
             raise ValueError(
                 f"Blueprint for ring '{ring}' not found or invalid ({missing}). "
-                f"Expected irn:blueprint:irma:{ring} with a 'fields' array in {setting(self.config, 'BLUEPRINT_TABLE', 'blueprints table')}."
+                f"Expected irn:blueprint:irma:{ring} with a 'fields' array in {table_name(self.config, 'BLUEPRINT_TABLE', 'blueprints table')}."
             )
 
         item_values = {}

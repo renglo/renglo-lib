@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from renglo.config_names import setting
@@ -151,12 +153,40 @@ def _connection_string(value: str) -> Tuple[str, str]:
     return endpoint, key
 
 
+def _azure_cli_directories():
+    """Directories that may hold a local `az` when it is not on PATH.
+
+    The API virtualenv does not install the Azure CLI. This checkout keeps
+    one in the infra virtualenv and one beside the Function App.
+    """
+    found = []
+    configured = os.environ.get("AZURE_CLI_PATH", "").strip()
+    if configured:
+        found.append(Path(configured))
+    for parent in Path(__file__).resolve().parents:
+        found.append(parent / "azure_poc" / "infra" / ".venv" / "bin")
+        found.append(parent / "azure_poc" / "app" / ".cli-venv" / "bin")
+    return found
+
+
+def _ensure_azure_cli():
+    """Put a local Azure CLI on PATH so AzureCliCredential can run `az`."""
+    if shutil.which("az"):
+        return
+    for candidate in _azure_cli_directories():
+        directory = candidate.parent if candidate.name == "az" else candidate
+        if (directory / "az").is_file():
+            os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
+            return
+
+
 def _credential(config):
     from azure.identity import AzureCliCredential, ManagedIdentityCredential
 
     client_id = str(setting(config, "AZURE_CLIENT_ID", "") or "").strip()
     if client_id and (os.environ.get("IDENTITY_ENDPOINT") or os.environ.get("WEBSITE_INSTANCE_ID")):
         return ManagedIdentityCredential(client_id=client_id)
+    _ensure_azure_cli()
     return AzureCliCredential()
 
 

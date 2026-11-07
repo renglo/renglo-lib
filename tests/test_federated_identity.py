@@ -110,9 +110,9 @@ def _controller(store):
 
 class IdentityRecordTests(unittest.TestCase):
     def test_username_hash_stays_stable_and_distinct(self):
-        email_id = AuthController._user_id_from_claims({"cognito:username": "alice@example.com"})
+        email_id = AuthController._user_id_from_claims({"username": "alice@example.com"})
         google_id = AuthController._user_id_from_claims({"username": "Google_123"})
-        okta_id = AuthController._user_id_from_claims({"cognito:username": "Okta_abc"})
+        okta_id = AuthController._user_id_from_claims({"username": "Okta_abc"})
         self.assertNotEqual(email_id, google_id)
         self.assertNotEqual(google_id, okta_id)
         self.assertEqual(google_id, AuthController._user_id_from_claims({"username": "Google_123"}))
@@ -122,7 +122,7 @@ class IdentityRecordTests(unittest.TestCase):
         store = _Store()
         controller = _controller(store)
         result = controller.record_federated_identities(
-            {"cognito:username": "alice@example.com", "email": "alice@example.com"}
+            {"username": "alice@example.com", "email": "alice@example.com"}
         )
         self.assertTrue(result["success"])
         self.assertEqual(store.entities, {})
@@ -142,7 +142,7 @@ class IdentityRecordTests(unittest.TestCase):
         )
         okta = controller.record_federated_identities(
             {
-                "cognito:username": "Okta_abc",
+                "username": "Okta_abc",
                 "sub": "cognito-okta",
                 "email": "ada@company.com",
                 "identities": '[{"providerName": "Okta", "userId": "okta-subject"}]',

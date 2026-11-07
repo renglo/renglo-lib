@@ -13,7 +13,7 @@ import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from renglo.config_names import setting
+from renglo.config_names import table_name
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
 from renglo.graph.graph_model import (
@@ -916,10 +916,10 @@ class GraphController:
         table = getattr(self, "_ring_data_table", None)
         if table is not None:
             return table
-        table_name = str(setting(self.config, "DATA_TABLE", "") or "").strip()
-        if not table_name:
+        resolved = str(table_name(self.config, "DATA_TABLE", "") or "").strip()
+        if not resolved:
             return None
-        self._ring_data_table = self.dynamodb.Table(table_name)
+        self._ring_data_table = self.dynamodb.Table(resolved)
         return self._ring_data_table
 
     def _load_node_projection_attributes(

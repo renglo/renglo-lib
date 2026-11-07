@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.auth.auth_controller import AuthController
 from renglo.auth.authorize import authorize
 from renglo.logger import get_logger
@@ -56,7 +56,7 @@ class SearchController:
         self.dynamodb_resource = dynamodb_resource
         self.region_name = region_name
         self._data_model = None
-        self.enabled = bool(setting(self.config, "SEARCH_TABLE"))
+        self.enabled = bool(table_name(self.config, "SEARCH_TABLE"))
         if self.enabled:
             self.model = SearchModel(
                 config=self.config,
@@ -215,7 +215,7 @@ class SearchController:
     def _documents(self):
         if self._data_model is not None:
             return self._data_model
-        if not setting(self.config, "DATA_TABLE"):
+        if not table_name(self.config, "DATA_TABLE"):
             return None
         self._data_model = DataModel(
             config=self.config,

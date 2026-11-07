@@ -216,10 +216,10 @@ def _lock_key(body: dict[str, Any]) -> tuple[str, str]:
 def _locks(config: dict[str, Any]):
     from renglo.session.session_model import SessionModel
 
-    from renglo.config_names import setting
+    from renglo.config_names import setting, table_name
 
     region = str(setting(config, "REGION", environ=True) or "us-east-1")
-    name = str(setting(config, "SESSION_TABLE", environ=True) or "").strip()
+    name = str(table_name(config, "SESSION_TABLE", environ=True) or "").strip()
     if not name:
         return None
     merged = dict(config or {})

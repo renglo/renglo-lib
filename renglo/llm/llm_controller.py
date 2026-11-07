@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from renglo.config_names import setting
+from renglo.config_names import table_name
 from renglo.llm.llm_model import LlmModel
 from renglo.llm.types import BLOCK_TEXT, STATUS_COMPLETED
 from renglo.logger import get_logger
@@ -109,7 +109,7 @@ class LlmController:
     def _usage_recorder(self):
         if self._timeseries is not None:
             return self._timeseries
-        if not setting(self.config, "TIMESERIES_TABLE"):
+        if not table_name(self.config, "TIMESERIES_TABLE"):
             return None
         try:
             from renglo.timeseries.timeseries_model import TimeSeriesModel

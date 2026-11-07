@@ -11,7 +11,7 @@ import time
 from decimal import Decimal
 from typing import Any, Callable, Dict, Iterable, Iterator, Optional
 
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.document_stores.select import open_store
 from renglo.graph.records import (
     GraphEdge,
@@ -70,9 +70,11 @@ class GraphModel(GraphOperations):
     ) -> None:
         self.config = config or {}
         resolved_region = region_name or setting(self.config, "REGION", "us-east-1")
-        resolved_table_name = setting(self.config, "GRAPH_TABLE")
+        resolved_table_name = table_name(self.config, "GRAPH_TABLE")
         if not resolved_table_name:
-            raise ValueError("GRAPH_TABLE configuration is required but not found")
+            raise ValueError(
+                "GRAPH_TABLE is not set and no environment name was found (WL_NAME or renglo.yaml name)"
+            )
 
         self.region = resolved_region
         self.table_name = resolved_table_name

@@ -117,7 +117,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from renglo.common import load_config
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.data.data_controller import DataController
 from renglo.data.data_model import DataModel
 from renglo.graph.graph_controller import GraphController
@@ -185,7 +185,7 @@ def _resolve_table_name(
         return override
     if env_prefix:
         return f"{env_prefix}_{env_suffix}"
-    return setting(config, config_key)
+    return table_name(config, config_key)
 
 
 def build_admin_context(

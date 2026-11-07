@@ -1,4 +1,4 @@
-from renglo.config_names import setting
+from renglo.config_names import table_name
 from renglo.document_stores.select import StoreError, open_store
 from renglo.logger import get_logger
 
@@ -8,11 +8,11 @@ class StateModel:
     def __init__(self, config=None, tid=False, ip=False, *, store=None):
         self.config = config or {}
         self.logger = get_logger()
-        table_name = setting(self.config, "BLUEPRINT_TABLE", "default_blueprint_table")
+        resolved = table_name(self.config, "BLUEPRINT_TABLE", "default_blueprint_table")
         self.store = store or open_store(
             self.config,
             "state",
-            table_name,
+            resolved,
             "irn",
             "version",
             region_name="us-east-1",

@@ -1,4 +1,4 @@
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.document_stores.select import StoreError, open_store
 from renglo.logger import get_logger
 
@@ -18,11 +18,11 @@ class BlueprintModel:
         self.config = config or {}
         self.logger = get_logger()
         resolved_region = region_name or setting(self.config, "REGION", "us-east-1")
-        table_name = setting(self.config, "BLUEPRINT_TABLE", "default_blueprint_table")
+        resolved = table_name(self.config, "BLUEPRINT_TABLE", "default_blueprint_table")
         self.store = store or open_store(
             self.config,
             "blueprint",
-            table_name,
+            resolved,
             "irn",
             "version",
             resource=dynamodb_resource,

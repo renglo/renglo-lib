@@ -97,63 +97,35 @@ class ChatController:
 
         # Outside Flask: runtime/invocation JWT when set; else stable handler id (incoming).
 
+        def user_id_from(claims):
+            username = str((claims or {}).get("username") or "")
+            if not username:
+                return None
+            return create_md5_hash(username, 9)
+
         if not _in_flask_app():
 
             claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
 
-            if "cognito:username" in claims:
-
-                return create_md5_hash(claims["cognito:username"], 9)
-
-            elif "username" in claims:
-
-                return create_md5_hash(claims["username"], 9)
-
-            return "external-handler"
+            return user_id_from(claims) or "external-handler"
 
 
 
         claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
 
-        if claims:
+        if not claims:
 
-            if "cognito:username" in claims:
+            try:
 
-                user_id = create_md5_hash(claims["cognito:username"], 9)
+                from renglo.auth.request_identity import current_claims
 
-            elif "username" in claims:
+                claims = current_claims()
 
-                user_id = create_md5_hash(claims["username"], 9)
+            except Exception:
 
-            else:
+                return "external-handler"
 
-                user_id = "external-handler"
-
-            self.logger.debug("User Id:%s", user_id)
-
-            return user_id
-
-
-
-        try:
-
-            from renglo.auth.request_identity import current_claims
-
-            claims = current_claims()
-
-        except Exception:
-
-            return "external-handler"
-
-        self.logger.debug("Getting user")
-
-        if "cognito:username" in claims:
-
-            user_id = create_md5_hash(claims["cognito:username"], 9)
-
-        else:
-
-            user_id = create_md5_hash(claims["username"], 9)
+        user_id = user_id_from(claims) or "external-handler"
 
         self.logger.debug("User Id:%s", user_id)
 

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
-from renglo.config_names import setting
+from renglo.config_names import table_name
 from renglo.document_stores.select import StoreError, open_store
 
 
@@ -24,14 +24,16 @@ class DataModel:
         # Callers that omit region_name keep the historical us-east-1 client.
         resolved_region = region_name or "us-east-1"
         self.region = resolved_region
-        table_name = setting(self.config, "DATA_TABLE")
-        if not table_name:
-            raise ValueError("DATA_TABLE configuration is required but not found")
-        self.table_name = table_name
+        resolved = table_name(self.config, "DATA_TABLE")
+        if not resolved:
+            raise ValueError(
+                "DATA_TABLE is not set and no environment name was found (WL_NAME or renglo.yaml name)"
+            )
+        self.table_name = resolved
         self.store = store or open_store(
             self.config,
             "data",
-            table_name,
+            resolved,
             "portfolio_index",
             "doc_index",
             resource=dynamodb_resource,

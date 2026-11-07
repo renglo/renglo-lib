@@ -312,6 +312,9 @@ def load_config():
         'CSRF_SESSION_KEY', 'SECRET_KEY',
         'COGNITO_REGION', 'COGNITO_USERPOOL_ID', 'COGNITO_APP_CLIENT_ID',
         'COGNITO_CHECK_TOKEN_EXPIRATION',
+        'CLOUD',
+        'ENTRA_TENANT_ID', 'ENTRA_TENANT_DOMAIN', 'ENTRA_CLIENT_ID', 'ENTRA_CLIENT_SECRET',
+        'ENTRA_AUTHORITY', 'ENTRA_JWKS_URI',
         'PREVIEW_LAYER', 'S3_BUCKET_NAME',
         'OPENAI_API_KEY', 'WEBSOCKET_CONNECTIONS',
         'ALLOW_DEV_ORIGINS', 'PEER_EXTENSIONS', 'EXTERNAL_HANDLERS',
@@ -326,12 +329,14 @@ def load_config():
         'RENGLO_INGRESS_SECRET',
         'WEBHOOK_EDGE_BASE_URL',
         'RENGLO_INGRESS_DESTINATION',
-        'CLOUD',
         'AZURE_COSMOS_ACCOUNT_ENDPOINT',
         'AZURE_COSMOS_DATABASE_NAME',
         'AZURE_COSMOS_KEY',
         'AZURE_COSMOS_CONNECTION_STRING',
         'AZURE_CLIENT_ID',
+        'FILES_BUCKET',
+        'AZURE_STORAGE_ACCOUNT',
+        'AZURE_STORAGE_BLOB_ENDPOINT',
     ]
     # Any env var under these prefixes is absorbed so extensions can export
     # custom index/KB names via CDK without changing renglo-lib.
@@ -360,16 +365,16 @@ def load_config():
         print(f"Loaded {env_loaded_count} config values from environment variables")
     
     # Validate critical config exists
-    from renglo.config_names import setting
+    from renglo.config_names import table_name
 
     critical_keys = ["DATA_TABLE", "ENTITY_TABLE"]
-    missing_keys = [key for key in critical_keys if not setting(config, key)]
-    
+    missing_keys = [key for key in critical_keys if not table_name(config, key)]
+
     if missing_keys:
         raise RuntimeError(
             f"Critical configuration missing: {', '.join(missing_keys)}\n"
-            "Please set these as environment variables or provide env_config.py "
-            "via RENGLO_CONFIG_PATH"
+            "Set WL_NAME, or the name field in renglo.yaml, so table names can be derived. "
+            "An explicit table name in env_config.py or the environment still overrides that."
         )
 
     return coerce_config_types(config)

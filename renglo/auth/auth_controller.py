@@ -523,10 +523,9 @@ class AuthController:
     def _user_id_from_claims(claims):
         if not claims:
             return None
-        if "cognito:username" in claims:
-            return create_md5_hash(claims["cognito:username"], 9)
-        if "username" in claims:
-            return create_md5_hash(claims["username"], 9)
+        username = claims.get("username")
+        if username:
+            return create_md5_hash(username, 9)
         return None
 
     def get_current_user(self, jwt_claims=None):
@@ -566,7 +565,7 @@ class AuthController:
         user_id = self._user_id_from_claims(claims)
         if not user_id:
             return {"success": False, "message": "Missing username claim", "status": 400}
-        cognito_sub = str((claims or {}).get("sub") or "")
+        cognito_sub = str((claims or {}).get("subject") or (claims or {}).get("sub") or "")
         email = str((claims or {}).get("email") or "")
         now = datetime.now().isoformat()
         for item in identities:
@@ -1345,10 +1344,10 @@ class AuthController:
 
         document = response.get('document') or {}
         matches = document.get('matches')
-        if not matches and document.get('cognito_username'):
+        if not matches and (document.get('username') or document.get('cognito_username')):
             matches = [{
-                'username': document.get('cognito_username'),
-                'sub': document.get('cognito_user_id'),
+                'username': document.get('username') or document.get('cognito_username'),
+                'subject': document.get('subject') or document.get('cognito_user_id'),
                 'status': '',
             }]
         chosen = self._choose_cognito_match(matches)
@@ -1360,8 +1359,10 @@ class AuthController:
             }
         user_id, match = chosen
         document['user_id'] = user_id
-        document['cognito_username'] = match.get('username')
-        document['cognito_user_id'] = match.get('sub')
+        document['username'] = match.get('username')
+        document['subject'] = match.get('subject') or match.get('sub')
+        document['cognito_username'] = document['username']
+        document['cognito_user_id'] = document['subject']
         response['document'] = document
         return response
 
@@ -2101,8 +2102,8 @@ class AuthController:
         return result
 
 
-    def update_user_profile(self, *, user_id, cognito_username, first_name, last_name):
-        """Update first/last name in DynamoDB user entity and Cognito."""
+    def update_user_profile(self, *, user_id, username, first_name, last_name):
+        """Update first and last name in the user entity and the directory."""
         first = (first_name or '').strip()
         last = (last_name or '').strip()
         if not first or not last:
@@ -2125,17 +2126,17 @@ class AuthController:
         if not db_response.get('success'):
             return db_response
 
-        cognito_response = self.AUM.cognito_update_user_attributes(
-            cognito_username,
+        directory_response = self.AUM.update_profile(
+            username,
             given_name=first,
             family_name=last,
         )
-        if not cognito_response.get('success'):
-            cognito_response['message'] = (
-                f"Saved profile in database but Cognito update failed: "
-                f"{cognito_response.get('message', 'unknown error')}"
+        if not directory_response.get('success'):
+            directory_response['message'] = (
+                f"Saved profile in database but identity update failed: "
+                f"{directory_response.get('message', 'unknown error')}"
             )
-            return cognito_response
+            return directory_response
 
         return {
             'success': True,
@@ -3490,13 +3491,13 @@ class AuthController:
 
         #3. Create Cognito user with the invitee's chosen password as permanent
         #   (CONFIRMED — no NEW_PASSWORD_REQUIRED challenge on first login)
-        response_3 = self.AUM.cognito_user_create_with_permanent_password(
+        response_3 = self.AUM.create_user_with_password(
             kwargs['email'],
             kwargs['pass'],
             kwargs['first'],
             kwargs['last'],
         )
-        self.logger.debug('Step 3: Creating Cognito user with permanent password')
+        self.logger.debug('Step 3: Creating directory user with permanent password')
         self.logger.debug(response_3)
         if not response_3['success']:
             response_3['message'] = (
@@ -3504,7 +3505,7 @@ class AuthController:
                 or 'Could not create user in Identity Service'
             )
             return response_3
-        bridge['cognito_username'] = response_3['document']['User']['Username']
+        bridge['cognito_username'] = response_3['document']['username']
         transaction.append(response_3)
 
 

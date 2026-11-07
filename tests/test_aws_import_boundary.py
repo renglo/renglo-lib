@@ -26,6 +26,7 @@ ALLOWLIST = {
 
 AZURE_ALLOWLIST = {
     "document_stores/document_store_azure.py",
+    "files/submodels/files_model_azure.py",
 }
 
 
@@ -47,7 +48,7 @@ def _imports_boto3(path: Path) -> bool:
 
 
 def _imports_azure_sdk(path: Path) -> bool:
-    return _imports_named(path, ("azure.cosmos", "azure.identity"))
+    return _imports_named(path, ("azure.cosmos", "azure.identity", "azure.storage"))
 
 
 def _offenders(root: Path, detect, allowlist) -> list[str]:

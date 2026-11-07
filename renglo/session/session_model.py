@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 import json
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.document_stores.select import StoreError, open_store
 from renglo.logger import get_logger
 
@@ -27,12 +27,12 @@ class SessionModel:
         self.logger = get_logger()
         
         region = setting(self.config, "REGION", "us-east-1")
-        table_name = setting(self.config, "SESSION_TABLE", "default_session_table")
-        self.table_name = table_name
+        resolved = table_name(self.config, "SESSION_TABLE", "default_session_table")
+        self.table_name = resolved
         self.store = store or open_store(
             self.config,
             "session",
-            table_name,
+            resolved,
             "index",
             "entity_index",
             region_name=region,

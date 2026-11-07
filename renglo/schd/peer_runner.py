@@ -663,6 +663,8 @@ def call_lambda_handler(
         current_env = func_config.get('Environment', {}).get('Variables', {})
         
         # A function that already has either name is left alone.
+        # This check stays on the explicit value. An inferred {WL_NAME}_* name
+        # is not a value to copy onto the function.
         from renglo.config_names import LEGACY, setting
         missing_critical = [
             key

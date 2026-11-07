@@ -52,12 +52,9 @@ class SessionController:
             return self._invocation_user_id
 
         claims = self._invocation_jwt_claims or get_current_jwt_claims() or {}
-        if "cognito:username" in claims:
-            # IdToken was used
-            user_id = create_md5_hash(claims["cognito:username"],9)
-        elif "username" in claims:
-            # AccessToken was used
-            user_id = create_md5_hash(claims["username"],9)
+        username = str(claims.get("username") or "")
+        if username:
+            user_id = create_md5_hash(username, 9)
         else:
             user_id = create_md5_hash("anonymous", 9)
             

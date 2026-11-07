@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from renglo.config_names import setting
+from renglo.config_names import setting, table_name
 from renglo.document_stores.select import PreconditionFailed, open_store
 from renglo.logger import get_logger
 from renglo.timeseries.rollup import (
@@ -38,13 +38,15 @@ class TimeSeriesModel:
         self.logger = get_logger()
         self.reading_limit = READING_LIMIT
         region = setting(self.config, "REGION", "us-east-1")
-        table_name = None if table is not None else setting(self.config, "TIMESERIES_TABLE")
-        if table is None and not table_name:
-            raise ValueError("TIMESERIES_TABLE configuration is required but not found")
+        resolved = None if table is not None else table_name(self.config, "TIMESERIES_TABLE")
+        if table is None and not resolved:
+            raise ValueError(
+                "TIMESERIES_TABLE is not set and no environment name was found (WL_NAME or renglo.yaml name)"
+            )
         self.store = store or open_store(
             self.config,
             "timeseries",
-            table_name,
+            resolved,
             "index",
             "metric_index",
             table=table,

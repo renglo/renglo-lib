@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 LIB_ROOT = Path(__file__).resolve().parents[1] / "renglo"
@@ -309,8 +313,12 @@ class AzureModelTests(unittest.TestCase):
         self.assertEqual(created["status"], 200)
         again = model.put_entity_exclusive({"index": "irn:entity:user:*", "_id": "u1"})
         self.assertEqual(again["status"], 409)
-        with self.assertRaises(NotImplementedError):
-            model.check_user_by_email("a@example.com")
+        self.assertEqual(
+            model._identity().__class__.__module__,
+            "renglo.auth.providers.identity_azure",
+        )
+        missing = model.lookup_by_email("a@example.com")
+        self.assertFalse(missing["success"])
         with self.assertRaises(NotImplementedError):
             model.send_email("from", "to", "subject", "text", "html")
 
@@ -400,6 +408,20 @@ class AzureModelTests(unittest.TestCase):
         self.assertTrue(stored["appended"])
         self.assertIn("irn:metric:p:o:temp", stored["index"])
         self.assertEqual(stored["reading_count"], 1)
+
+
+class AzureCliPathTests(unittest.TestCase):
+    def test_local_cli_directory_is_put_on_path(self):
+        from renglo.document_stores import document_store_azure as azure_store
+
+        with tempfile.TemporaryDirectory() as directory:
+            az = Path(directory) / "az"
+            az.write_text("#!/bin/sh\n", encoding="utf-8")
+            az.chmod(0o755)
+            with mock.patch.object(azure_store, "_azure_cli_directories", return_value=[Path(directory)]):
+                with mock.patch.dict(os.environ, {"PATH": ""}, clear=False):
+                    azure_store._ensure_azure_cli()
+                    self.assertEqual(shutil.which("az"), str(az))
 
 
 if __name__ == "__main__":

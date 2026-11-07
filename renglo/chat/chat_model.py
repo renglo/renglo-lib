@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 import json
-from renglo.config_names import setting
+from renglo.config_names import table_name
 from renglo.document_stores.select import StoreError, open_store
 from renglo.logger import get_logger
 
@@ -26,12 +26,12 @@ class ChatModel:
         self.config = config or {}
         self.logger = get_logger()
         
-        table_name = setting(self.config, "CHAT_TABLE", "default_chat_table")
-        self.table_name = table_name
+        resolved = table_name(self.config, "CHAT_TABLE", "default_chat_table")
+        self.table_name = resolved
         self.store = store or open_store(
             self.config,
             "chat",
-            table_name,
+            resolved,
             "index",
             "entity_index",
             region_name="us-east-1",

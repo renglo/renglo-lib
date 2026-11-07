@@ -1,17 +1,17 @@
-"""Auth documents, with identity delegated by CLOUD.
+"""Auth documents, with the directory selected by CLOUD.
 
-Entity and relationship rows use the document store selected for the auth
-subsystem. Cognito and email stay behind the same CLOUD check until an
-identity implementation exists for another cloud.
+Entity and relationship rows use the document store for the auth subsystem.
+User lookup, invite create, password, and profile updates go through
+identity_aws or identity_azure. Mail stays on the AWS module.
 """
 
-import importlib
 import logging
 from datetime import datetime
 
 from renglo.auth.entity_status import HARD_DELETE_REFUSED, entity_forbids_hard_delete
-from renglo.config_names import setting
-from renglo.document_stores.select import Conflict, StoreError, cloud_for, open_store
+from renglo.config_names import table_name
+from renglo.document_stores.select import Conflict, StoreError, open_store
+from renglo.submodel import load_submodel
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +20,8 @@ class AuthModel:
     def __init__(self, config=None, tid=False, ip=False, *, entity_store=None, rel_store=None):
         self.config = config or {}
         self._identity_impl = None
-        entity_table_name = setting(self.config, "ENTITY_TABLE", "default_entity_table")
-        rel_table_name = setting(self.config, "REL_TABLE", "default_rel_table")
+        entity_table_name = table_name(self.config, "ENTITY_TABLE", "default_entity_table")
+        rel_table_name = table_name(self.config, "REL_TABLE", "default_rel_table")
         self.entity_store = entity_store or open_store(
             self.config, "auth", entity_table_name, "index", "_id", use_profile=False
         )
@@ -30,34 +30,33 @@ class AuthModel:
         )
 
     def _identity(self):
-        if cloud_for(self.config, "auth") != "aws":
-            raise NotImplementedError("Azure identity is not implemented")
         if self._identity_impl is None:
-            self._identity_impl = importlib.import_module("renglo.auth.identity").Identity(self.config)
+            cls = load_submodel("renglo.auth.providers", "identity", "Identity", self.config)
+            self._identity_impl = cls(self.config)
         return self._identity_impl
 
+    def lookup_by_email(self, email):
+        return self._identity().lookup_by_email(email)
+
     def check_user_by_email(self, email):
-        return self._identity().check_user_by_email(email)
+        return self.lookup_by_email(email)
 
-    def cognito_user_delete(self, username):
-        return self._identity().cognito_user_delete(username)
+    def delete_user(self, username):
+        return self._identity().delete_user(username)
 
-    def cognito_user_create_with_permanent_password(self, email, password, first="FIRST", last="LAST"):
-        return self._identity().cognito_user_create_with_permanent_password(email, password, first, last)
+    def create_user_with_password(self, email, password, first="FIRST", last="LAST"):
+        return self._identity().create_user_with_password(email, password, first, last)
 
-    def cognito_user_permanent_password_assign(self, email, password):
-        return self._identity().cognito_user_permanent_password_assign(email, password)
+    def set_password(self, email, password):
+        return self._identity().set_password(email, password)
 
-    def cognito_user_create(self, email, first="FIRST", last="LAST"):
-        return self._identity().cognito_user_create(email, first, last)
+    def create_user(self, email, first="FIRST", last="LAST"):
+        return self._identity().create_user(email, first, last)
 
-    def cognito_update_user_attributes(self, username, *, given_name=None, family_name=None):
-        return self._identity().cognito_update_user_attributes(
+    def update_profile(self, username, *, given_name=None, family_name=None):
+        return self._identity().update_profile(
             username, given_name=given_name, family_name=family_name
         )
-
-    def cognito_user_login_challenge(self, email, temporary_password, new_password):
-        return self._identity().cognito_user_login_challenge(email, temporary_password, new_password)
 
     def send_email(self, sender, recipient, subject, body_text, body_html, inline_images=None):
         return self._identity().send_email(
