@@ -32,7 +32,7 @@ include-package-data = true
 where = ["."]
 
 [tool.setuptools.package-data]
-renglo = ["chat/blueprints/*.json"]
+renglo = ["auth/blueprints/*.json", "chat/blueprints/*.json"]
 
 [tool.renglo]
 platform = "0.1.15"

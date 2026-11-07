@@ -76,10 +76,37 @@ def collect_blueprint_documents(dirs: Iterable[Path]) -> dict[tuple[str, str], d
     return index
 
 
+def _iter_library_blueprint_dirs() -> Iterable[Path]:
+    """Blueprint folders shipped inside renglo, such as auth and chat.
+
+    Those folders sit under a subpackage, so a walk that starts at
+    ``renglo/__init__.py`` never sees them.
+    """
+    try:
+        import renglo
+    except Exception:
+        return
+    origin = getattr(renglo, "__file__", None)
+    if not origin:
+        return
+    root = Path(origin).resolve().parent
+    seen: set[Path] = set()
+    for candidate in root.rglob("blueprints"):
+        if not candidate.is_dir() or not any(candidate.glob("*.json")):
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        yield resolved
+
+
 def installed_blueprint_index() -> dict[tuple[str, str], dict]:
     global _INSTALLED_INDEX
     if _INSTALLED_INDEX is None:
-        _INSTALLED_INDEX = collect_blueprint_documents(_iter_blueprint_dirs())
+        _INSTALLED_INDEX = collect_blueprint_documents(
+            list(_iter_blueprint_dirs()) + list(_iter_library_blueprint_dirs())
+        )
     return _INSTALLED_INDEX
 
 

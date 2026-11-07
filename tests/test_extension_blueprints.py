@@ -121,6 +121,15 @@ class ResolveOrderTests(unittest.TestCase):
             )
         self.assertEqual(result["version"], "1.0.0")
 
+    def test_entities_blueprint_name_is_tier_zero(self) -> None:
+        path = ROOT / "renglo" / "auth" / "blueprints" / "sys_entities.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(document["handle"], "sys")
+        self.assertEqual(document["name"], "entities")
+        name = next(field for field in document["fields"] if field["name"] == "name")
+        self.assertEqual(str(name["layer"]), "0")
+        self.assertEqual(str(name["level"]), "0")
+
 
 if __name__ == "__main__":
     unittest.main()

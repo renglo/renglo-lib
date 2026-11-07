@@ -32,6 +32,7 @@ setup(
     include_package_data=True,
     package_data={
         'renglo': [
+            'auth/blueprints/*.json',
             'chat/blueprints/*.json',
         ],
     },

@@ -1,0 +1,47 @@
+{
+  "irn": "irn:blueprint:sys:entities",
+  "version": "0.0.1",
+  "blueprint_origin": "https://renglo.com/_blueprint/sys/entities/0.0.1",
+  "description": "Portfolios, organizations, teams, and other auth entities. Layer 0 is the name collected when one is created.",
+  "fields": [
+    {
+      "cardinality": "single",
+      "default": "",
+      "hint": "Name",
+      "label": "Name",
+      "layer": "0",
+      "level": "0",
+      "multilingual": false,
+      "name": "name",
+      "order": "1",
+      "required": true,
+      "semantic": "https://schema.org/name",
+      "source": "",
+      "type": "string",
+      "widget": "text"
+    },
+    {
+      "cardinality": "single",
+      "default": "",
+      "hint": "Short description",
+      "label": "About",
+      "layer": "1",
+      "level": "1",
+      "multilingual": false,
+      "name": "about",
+      "order": "2",
+      "required": false,
+      "semantic": "https://schema.org/description",
+      "source": "",
+      "type": "string",
+      "widget": "textarea"
+    }
+  ],
+  "handle": "sys",
+  "label": "Entities",
+  "license": "CC BY",
+  "name": "entities",
+  "public": true,
+  "status": "final",
+  "uri": "https://renglo.com/_blueprint/sys/entities/0.0.1"
+}
