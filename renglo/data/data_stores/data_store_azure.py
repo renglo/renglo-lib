@@ -1,4 +1,4 @@
-"""Cosmos document store.
+"""Cosmos data store.
 
 Azure submodels import this module. It is the only place that imports the
 Azure database SDK.
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from renglo.config_names import setting
-from renglo.document_stores.errors import Conflict, PreconditionFailed, StoreError
+from renglo.data.data_stores.errors import Conflict, PreconditionFailed, StoreError
 
 
 SYSTEM_FIELDS = ("id", "_rid", "_self", "_etag", "_attachments", "_ts")
@@ -127,7 +127,7 @@ def _match(etag):
     kwargs = {"etag": etag}
     try:
         from azure.cosmos import MatchConditions
-    except ModuleNotFoundError:
+    except ImportError:
         kwargs["match_condition"] = "IfNotModified"
     else:
         kwargs["match_condition"] = MatchConditions.IfNotModified

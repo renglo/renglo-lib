@@ -12,10 +12,10 @@ API_ROOT = Path(__file__).resolve().parents[2] / "renglo-api" / "renglo_api"
 
 # Paths are relative to each walked tree (renglo/ or renglo_api/).
 ALLOWLIST = {
-    "document_stores/document_store_aws.py",
-    "auth/identity.py",
+    "data/data_stores/data_store_aws.py",
+    "auth/providers/identity_aws.py",
     "vector/submodels/vector_model_aws.py",
-    "files/submodels/files_model_aws.py",
+    "files/file_stores/file_store_aws.py",
     "schd/submodels/schd_model_aws.py",
     "llm/providers/bedrock_converse.py",
     "chat/submodels/connection_model_aws.py",
@@ -25,8 +25,8 @@ ALLOWLIST = {
 
 
 AZURE_ALLOWLIST = {
-    "document_stores/document_store_azure.py",
-    "files/submodels/files_model_azure.py",
+    "data/data_stores/data_store_azure.py",
+    "files/file_stores/file_store_azure.py",
 }
 
 
@@ -75,14 +75,14 @@ class AwsImportBoundaryTest(unittest.TestCase):
             "boto3 import outside the store allowlist:\n" + "\n".join(offenders),
         )
 
-    def test_azure_sdk_imports_stay_in_the_document_store(self):
+    def test_azure_sdk_imports_stay_in_the_data_store(self):
         offenders = _offenders(LIB_ROOT, _imports_azure_sdk, AZURE_ALLOWLIST) + _offenders(
             API_ROOT, _imports_azure_sdk, AZURE_ALLOWLIST
         )
         self.assertEqual(
             offenders,
             [],
-            "Azure SDK import outside document_store_azure.py:\n" + "\n".join(offenders),
+            "Azure SDK import outside the store allowlist:\n" + "\n".join(offenders),
         )
 
 

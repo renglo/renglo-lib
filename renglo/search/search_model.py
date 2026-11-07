@@ -21,7 +21,7 @@ from renglo.search.keys import (
     require_safe_part,
     to_dynamo_value,
 )
-from renglo.document_stores.select import open_store
+from renglo.data.data_stores.select import open_store
 
 
 class SearchModel:

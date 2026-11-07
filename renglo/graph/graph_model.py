@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, Iterable, Iterator, Optional
 
 from renglo.config_names import setting, table_name
-from renglo.document_stores.select import open_store
+from renglo.data.data_stores.select import open_store
 from renglo.graph.records import (
     GraphEdge,
     GraphOperations,

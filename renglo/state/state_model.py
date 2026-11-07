@@ -1,5 +1,5 @@
 from renglo.config_names import table_name
-from renglo.document_stores.select import StoreError, open_store
+from renglo.data.data_stores.select import StoreError, open_store
 from renglo.logger import get_logger
 
 

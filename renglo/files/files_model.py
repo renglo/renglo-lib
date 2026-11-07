@@ -1,96 +1,220 @@
-"""FilesModel interface.
+"""Files stored in the bucket selected by CLOUD.
 
-Callers construct this class. CLOUD in config selects
-renglo.files.submodels.files_model_<implementation>: aws, azure, or another submodel.
+Callers construct this class. Object keys are the same on AWS and Azure.
+The file store owns the SDK calls.
 """
 
 from __future__ import annotations
 
-from renglo.submodel import load_submodel
+import json
+import uuid
+from datetime import datetime
 
-def _submodel(config):
-    return load_submodel("renglo.files.submodels", "files_model", "FilesModel", config)
+from renglo.files.file_stores.select import open_file_store
+from renglo.logger import get_logger
 
 
 class FilesModel:
-    # HTTP GETs redirect to a signed S3 URL. Signing is local HMAC; no GetObject.
+    # HTTP GETs redirect to a signed URL. Signing does not read the object.
     PRESIGN_EXPIRES_IN = 3600
 
-    USER_THUMBNAIL_PREFIX = 'auth/thumbnails'
+    USER_THUMBNAIL_PREFIX = "auth/thumbnails"
+
+    _EXTENSION_TYPES = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "svg": "image/svg+xml",
+        "pdf": "application/pdf",
+        "txt": "text/plain",
+        "csv": "text/csv",
+        "json": "application/json",
+    }
 
     def __init__(self, config=None, tid=False, ip=False, s3_client=None):
-        cls = _submodel(config)
-        object.__setattr__(self, "_impl", cls(config, tid, ip, s3_client))
-
-    def _bucket_name(self):
-        return self._impl._bucket_name()
-
-    def _bucket(self, bucket=None):
-        return self._impl._bucket(bucket)
-
-    def _s3_client(self, region=None):
-        return self._impl._s3_client(region)
+        self.config = config or {}
+        self.logger = get_logger()
+        self.store = open_file_store(self.config, "files", client=s3_client)
+        self.valid_types = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/svg+xml": "svg",
+            "application/pdf": "pdf",
+            "text/plain": "txt",
+            "text/csv": "csv",
+            "application/json": "json",
+        }
 
     @staticmethod
-    def _missing(exc):
-        return _submodel(None)._missing(exc)
+    def file_key(portfolio, org, ring, filename):
+        return f"_files/{portfolio}/{org}/{ring}/{filename}"
+
+    def user_thumbnail_key(self, handle: str) -> str:
+        return f"{self.USER_THUMBNAIL_PREFIX}/{handle}.png"
+
+    @staticmethod
+    def tmp_key(portfolio, org, entity, date, object_id):
+        return f"_tmp/{portfolio}/{org}/{entity}/{date}/{object_id}"
+
+    def _resolved_type(self, stored, path, *, extensionless_json=False):
+        content_type = stored or "binary/octet-stream"
+        if content_type != "binary/octet-stream":
+            return content_type
+        last = str(path).rsplit("/", 1)[-1]
+        if "." in last:
+            extension = last.rsplit(".", 1)[-1].lower()
+            return self._EXTENSION_TYPES.get(extension, "application/octet-stream")
+        if extensionless_json:
+            return "application/json"
+        return "application/octet-stream"
 
     def head(self, key, bucket=None, region=None):
         """Return True when the object exists. Missing objects return False."""
-        return self._impl.head(key, bucket, region)
+        return self.store.head(key, container=bucket, region=region)
 
     def get_bytes(self, key, bucket=None, region=None):
         """Return object bytes, or None when the object is missing."""
-        return self._impl.get_bytes(key, bucket, region)
+        found = self.store.get(key, container=bucket, region=region)
+        if found is None:
+            return None
+        body, _content_type = found
+        return body
 
     def put_bytes(self, key, body, content_type=None, bucket=None, region=None):
-        return self._impl.put_bytes(key, body, content_type, bucket, region)
+        self.store.put(
+            key,
+            body,
+            content_type=content_type,
+            container=bucket,
+            region=region,
+        )
 
     def get_json(self, key, bucket=None, region=None):
-        return self._impl.get_json(key, bucket, region)
+        raw = self.get_bytes(key, bucket=bucket, region=region)
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        return json.loads(raw)
 
-    def put_json(self, key, document, bucket=None, region=None, content_type='application/json', default=None):
-        return self._impl.put_json(key, document, bucket, region, content_type, default)
+    def put_json(self, key, document, bucket=None, region=None, content_type="application/json", default=None):
+        body = json.dumps(document, default=default)
+        self.put_bytes(key, body, content_type=content_type, bucket=bucket, region=region)
 
     def presign_get(self, file_path, expires_in=None):
-        """Return a time-limited S3 GET URL. Does not check that the object exists."""
-        return self._impl.presign_get(file_path, expires_in)
+        """Return a time-limited GET URL. Does not check that the object exists."""
+        if expires_in is None:
+            expires_in = self.PRESIGN_EXPIRES_IN
+        try:
+            url = self.store.presign_get(file_path, expires_in)
+            return {"success": True, "url": url, "path": file_path}
+        except Exception as exc:
+            self.logger.error(f"Error presigning {file_path}: {str(exc)}")
+            return {"success": False, "error": "Error generating download URL"}
 
     def a_b_c_presign(self, portfolio, org, ring, filename, expires_in=None):
-        return self._impl.a_b_c_presign(portfolio, org, ring, filename, expires_in)
+        return self.presign_get(self.file_key(portfolio, org, ring, filename), expires_in)
 
     def user_thumbnail_presign(self, handle, expires_in=None):
-        return self._impl.user_thumbnail_presign(handle, expires_in)
+        return self.presign_get(self.user_thumbnail_key(handle), expires_in)
 
     def tmp_presign(self, portfolio, org, entity, date, object_id, expires_in=None):
-        return self._impl.tmp_presign(portfolio, org, entity, date, object_id, expires_in)
+        return self.presign_get(
+            self.tmp_key(portfolio, org, entity, date, object_id),
+            expires_in,
+        )
+
+    def _storage_type(self, mime_type):
+        return {
+            "image/jpeg": "image/jpeg",
+            "image/png": "image/png",
+            "image/svg+xml": "image/svg+xml",
+            "application/pdf": "application/pdf",
+            "application/json": "application/json",
+            "text/plain": "text/plain",
+            "text/csv": "text/csv",
+        }.get(mime_type, "application/octet-stream")
 
     def a_b_post(self, portfolio, org, ring, raw_doc, type, name):
-        return self._impl.a_b_post(portfolio, org, ring, raw_doc, type, name)
-
-    def user_thumbnail_key(self, handle: str) -> str:
-        return self._impl.user_thumbnail_key(handle)
+        if not name:
+            name = str(uuid.uuid4())
+        filename = f"{name}.{self.valid_types[type]}"
+        file_path = self.file_key(portfolio, org, ring, filename)
+        try:
+            self.store.put(file_path, raw_doc, content_type=self._storage_type(type))
+            return {"success": True, "path": file_path, "id": name}
+        except Exception as exc:
+            self.logger.error(f"Error uploading file {file_path}: {str(exc)}")
+            return {"success": False}
 
     def user_thumbnail_post(self, handle, raw_doc):
-        return self._impl.user_thumbnail_post(handle, raw_doc)
+        file_path = self.user_thumbnail_key(handle)
+        try:
+            self.store.put(file_path, raw_doc, content_type="image/png")
+            return {"success": True, "path": file_path, "id": handle}
+        except Exception as exc:
+            self.logger.error(f"Error uploading user thumbnail {file_path}: {str(exc)}")
+            return {"success": False}
 
     def user_thumbnail_get(self, handle):
-        return self._impl.user_thumbnail_get(handle)
+        file_path = self.user_thumbnail_key(handle)
+        try:
+            found = self.store.get(file_path)
+        except Exception as exc:
+            self.logger.error(f"Error retrieving user thumbnail: {str(exc)}")
+            return {"success": False, "error": "Error retrieving file"}
+        if found is None:
+            return {"success": False, "error": "File not found"}
+        content, stored = found
+        return {
+            "success": True,
+            "content": content,
+            "content_type": stored or "image/png",
+        }
 
     def a_b_c_get(self, portfolio, org, ring, filename):
-        return self._impl.a_b_c_get(portfolio, org, ring, filename)
+        file_path = self.file_key(portfolio, org, ring, filename)
+        try:
+            found = self.store.get(file_path)
+        except Exception as exc:
+            self.logger.error(f"Error retrieving file: {str(exc)}")
+            return {"success": False, "error": "Error retrieving file"}
+        if found is None:
+            return {"success": False, "error": "File not found"}
+        content, stored = found
+        content_type = self._resolved_type(stored, filename)
+        self.logger.info(f"Content Type: {content_type}")
+        return {
+            "success": True,
+            "content": content,
+            "content_type": content_type,
+        }
 
     def tmp_post(self, portfolio, org, entity, raw_doc):
-        return self._impl.tmp_post(portfolio, org, entity, raw_doc)
+        date = datetime.now().strftime("%Y-%m-%d")
+        object_id = str(uuid.uuid4())
+        file_path = self.tmp_key(portfolio, org, entity, date, object_id)
+        try:
+            self.store.put(file_path, raw_doc, content_type="application/json")
+            return {
+                "success": True,
+                "path": file_path,
+                "key": f"{portfolio}/{org}/{entity}/{date}/{object_id}",
+            }
+        except Exception as exc:
+            self.logger.error(f"Error uploading file {file_path}: {str(exc)}")
+            return {"success": False}
 
     def tmp_get(self, portfolio, org, entity, date, object_id):
-        return self._impl.tmp_get(portfolio, org, entity, date, object_id)
-
-    def __getattr__(self, name):
-        return getattr(object.__getattribute__(self, "_impl"), name)
-
-    def __setattr__(self, name, value):
-        if name == "_impl":
-            object.__setattr__(self, name, value)
-            return
-        setattr(self._impl, name, value)
+        file_path = self.tmp_key(portfolio, org, entity, date, object_id)
+        try:
+            found = self.store.get(file_path)
+        except Exception as exc:
+            self.logger.error(f"Error retrieving file: {str(exc)}")
+            return {"success": False, "error": "Error retrieving file"}
+        if found is None:
+            return {"success": False, "error": "File not found"}
+        content, stored = found
+        content_type = self._resolved_type(stored, file_path, extensionless_json=True)
+        self.logger.info(f"Content Type: {content_type}")
+        return {"success": True, "content": content, "content_type": content_type}

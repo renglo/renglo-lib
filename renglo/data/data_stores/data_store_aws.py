@@ -1,7 +1,7 @@
-"""DynamoDB document store.
+"""DynamoDB data store.
 
-Method names match ``document_store_azure.DocumentStore``. This is the only
-document module that imports boto3. One ``query`` call is one DynamoDB query
+Method names match ``data_store_azure.DocumentStore``. This is the only
+data store module that imports boto3. One ``query`` call is one DynamoDB query
 page; callers loop on the returned continuation, which is a ``LastEvaluatedKey``.
 """
 
@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, Iterator, Optional
 
 from renglo.config_names import setting
-from renglo.document_stores.errors import Conflict, PreconditionFailed, StoreError
+from renglo.data.data_stores.errors import Conflict, PreconditionFailed, StoreError
 
 
 def _numbers(value):

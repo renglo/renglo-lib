@@ -10,7 +10,7 @@ from datetime import datetime
 
 from renglo.auth.entity_status import HARD_DELETE_REFUSED, entity_forbids_hard_delete
 from renglo.config_names import table_name
-from renglo.document_stores.select import Conflict, StoreError, open_store
+from renglo.data.data_stores.select import Conflict, StoreError, open_store
 from renglo.submodel import load_submodel
 
 logger = logging.getLogger(__name__)

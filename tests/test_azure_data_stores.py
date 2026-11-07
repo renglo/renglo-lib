@@ -146,7 +146,7 @@ class MemoryContainer:
 
 class DocumentStoreTests(unittest.TestCase):
     def setUp(self):
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         self.container = MemoryContainer("index")
         self.store = DocumentStore(
@@ -158,7 +158,7 @@ class DocumentStoreTests(unittest.TestCase):
         )
 
     def test_legal_sort_key_is_the_document_id(self):
-        from renglo.document_stores.document_store_azure import cosmos_id
+        from renglo.data.data_stores.data_store_azure import cosmos_id
 
         self.assertEqual(cosmos_id("user-1"), "user-1")
         self.assertNotEqual(cosmos_id("a/b"), "a/b")
@@ -181,14 +181,14 @@ class DocumentStoreTests(unittest.TestCase):
         self.assertEqual([item["_id"] for item in items], ["a-1", "a-2"])
 
     def test_exclusive_create_conflicts(self):
-        from renglo.document_stores.document_store_azure import Conflict
+        from renglo.data.data_stores.data_store_azure import Conflict
 
         self.store.create({"index": "users", "_id": "u1"})
         with self.assertRaises(Conflict):
             self.store.create({"index": "users", "_id": "u1"})
 
     def test_replace_rejects_a_stale_etag(self):
-        from renglo.document_stores.document_store_azure import PreconditionFailed
+        from renglo.data.data_stores.data_store_azure import PreconditionFailed
 
         self.store.put({"index": "users", "_id": "u1", "name": "Ada"})
         _item, etag = self.store.read("users", "u1")
@@ -207,7 +207,7 @@ class DocumentStoreTests(unittest.TestCase):
         self.assertIsNone(next_token)
 
     def test_missing_container_describe_raises(self):
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         store = DocumentStore({}, "missing", "index", "_id", container=MemoryContainer("index", missing=True))
         with self.assertRaises(RuntimeError):
@@ -248,9 +248,9 @@ class AwsStoreShapeTests(unittest.TestCase):
     def test_aws_store_exposes_the_same_methods(self):
         from decimal import Decimal
 
-        from renglo.document_stores import document_store_aws as aws_store
-        from renglo.document_stores import document_store_azure as azure_store
-        from renglo.document_stores.document_store_aws import Conflict
+        from renglo.data.data_stores import data_store_aws as aws_store
+        from renglo.data.data_stores import data_store_azure as azure_store
+        from renglo.data.data_stores.data_store_aws import Conflict
 
         names = ("get", "read", "query", "put", "create", "replace", "delete", "scan", "describe")
         for name in names:
@@ -291,7 +291,7 @@ class FacadeBoundaryTests(unittest.TestCase):
 class AzureModelTests(unittest.TestCase):
     def test_blueprint_put_uses_irn_and_version(self):
         from renglo.blueprint.blueprint_model import BlueprintModel
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         container = MemoryContainer("irn")
 
@@ -303,7 +303,7 @@ class AzureModelTests(unittest.TestCase):
 
     def test_auth_entity_create_and_identity_placeholder(self):
         from renglo.auth.auth_model import AuthModel
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         entities = DocumentStore({}, "entities", "index", "_id", container=MemoryContainer("index"))
         rels = DocumentStore({}, "rel", "index", "rel", container=MemoryContainer("index"))
@@ -324,7 +324,7 @@ class AzureModelTests(unittest.TestCase):
 
     def test_data_path_index_query(self):
         from renglo.data.data_model import DataModel
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         store = DocumentStore({}, "data", "portfolio_index", "doc_index", container=MemoryContainer("portfolio_index"))
         model = DataModel(config={"DATA_TABLE": "data"}, bind_auth=False, store=store)
@@ -345,7 +345,7 @@ class AzureModelTests(unittest.TestCase):
 
     def test_graph_outgoing_prefix(self):
         from renglo.graph.graph_model import GraphModel
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         store = DocumentStore({}, "graph", "graph_index", "forward_index", container=MemoryContainer("graph_index"))
         model = GraphModel(config={"GRAPH_TABLE": "graph"}, store=store)
@@ -364,7 +364,7 @@ class AzureModelTests(unittest.TestCase):
             package.__package__ = "renglo.search"
             sys.modules["renglo.search"] = package
         from renglo.search.search_model import SearchModel
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         store = DocumentStore({}, "search", "index", "search_index", container=MemoryContainer("index"))
         model = SearchModel(config={"SEARCH_TABLE": "search"}, store=store)
@@ -388,7 +388,7 @@ class AzureModelTests(unittest.TestCase):
 
     def test_session_appends_events(self):
         from renglo.session.session_model import SessionModel
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         store = DocumentStore({}, "session", "index", "entity_index", container=MemoryContainer("index"))
         model = SessionModel(store=store)
@@ -400,7 +400,7 @@ class AzureModelTests(unittest.TestCase):
 
     def test_timeseries_put_writes_metric_index(self):
         from renglo.timeseries.timeseries_model import TimeSeriesModel
-        from renglo.document_stores.document_store_azure import DocumentStore
+        from renglo.data.data_stores.data_store_azure import DocumentStore
 
         store = DocumentStore({}, "timeseries", "index", "metric_index", container=MemoryContainer("index"))
         model = TimeSeriesModel(config={"TIMESERIES_TABLE": "timeseries"}, store=store)
@@ -412,7 +412,7 @@ class AzureModelTests(unittest.TestCase):
 
 class AzureCliPathTests(unittest.TestCase):
     def test_local_cli_directory_is_put_on_path(self):
-        from renglo.document_stores import document_store_azure as azure_store
+        from renglo.data.data_stores import data_store_azure as azure_store
 
         with tempfile.TemporaryDirectory() as directory:
             az = Path(directory) / "az"

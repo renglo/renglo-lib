@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from renglo.config_names import setting, table_name
-from renglo.document_stores.select import PreconditionFailed, open_store
+from renglo.data.data_stores.select import PreconditionFailed, open_store
 from renglo.logger import get_logger
 from renglo.timeseries.rollup import (
     apply_reading as _apply_reading,

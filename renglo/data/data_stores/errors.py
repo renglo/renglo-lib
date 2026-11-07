@@ -1,8 +1,8 @@
-"""Errors shared by the document stores."""
+"""Errors shared by the data stores."""
 
 
 class StoreError(Exception):
-    """The document store rejected the call."""
+    """The data store rejected the call."""
 
     def __init__(self, message, status=500, code=""):
         super().__init__(message)
