@@ -6,6 +6,7 @@ import logging
 import pytest
 
 from renglo.llm import LlmController
+from renglo.llm.providers.azure_foundry import AzureAdapter, prepare
 from renglo.llm.providers.bedrock_converse import BedrockConverseAdapter
 from renglo.llm.providers.openai_chat import OpenAIChatAdapter
 from renglo.llm.types import BLOCK_TOOL_CALL, SCHEMA_VERSION
@@ -488,3 +489,210 @@ def test_converse_retries_once_when_the_model_rejects_temperature():
     assert result["output"]["text"] == "retried"
     assert converse.calls[0]["inferenceConfig"]["temperature"] == 0.1
     assert converse.calls[1]["inferenceConfig"] == {"maxTokens": 64}
+
+
+def _shared_model_config(**overrides):
+    config = {
+        "AZURE_AI_MODELS": "gpt-4o-mini",
+        "AZURE_AI_ENDPOINT": "https://example.services.ai.azure.com",
+        "AZURE_AI_API_VERSION": "2024-10-21",
+        "OPENAI_MODELS": "gpt-4o-mini",
+        "OPENAI_API_KEY": "sk-test",
+        "BEDROCK_MODELS": "gpt-4o-mini",
+        "AWS_REGION": "us-east-1",
+    }
+    config.update(overrides)
+    return config
+
+
+def _shared_controller(config, azure_client, openai_client, converse, seen):
+    def azure_factory(credential, endpoint, api_version, timeout_seconds=None):
+        seen.append(
+            {
+                "credential": credential,
+                "endpoint": endpoint,
+                "api_version": api_version,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return azure_client
+
+    return LlmController(
+        config,
+        adapters={
+            "azure": AzureAdapter(client_factory=azure_factory),
+            "openai": OpenAIChatAdapter(
+                client_factory=lambda api_key, base_url, timeout_seconds=None: openai_client
+            ),
+            "bedrock": BedrockConverseAdapter(client=converse),
+        },
+        sleep=lambda _seconds: None,
+    )
+
+
+def test_cloud_selects_the_default_provider_and_an_explicit_provider_wins():
+    azure_client = FakeOpenAI([openai_ok("from-azure")])
+    openai_client = FakeOpenAI([openai_ok("from-openai"), openai_ok("still-openai")])
+    converse = FakeConverse([converse_ok("from-bedrock")])
+    seen = []
+    controller = _shared_controller(
+        _shared_model_config(CLOUD="azure"),
+        azure_client,
+        openai_client,
+        converse,
+        seen,
+    )
+    azure = controller.generate(messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini")
+    named = controller.generate(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gpt-4o-mini",
+        provider="openai",
+    )
+    only_openai = LlmController(
+        {"CLOUD": "azure", "OPENAI_MODELS": "gpt-4.1-mini", "OPENAI_API_KEY": "sk-test"},
+        adapters={
+            "openai": OpenAIChatAdapter(
+                client_factory=lambda api_key, base_url, timeout_seconds=None: openai_client
+            ),
+        },
+        sleep=lambda _seconds: None,
+    )
+    other = only_openai.generate(messages=[{"role": "user", "content": "hi"}], model="gpt-4.1-mini")
+
+    assert azure["success"]
+    assert azure["output"]["provider"] == "azure"
+    assert azure["output"]["text"] == "from-azure"
+    assert azure_client.calls[0]["model"] == "gpt-4o-mini"
+    assert seen[0]["endpoint"] == "https://example.services.ai.azure.com"
+    assert seen[0]["api_version"] == "2024-10-21"
+    assert seen[0]["credential"]["identity"] is True
+    assert "api_key" not in seen[0]["credential"]
+    assert named["output"]["provider"] == "openai"
+    assert named["output"]["text"] == "from-openai"
+    assert other["success"]
+    assert other["output"]["provider"] == "openai"
+    assert other["output"]["text"] == "still-openai"
+    assert converse.calls == []
+
+    aws = _shared_controller(
+        _shared_model_config(CLOUD="aws"),
+        azure_client,
+        openai_client,
+        converse,
+        seen,
+    )
+    bedrock = aws.generate(messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini")
+    assert bedrock["output"]["provider"] == "bedrock"
+    assert bedrock["output"]["text"] == "from-bedrock"
+    assert converse.calls[0]["modelId"] == "gpt-4o-mini"
+
+
+def test_azure_catalog_requires_an_endpoint_and_identity_is_the_credential():
+    from renglo.llm.registry import build_registry
+    from renglo.llm.providers.azure_foundry import target_for
+
+    missing = build_registry({"AZURE_AI_MODELS": "gpt-4o-mini"})
+    azure_rows = [entry for entry in missing.catalog if entry.provider_id == "azure" and entry.model_id]
+    assert azure_rows[0].available is False
+    assert azure_rows[0].reason == "AZURE_AI_ENDPOINT is not set"
+
+    ready = build_registry({
+        "AZURE_AI_MODELS": "gpt-4o-mini",
+        "AZURE_AI_ENDPOINT": "https://example.services.ai.azure.com",
+        "AZURE_CLIENT_ID": "client-1",
+    })
+    ready_row = next(entry for entry in ready.catalog if entry.provider_id == "azure" and entry.model_id)
+    assert ready_row.available is True
+    assert ready_row.source_label == "Azure AI"
+    target = ready.targets[("azure", "gpt-4o-mini")]
+    assert target.endpoint == "https://example.services.ai.azure.com"
+    assert target.api_version == "2024-05-01-preview"
+    credential, error = prepare({"AZURE_CLIENT_ID": "client-1"}, target)
+    assert error is None
+    assert credential == {"identity": True, "client_id": "client-1"}
+    keyed, key_error = prepare({"AZURE_AI_API_KEY": "key-1"}, target)
+    assert key_error is None
+    assert keyed == {"api_key": "key-1"}
+    off_catalog, off_error = target_for(
+        {"AZURE_AI_ENDPOINT": "https://example.services.ai.azure.com"},
+        "gpt-4.1",
+    )
+    assert off_error is None
+    assert off_catalog.model_id == "gpt-4.1"
+
+
+def test_gpt5_deployments_send_max_completion_tokens():
+    from renglo.llm.registry import CallTarget
+
+    adapter = AzureAdapter()
+    request = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        "max_output_tokens": 256,
+    }
+    current = adapter.to_provider(
+        request,
+        CallTarget(provider_id="azure", model_id="gpt-5.4-mini", target_id="gpt-5.4-mini"),
+    )
+    older = adapter.to_provider(
+        request,
+        CallTarget(provider_id="azure", model_id="gpt-4o-mini", target_id="gpt-4o-mini"),
+    )
+    assert current["max_completion_tokens"] == 256
+    assert "max_tokens" not in current
+    assert older["max_tokens"] == 256
+
+
+def test_claude_deployments_use_the_messages_api():
+    from renglo.llm.registry import CallTarget
+
+    class _Messages:
+        def __init__(self, owner):
+            self.owner = owner
+
+        def create(self, **kwargs):
+            self.owner.calls.append(kwargs)
+            return {
+                "id": "msg-1",
+                "content": [{"type": "text", "text": "from-claude"}],
+                "usage": {"input_tokens": 5, "output_tokens": 2, "cache_read_input_tokens": 1},
+            }
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+            self.messages = _Messages(self)
+
+    client = _Client()
+    adapter = AzureAdapter(client_factory=lambda **_kwargs: client)
+    request = {
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "be brief"}]},
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        ],
+        "max_output_tokens": 256,
+        "provider_options": {"temperature": 0.2},
+    }
+    deployment = CallTarget(
+        provider_id="azure",
+        model_id="claude-sonnet-5-5",
+        target_id="claude-sonnet-5-5",
+        endpoint="https://example.services.ai.azure.com",
+    )
+    native = adapter.to_provider(request, deployment)
+    assert native["model"] == "claude-sonnet-5-5"
+    assert native["max_tokens"] == 256
+    assert native["system"] == "be brief"
+    assert native["messages"] == [{"role": "user", "content": "hi"}]
+    assert "temperature" not in native
+
+    result = adapter.invoke(
+        request,
+        deployment,
+        {"api_key": "key-1"},
+        timeout_seconds=30,
+    )
+    assert result["ok"] is True
+    assert result["text"] == "from-claude"
+    assert result["usage"]["input_tokens"] == 5
+    assert result["usage"]["cached_tokens"] == 1
+    assert client.calls[0]["model"] == "claude-sonnet-5-5"

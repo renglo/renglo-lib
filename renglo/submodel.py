@@ -1,7 +1,8 @@
-"""Load the submodel for a Renglo service that is not a data or file store.
+"""Load the submodel for a Renglo service that is not a data, file, or LLM client.
 
 Data stores are opened with ``renglo.data.data_stores.select.open_store``.
 File stores are opened with ``renglo.files.file_stores.select.open_file_store``.
+``LlmModel`` is one class. ``CLOUD`` selects its default provider.
 Connections, schedule, vector, and the other service clients still
 call ``load_submodel``. ``CLOUD`` selects ``<stem>_<cloud>.py``. The default
 is aws.

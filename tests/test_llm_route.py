@@ -84,6 +84,8 @@ def test_models_route_lists_enabled_models_and_blocks_a_missing_alias():
     assert by_key[("bedrock", None)]["reason"] == "BEDROCK_MODELS is not set"
     assert by_key[("openai", None)]["enabled"] is False
     assert by_key[("openai", None)]["reason"] == "OPENAI_MODELS is not set"
+    assert by_key[("azure", None)]["enabled"] is False
+    assert by_key[("azure", None)]["reason"] == "AZURE_AI_MODELS is not set"
     assert "sk-secret" not in json.dumps(payload)
 
     routes.LLC = LlmController(config={
@@ -180,10 +182,10 @@ def test_generate_route_rejects_provider_controls_and_a_long_prompt():
         routes,
         "portfolio_y",
         "org_x",
-        {"messages": [{"role": "user", "content": "hi"}], "provider": "openai"},
+        {"messages": [{"role": "user", "content": "hi"}], "provider_options": {"temperature": 0}},
     )
     assert status == 400
-    assert payload["error"] == "provider is not accepted"
+    assert payload["error"] == "provider_options is not accepted"
     assert controller.calls == []
 
     status, payload = post(app, routes, "portfolio_y", " ", {"messages": [{"role": "user", "content": "hi"}]})
@@ -198,3 +200,58 @@ def test_generate_route_rejects_provider_controls_and_a_long_prompt():
     )
     assert status == 400
     assert controller.calls == []
+
+
+def test_generate_route_uses_azure_when_cloud_is_azure_and_the_model_is_shared():
+    from renglo.llm import LlmController
+    from renglo.llm.providers.azure_foundry import AzureAdapter
+    from renglo.llm.providers.openai_chat import OpenAIChatAdapter
+
+    class _Completions:
+        def __init__(self, owner):
+            self.owner = owner
+
+        def create(self, **kwargs):
+            self.owner.calls.append(kwargs)
+            return {
+                "id": "chatcmpl-az",
+                "choices": [{"message": {"role": "assistant", "content": "from-azure"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            }
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+            self.chat = type("Chat", (), {})()
+            self.chat.completions = _Completions(self)
+
+    azure_client = _Client()
+    openai_client = _Client()
+    app, routes, _controller = load_routes()
+    routes.LLC = LlmController(
+        config={
+            "CLOUD": "azure",
+            "AZURE_AI_MODELS": "gpt-4o-mini",
+            "AZURE_AI_ENDPOINT": "https://example.services.ai.azure.com",
+            "OPENAI_MODELS": "gpt-4o-mini",
+            "OPENAI_API_KEY": "sk-test",
+        },
+        adapters={
+            "azure": AzureAdapter(client_factory=lambda **_kwargs: azure_client),
+            "openai": OpenAIChatAdapter(client_factory=lambda **_kwargs: openai_client),
+        },
+        sleep=lambda _seconds: None,
+    )
+    status, payload = post(
+        app,
+        routes,
+        "portfolio_y",
+        "org_x",
+        {"messages": [{"role": "user", "content": "hi"}], "model": "gpt-4o-mini"},
+    )
+    assert status == 200
+    assert payload["output"]["provider"] == "azure"
+    assert payload["output"]["source"] == "Azure AI"
+    assert payload["output"]["text"] == "from-azure"
+    assert azure_client.calls[0]["model"] == "gpt-4o-mini"
+    assert openai_client.calls == []

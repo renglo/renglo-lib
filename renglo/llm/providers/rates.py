@@ -335,7 +335,32 @@ OPENAI_RATES = (
     ("ft:davinci-002", _openai("ft:davinci-002", 12, 12, batch_input=6, batch_output=6)),
     ("ft:babbage-002", _openai("ft:babbage-002", 1.60, 1.60, batch_input=0.80, batch_output=0.90)),
 )
-AZURE_RATES = ()
+
+
+def _azure(name, input_price, output_price, cache_read=None):
+    """Global Standard list prices. They match the OpenAI standard card for the same model."""
+    return ModelRates(
+        provider="azure",
+        region=None,
+        name=name,
+        input_per_million=input_price,
+        output_per_million=output_price,
+        cache_read_per_million=cache_read,
+    )
+
+
+# https://azure.microsoft.com/pricing/details/azure-openai/
+AZURE_RATES = (
+    ("gpt-4.1-nano", _azure("gpt-4.1-nano", 0.10, 0.40, 0.025)),
+    ("gpt-4.1-mini", _azure("gpt-4.1-mini", 0.40, 1.60, 0.10)),
+    ("gpt-4.1", _azure("gpt-4.1", 2, 8, 0.50)),
+    ("gpt-4o-mini", _azure("gpt-4o-mini", 0.15, 0.60, 0.075)),
+    ("gpt-5.4-mini", _azure("gpt-5.4-mini", 0.75, 4.50, 0.075)),
+    ("gpt-5", _azure("gpt-5", 1.25, 10, 0.125)),
+    ("claude-haiku-5-5", _azure("claude-haiku-5-5", 0.10, 0.50, 0.01)),
+    ("claude-sonnet-5-5", _azure("claude-sonnet-5-5", 2.00, 10.00, 0.10)),
+    ("gpt-4o", _azure("gpt-4o", 2.50, 10, 1.25)),
+)
 
 _BY_PROVIDER = {
     "bedrock": BEDROCK_RATES,

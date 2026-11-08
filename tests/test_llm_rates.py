@@ -23,6 +23,16 @@ def test_model_ids_match_the_longest_card():
     assert mini.output_per_million == 0.60
     assert mini.cache_read_per_million == 0.075
     assert rates_for("gpt-4o", provider="openai").input_per_million == 2.50
+    assert rates_for("gpt-4o-mini", provider="azure").input_per_million == 0.15
+    assert rates_for("gpt-4o-mini", provider="azure").output_per_million == 0.60
+    assert rates_for("gpt-5.4-mini", provider="azure").input_per_million == 0.75
+    assert rates_for("gpt-5.4-mini", provider="azure").output_per_million == 4.50
+    assert rates_for("gpt-5", provider="azure").input_per_million == 1.25
+    assert rates_for("gpt-5", provider="azure").output_per_million == 10
+    assert rates_for("claude-sonnet-5-5", provider="azure").input_per_million == 2.00
+    assert rates_for("claude-sonnet-5-5", provider="azure").output_per_million == 10.00
+    assert rates_for("claude-haiku-5-5", provider="azure").input_per_million == 0.10
+    assert rates_for("claude-haiku-5-5", provider="azure").output_per_million == 0.50
     assert rates_for("gpt-4o-mini-tts", provider="openai").output_audio_per_million == 12
     assert rates_for("gpt-6-astra", provider="openai").long_input_per_million == 20
     assert rates_for("gpt-6-astra", provider="openai").cache_write_30m_per_million == 12.50

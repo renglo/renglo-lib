@@ -31,6 +31,7 @@ class CallTarget:
     target_id: str
     endpoint: str | None = None
     region: str | None = None
+    api_version: str | None = None
 
 
 @dataclass

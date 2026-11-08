@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from renglo.llm.providers.azure_foundry import AzureAdapter
 from renglo.llm.providers.bedrock_converse import BedrockConverseAdapter
 from renglo.llm.providers.errors import classify_provider_error, provider_error_message
 from renglo.llm.providers.openai_chat import OpenAIChatAdapter
@@ -21,6 +22,7 @@ def default_adapters():
 
 
 __all__ = [
+    "AzureAdapter",
     "BedrockConverseAdapter",
     "OpenAIChatAdapter",
     "classify_provider_error",

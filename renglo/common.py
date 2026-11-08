@@ -321,8 +321,11 @@ def load_config():
         'PEER_USE_DEV_DOCKER', 'EXTERNAL_HANDLERS_USE_DEV_DOCKER',
         'PEER_ROUTES', 'EXTERNAL_HANDLERS_PEER_MAP',
         'OPENSEARCH_ENDPOINT', 'OPENSEARCH_INDEX', 'OPENSEARCH_REFRESH',
-        # Bedrock Converse and optional OpenAI-compatible chat
+        # Bedrock, Microsoft Foundry, and optional OpenAI-compatible chat.
+        # Each *_MODELS value is the whitelist for that provider.
         'BEDROCK_MODELS', 'OPENAI_BASE_URL', 'OPENAI_MODELS',
+        'AZURE_AI_ENDPOINT', 'AZURE_AI_MODELS', 'AZURE_AI_API_KEY',
+        'AZURE_AI_API_VERSION', 'AZURE_AI_LOCATION',
         # Generic RAG / vectors platform knobs (values & index names are extension-owned)
         'KB_ID', 'RAG_MODEL_ARN', 'RAG_DATA_SOURCE_ID', 'RAG_DOCS_BUCKET', 'RAG_DOCS_PREFIX',
         'S3_VECTORS_BUCKET', 'EMBEDDING_MODEL_ID',
