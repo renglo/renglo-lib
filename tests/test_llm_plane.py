@@ -1,6 +1,7 @@
 """LLM plane: Converse and OpenAI chat share one canonical generate()."""
 
 import importlib
+import json
 import logging
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from renglo.llm import LlmController
 from renglo.llm.providers.bedrock_converse import BedrockConverseAdapter
 from renglo.llm.providers.openai_chat import OpenAIChatAdapter
-from renglo.llm.types import BLOCK_TOOL_CALL, SCHEMA_VERSION
+from renglo.llm.types import BLOCK_TOOL_CALL, BLOCK_TOOL_RESULT, SCHEMA_VERSION
 
 
 class StatusError(Exception):
@@ -60,6 +61,64 @@ def converse_ok(text="hello", input_tokens=10, output_tokens=4):
         "usage": {"inputTokens": input_tokens, "outputTokens": output_tokens},
         "ResponseMetadata": {"RequestId": "req-1"},
     }
+
+
+def converse_tool_use(name="lookup", tool_use_id="call_1", arguments=None, text=""):
+    content = []
+    if text:
+        content.append({"text": text})
+    content.append(
+        {
+            "toolUse": {
+                "toolUseId": tool_use_id,
+                "name": name,
+                "input": arguments if arguments is not None else {"q": "x"},
+            }
+        }
+    )
+    return {
+        "output": {"message": {"role": "assistant", "content": content}},
+        "usage": {"inputTokens": 10, "outputTokens": 4},
+        "ResponseMetadata": {"RequestId": "req-1"},
+    }
+
+
+def openai_tool_call(name="lookup", call_id="call_1", arguments=None, text=""):
+    args = arguments if arguments is not None else {"q": "x"}
+    return {
+        "id": "chatcmpl-1",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": text or None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(args),
+                            },
+                        }
+                    ],
+                }
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 11,
+            "completion_tokens": 6,
+            "prompt_tokens_details": {"cached_tokens": 2},
+            "completion_tokens_details": {"reasoning_tokens": 3},
+        },
+    }
+
+
+_LOOKUP_TOOL = {
+    "name": "lookup",
+    "description": "Find a fact",
+    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+}
 
 
 def openai_ok(text="hello", prompt_tokens=11, completion_tokens=6, cached=2, reasoning=3):
@@ -250,11 +309,12 @@ def test_same_canonical_messages_translate_differently():
     assert openai_result["output"]["text"] == "from-openai"
 
 
-def test_tool_call_block_is_unsupported_on_text_models():
-    converse = FakeConverse([converse_ok()])
+def test_tool_call_history_round_trips_on_converse():
+    converse = FakeConverse([converse_ok("done")])
     controller = make_controller(converse, FakeOpenAI([]))
     result = controller.generate(
         messages=[
+            {"role": "user", "content": "look"},
             {
                 "role": "assistant",
                 "content": [
@@ -262,16 +322,34 @@ def test_tool_call_block_is_unsupported_on_text_models():
                         "type": BLOCK_TOOL_CALL,
                         "id": "call_1",
                         "name": "lookup",
-                        "arguments": {},
+                        "arguments": {"q": "x"},
                     }
                 ],
-            }
+            },
+            {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": BLOCK_TOOL_RESULT,
+                        "tool_call_id": "call_1",
+                        "text": "found it",
+                    }
+                ],
+            },
         ],
         model="openai.gpt-5.5",
+        tools=[_LOOKUP_TOOL],
     )
-    assert result["success"] is False
-    assert result["error_type"] == "unsupported"
-    assert converse.calls == []
+    assert result["success"]
+    native = converse.calls[0]
+    assert native["messages"][1]["content"][0]["toolUse"] == {
+        "toolUseId": "call_1",
+        "name": "lookup",
+        "input": {"q": "x"},
+    }
+    assert native["messages"][2]["role"] == "user"
+    assert native["messages"][2]["content"][0]["toolResult"]["toolUseId"] == "call_1"
+    assert native["toolConfig"]["tools"][0]["toolSpec"]["name"] == "lookup"
 
 
 def test_adapters_receive_resolved_credentials_not_the_config_dict():
@@ -345,18 +423,103 @@ def test_fallback_economy_runs_after_converse_retries_are_exhausted():
     assert result["output"]["execution"]["usage"]["input_tokens"] == 4
 
 
-def test_stream_tools_and_output_schema_are_unsupported():
-    converse = FakeConverse([converse_ok(), converse_ok(), converse_ok()])
+def test_stream_and_output_schema_are_unsupported():
+    converse = FakeConverse([converse_ok(), converse_ok()])
     controller = make_controller(converse, FakeOpenAI([]))
     messages = [{"role": "user", "content": "hi"}]
     for kwargs in (
         {"stream": True},
-        {"tools": [{"name": "lookup"}]},
         {"output_schema": {"type": "object"}},
     ):
         result = controller.generate(messages=messages, model="openai.gpt-5.5", **kwargs)
         assert result["error_type"] == "unsupported"
     assert converse.calls == []
+
+
+def test_text_only_generate_does_not_send_tool_config():
+    converse = FakeConverse([converse_ok()])
+    openai_client = FakeOpenAI([openai_ok("plain")])
+    controller = make_controller(converse, openai_client)
+    controller.generate(messages=[{"role": "user", "content": "hi"}], model="openai.gpt-5.5")
+    controller.generate(messages=[{"role": "user", "content": "hi"}], model="gpt-4o-mini")
+    assert "toolConfig" not in converse.calls[0]
+    assert "tools" not in openai_client.calls[0]
+
+
+def test_tools_round_trip_converse():
+    converse = FakeConverse([converse_tool_use(arguments={"q": "x"})])
+    controller = make_controller(converse, FakeOpenAI([]))
+    result = controller.generate(
+        messages=[{"role": "user", "content": "look it up"}],
+        model="openai.gpt-5.5",
+        tools=[_LOOKUP_TOOL],
+    )
+    assert result["success"]
+    native = converse.calls[0]
+    spec = native["toolConfig"]["tools"][0]["toolSpec"]
+    assert spec["name"] == "lookup"
+    assert spec["inputSchema"]["json"]["properties"]["q"]["type"] == "string"
+    calls = [block for block in result["output"]["content"] if block.get("type") == "tool_call"]
+    assert calls == [
+        {"type": "tool_call", "id": "call_1", "name": "lookup", "arguments": {"q": "x"}}
+    ]
+    assert result["output"]["text"] == ""
+
+
+def test_tools_round_trip_openai():
+    openai_client = FakeOpenAI([openai_tool_call(arguments={"q": "x"})])
+    controller = make_controller(FakeConverse([]), openai_client)
+    result = controller.generate(
+        messages=[{"role": "user", "content": "look it up"}],
+        model="gpt-4o-mini",
+        tools=[_LOOKUP_TOOL],
+        provider_options={"tool_choice": "auto"},
+    )
+    assert result["success"]
+    native = openai_client.calls[0]
+    assert native["tools"][0]["function"]["name"] == "lookup"
+    assert native["tool_choice"] == "auto"
+    calls = [block for block in result["output"]["content"] if block.get("type") == "tool_call"]
+    assert calls == [
+        {"type": "tool_call", "id": "call_1", "name": "lookup", "arguments": {"q": "x"}}
+    ]
+
+
+def test_openai_tool_result_history_keeps_role_tool():
+    openai_client = FakeOpenAI([openai_ok("done")])
+    controller = make_controller(FakeConverse([]), openai_client)
+    result = controller.generate(
+        messages=[
+            {"role": "user", "content": "look"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": BLOCK_TOOL_CALL,
+                        "id": "call_1",
+                        "name": "lookup",
+                        "arguments": {"q": "x"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": BLOCK_TOOL_RESULT,
+                        "tool_call_id": "call_1",
+                        "text": "found it",
+                    }
+                ],
+            },
+        ],
+        model="gpt-4o-mini",
+        tools=[_LOOKUP_TOOL],
+    )
+    assert result["success"]
+    rows = openai_client.calls[0]["messages"]
+    assert rows[1]["tool_calls"][0]["function"]["arguments"] == '{"q": "x"}'
+    assert rows[2] == {"role": "tool", "tool_call_id": "call_1", "content": "found it"}
 
 
 def test_context_is_copied_and_not_checked():

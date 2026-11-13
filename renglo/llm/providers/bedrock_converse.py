@@ -6,6 +6,7 @@ import re
 
 from renglo.llm.providers.errors import classify_provider_error, provider_error_message
 from renglo.llm.registry import (
+    CHAT_CAPABILITIES,
     CallTarget,
     CatalogEntry,
     ProviderContribution,
@@ -14,9 +15,12 @@ from renglo.llm.registry import (
 )
 from renglo.llm.types import (
     BLOCK_TEXT,
+    BLOCK_TOOL_CALL,
+    BLOCK_TOOL_RESULT,
     ERROR_CONFIG,
     ROLE_ASSISTANT,
     ROLE_SYSTEM,
+    ROLE_TOOL,
     ROLE_USER,
     empty_usage,
 )
@@ -34,6 +38,7 @@ _INFERENCE_KEYS = {
 }
 _SAMPLING_OPTIONS = frozenset({"temperature", "topP", "top_p", "topK", "top_k"})
 _SAMPLING_INFERENCE = frozenset({"temperature", "topP"})
+_SKIP_ADDITIONAL = frozenset({"tool_choice", "tools"})
 # Claude 4.6 and every 5+ generation reject temperature, top_p, and top_k.
 _CLAUDE_GENERATION = re.compile(
     r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?",
@@ -93,15 +98,26 @@ class BedrockConverseAdapter:
         system = []
         messages = []
         for message in request.get("messages") or []:
-            text = "\n".join(
-                _block_text(block) for block in (message.get("content") or [])
-            )
             role = message.get("role")
             if role == ROLE_SYSTEM:
+                text = "\n".join(
+                    _block_text(block) for block in (message.get("content") or [])
+                )
                 system.append({"text": text})
                 continue
+            if role == ROLE_TOOL:
+                results = _tool_result_parts(message)
+                if not results:
+                    continue
+                if messages and _is_tool_result_user(messages[-1]):
+                    messages[-1]["content"].extend(results)
+                else:
+                    messages.append({"role": ROLE_USER, "content": results})
+                continue
             if role in (ROLE_USER, ROLE_ASSISTANT):
-                messages.append({"role": role, "content": [{"text": text}]})
+                parts = _converse_content_parts(message, role)
+                if parts:
+                    messages.append({"role": role, "content": parts})
 
         native = {
             "modelId": deployment.model_id,
@@ -109,6 +125,9 @@ class BedrockConverseAdapter:
         }
         if system:
             native["system"] = system
+        specs = _tool_specs(request.get("tools"))
+        if specs:
+            native["toolConfig"] = {"tools": specs}
 
         inference = {}
         max_tokens = request.get("max_output_tokens")
@@ -122,6 +141,8 @@ class BedrockConverseAdapter:
 
         drop_sampling = _drops_sampling(deployment.model_id)
         for key, value in (request.get("provider_options") or {}).items():
+            if key in _SKIP_ADDITIONAL:
+                continue
             if drop_sampling and key in _SAMPLING_OPTIONS:
                 continue
             mapped = _INFERENCE_KEYS.get(key)
@@ -143,13 +164,28 @@ class BedrockConverseAdapter:
         usage = empty_usage()
         raw_usage = {}
         text_parts = []
+        content = []
         provider_output = native if isinstance(native, dict) else {"raw": str(native)}
         if isinstance(native, dict):
             raw_usage = native.get("usage") or {}
             message = ((native.get("output") or {}).get("message") or {})
             for block in message.get("content") or []:
-                if isinstance(block, dict) and block.get("text"):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("text"):
                     text_parts.append(block["text"])
+                    content.append({"type": BLOCK_TEXT, "text": block["text"]})
+                tool_use = block.get("toolUse")
+                if isinstance(tool_use, dict):
+                    args = tool_use.get("input")
+                    content.append(
+                        {
+                            "type": BLOCK_TOOL_CALL,
+                            "id": str(tool_use.get("toolUseId") or ""),
+                            "name": str(tool_use.get("name") or ""),
+                            "arguments": args if isinstance(args, dict) else {},
+                        }
+                    )
         usage["input_tokens"] = _first(raw_usage, "inputTokens", "input_tokens")
         usage["output_tokens"] = _first(raw_usage, "outputTokens", "output_tokens")
         usage["reasoning_tokens"] = _first(raw_usage, "reasoningTokens", "reasoning_tokens")
@@ -168,6 +204,7 @@ class BedrockConverseAdapter:
             )
         return {
             "text": "".join(text_parts),
+            "content": content,
             "usage": usage,
             "provider_output": provider_output,
         }
@@ -254,7 +291,7 @@ def contribute(config):
     for model_id in model_ids:
         entries.append(_entry(model_id, _MODELS_KEY))
         targets[model_id] = _target(config, model_id)
-        models[model_id] = text_model(model_id)
+        models[model_id] = text_model(model_id, capabilities=CHAT_CAPABILITIES)
     return ProviderContribution(entries=entries, targets=targets, models=models)
 
 
@@ -288,12 +325,97 @@ def _first(mapping, *keys):
     return None
 
 
+def _converse_content_parts(message, role):
+    parts = []
+    for block in message.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == BLOCK_TEXT:
+            text = str(block.get("text") or "")
+            if text:
+                parts.append({"text": text})
+            continue
+        if role == ROLE_ASSISTANT and block.get("type") == BLOCK_TOOL_CALL:
+            args = block.get("arguments")
+            parts.append(
+                {
+                    "toolUse": {
+                        "toolUseId": str(block.get("id") or ""),
+                        "name": str(block.get("name") or ""),
+                        "input": args if isinstance(args, dict) else {},
+                    }
+                }
+            )
+    if not parts and role == ROLE_USER:
+        return [{"text": ""}]
+    return parts
+
+
+def _tool_result_parts(message):
+    parts = []
+    for block in message.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == BLOCK_TOOL_RESULT:
+            parts.append(
+                {
+                    "toolResult": {
+                        "toolUseId": str(block.get("tool_call_id") or ""),
+                        "content": [{"text": str(block.get("text") or "")}],
+                    }
+                }
+            )
+            continue
+        if block.get("type") == BLOCK_TEXT:
+            parts.append(
+                {
+                    "toolResult": {
+                        "toolUseId": str(message.get("tool_call_id") or ""),
+                        "content": [{"text": str(block.get("text") or "")}],
+                    }
+                }
+            )
+    return parts
+
+
+def _is_tool_result_user(message):
+    if not isinstance(message, dict) or message.get("role") != ROLE_USER:
+        return False
+    content = message.get("content") or []
+    return bool(content) and all(
+        isinstance(part, dict) and "toolResult" in part for part in content
+    )
+
+
+def _tool_specs(tools):
+    specs = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            continue
+        parameters = tool.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = {"type": "object", "properties": {}}
+        spec = {
+            "name": name,
+            "inputSchema": {"json": parameters},
+        }
+        description = str(tool.get("description") or "")
+        if description:
+            spec["description"] = description
+        specs.append({"toolSpec": spec})
+    return specs
+
+
 def _failure(error_type, message):
     return {
         "ok": False,
         "error_type": error_type,
         "error": message,
         "text": "",
+        "content": [],
         "usage": empty_usage(),
         "provider_output": {},
     }
