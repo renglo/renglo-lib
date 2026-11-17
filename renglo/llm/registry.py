@@ -6,7 +6,9 @@ import importlib
 import pkgutil
 from dataclasses import dataclass, field
 
-from renglo.llm.types import CAPABILITY_TEXT
+from renglo.llm.types import CAPABILITY_TEXT, CAPABILITY_TOOL_CALLING
+
+CHAT_CAPABILITIES = [CAPABILITY_TEXT, CAPABILITY_TOOL_CALLING]
 
 
 @dataclass
