@@ -561,16 +561,70 @@ class AuthModel:
                 "document": data,
                 "status" : e.response['ResponseMetadata']['HTTPStatusCode']
                 }
-        
+
+    def _entity_update(self, index, entity_id, update_expression, names, values):
+        names = dict(names)
+        names.setdefault('#idx', 'index')
+        names.setdefault('#id', '_id')
+        try:
+            response = self.entity_table.update_item(
+                Key={'index': index, '_id': entity_id},
+                UpdateExpression=update_expression,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+                ConditionExpression='attribute_exists(#idx) AND attribute_exists(#id)',
+                ReturnValues='UPDATED_NEW',
+            )
+            return {
+                "success": True,
+                "message": "Entity updated",
+                "document": response.get('Attributes') or {},
+                "status": 200,
+            }
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            status = 404 if code == 'ConditionalCheckFailedException' else e.response['ResponseMetadata']['HTTPStatusCode']
+            return {
+                "success": False,
+                "message": e.response['Error']['Message'],
+                "status": status,
+            }
+
+    def add_entity_number(self, index, entity_id, attribute, delta):
+        """Atomic ADD. A full put_item rewrite drops increments that overlap."""
+        return self._entity_update(
+            index,
+            entity_id,
+            'ADD #attr :delta SET #modified = :now',
+            {'#attr': attribute, '#modified': 'modified'},
+            {':delta': int(delta), ':now': datetime.now().isoformat()},
+        )
+
+    def set_entity_attributes(self, index, entity_id, attributes):
+        """SET named attributes and leave every other attribute, including counters, in place."""
+        names = {'#modified': 'modified'}
+        values = {':now': datetime.now().isoformat()}
+        assignments = ['#modified = :now']
+        for offset, (key, value) in enumerate((attributes or {}).items()):
+            names['#a' + str(offset)] = key
+            values[':v' + str(offset)] = value
+            assignments.append('#a' + str(offset) + ' = :v' + str(offset))
+        return self._entity_update(
+            index,
+            entity_id,
+            'SET ' + ', '.join(assignments),
+            names,
+            values,
+        )
 
 
 
     def delete_entity(self,**entity_document):
 
-        # Team and extension deletes call this helper. Portfolio and org rows
-        # stay in the table and are hidden by status instead.
+        # Team and extension deletes call this helper. Portfolio, org, and ring
+        # rows stay in the table and are hidden by status instead.
         if entity_forbids_hard_delete(entity_document):
-            logger.debug('MODEL: Refused hard delete of portfolio or org')
+            logger.debug('MODEL: Refused hard delete of portfolio, org, or ring')
             return {
                 "success": False,
                 "message": HARD_DELETE_REFUSED,

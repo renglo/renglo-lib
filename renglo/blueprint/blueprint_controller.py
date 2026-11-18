@@ -4,6 +4,7 @@ from datetime import datetime
 import uuid
 import re
 from renglo.blueprint.blueprint_model import BlueprintModel
+from renglo.blueprint.semver import classify_change, merge_blueprint, next_version
 from renglo.auth.auth_controller import AuthController
 from renglo.logger import get_logger
 from renglo.runtime import get_request_args, get_request_json, get_session_value
@@ -30,20 +31,43 @@ class BlueprintController:
         self.AUC = AuthController(config=self.config, tid=tid, ip=ip)
         
 
+    def _saved_blueprint(self, handle, name):
+        found = self.BPM.get_blueprint(handle, name, 'last')
+        if not isinstance(found, dict) or found.get('success') is False:
+            return None
+        if found.get('irn') or found.get('version') or found.get('fields') is not None or found.get('name'):
+            return found
+        return None
+
+    def _publish_version(self, handle, name, data):
+        """Ignore any version in the body and write the next immutable version."""
+        incoming = dict(data or {})
+        incoming.pop('version', None)
+        incoming['handle'] = handle
+        incoming['name'] = name
+        latest = self._saved_blueprint(handle, name)
+        if latest is None:
+            incoming['_id'] = str(uuid.uuid4())
+            incoming['added'] = datetime.now().isoformat()
+            incoming['irn'] = 'irn:blueprint:' + handle + ':' + name
+            incoming['version'] = '1.0.0'
+            return self.BPM.put_blueprint(incoming)
+        merged = merge_blueprint(latest, incoming)
+        merged['version'] = next_version(latest.get('version'), classify_change(latest, merged))
+        merged['modified'] = datetime.now().isoformat()
+        return self.BPM.put_blueprint(merged)
+
     def create_blueprint(self, data, user_handle=None):
 
-        data['_id'] = str(uuid.uuid4())
-        data['added'] = datetime.now().isoformat()
+        data = dict(data or {})
         # It should only allow the creator's handle. Override
-        data['handle'] = user_handle or get_session_value("current_user")
-        if not data['handle']:
+        handle = user_handle or get_session_value("current_user")
+        if not handle:
             return {'success': False, 'message': 'Missing current user handle', 'status': 400}
+        if not data.get('name'):
+            return {'success': False, 'message': 'Missing blueprint name', 'status': 400}
 
-        data['irn'] = 'irn:blueprint:' + data['handle'] +':'+ data['name']
-        if 'version' not in data:
-            data['version'] = "1.0.0"
-
-        return self.BPM.put_blueprint(data)
+        return self._publish_version(handle, data['name'], data)
 
 
     def get_blueprint(self,handle,name,v):
@@ -81,10 +105,7 @@ class BlueprintController:
 
     def update_blueprint(self, handle, name, data=None):
         data = data if isinstance(data, dict) else get_request_json({})
-        data['handle'] = handle
-        data['name'] = name
-    
-        return self.BPM.update_blueprint(data)
+        return self._publish_version(handle, name, data)
 
 
     def delete_blueprint(self,handle,name,v):
