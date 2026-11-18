@@ -1781,13 +1781,47 @@ class AuthController:
 
         if(type =='app'):         
             index = 'irn:entity:team/app:'+kwargs['team_id']+'/*'
+
+        if type == 'ring':
+            if not kwargs.get('portfolio_id') or not kwargs.get('org_id'):
+                return {'success': False, 'message': 'Missing attributes', 'status': 400}
+            index = (
+                'irn:entity:portfolio/org/ring:'
+                + kwargs['portfolio_id']
+                + '/'
+                + kwargs['org_id']
+                + '/*'
+            )
             
         if type in self.INSTALLABLE_TYPES:
             index = self._installable_entity_index(type, kwargs['portfolio_id'])
 
         response = self.AUM.list_entity(index)
-        if type == 'org':
-            return self._filter_deleted_entities(response)
+        if type in ('org', 'ring'):
+            response = self._filter_deleted_entities(response)
+        if type == 'ring' and kwargs.get('team_id'):
+            return self._filter_rings_for_team(
+                response, kwargs['team_id'], kwargs['org_id']
+            )
+        return response
+
+    def _filter_rings_for_team(self, response, team_id, org_id):
+        """A caller acting as a team only sees rings linked to that team."""
+        rels = self.list_rel('team:ring', team_id=team_id)
+        if not rels or rels.get('success') is False:
+            return rels
+        prefix = str(org_id) + '/'
+        allowed = set()
+        for item in ((rels.get('document') or {}).get('items') or []):
+            rel = str((item or {}).get('rel') or '')
+            if rel.startswith(prefix):
+                allowed.add(rel[len(prefix):])
+        document = (response or {}).get('document')
+        if isinstance(document, dict):
+            document['items'] = [
+                item for item in (document.get('items') or [])
+                if (item.get('_id') in allowed or item.get('name') in allowed)
+            ]
         return response
 
 
@@ -1830,6 +1864,19 @@ class AuthController:
             else:
                 missing = True
 
+        elif type == 'ring':
+            if all(key in kwargs for key in ['portfolio_id', 'org_id', 'ring_id']):
+                index = (
+                    'irn:entity:portfolio/org/ring:'
+                    + kwargs['portfolio_id']
+                    + '/'
+                    + kwargs['org_id']
+                    + '/*'
+                )
+                id = kwargs['ring_id']
+            else:
+                missing = True
+
         # The above code snippet is checking if the `type` is equal to 'tool' and if certain keys
         # ('portfolio_id' and 'tool_id') are present in the `kwargs` dictionary. If both conditions
         # are met, it sets the `index` variable to a specific value based on the 'portfolio_id' key,
@@ -1858,7 +1905,7 @@ class AuthController:
 
         if (
             not include_deleted
-            and type in ('portfolio', 'org')
+            and type in ('portfolio', 'org', 'ring')
             and entity_is_deleted(response.get('document'))
         ):
             return {
@@ -1908,6 +1955,39 @@ class AuthController:
             sk = new_id
             irn = 'irn:entity:portfolio/team:'+kwargs['portfolio_id']+'/'+ new_id
 
+        if type == 'ring':
+            if not all(kwargs.get(key) for key in ('portfolio_id', 'org_id', 'name')):
+                return {'success': False, 'message': 'Missing attributes', 'status': 400}
+            existing = self.get_entity(
+                'ring',
+                include_deleted=True,
+                portfolio_id=kwargs['portfolio_id'],
+                org_id=kwargs['org_id'],
+                ring_id=kwargs['name'],
+            )
+            if existing.get('success'):
+                return {
+                    'success': False,
+                    'message': 'Collection already exists',
+                    'status': 409,
+                }
+            pk = (
+                'irn:entity:portfolio/org/ring:'
+                + kwargs['portfolio_id']
+                + '/'
+                + kwargs['org_id']
+                + '/*'
+            )
+            sk = kwargs['name']
+            irn = (
+                'irn:entity:portfolio/org/ring:'
+                + kwargs['portfolio_id']
+                + '/'
+                + kwargs['org_id']
+                + '/'
+                + kwargs['name']
+            )
+
         elif type in self.INSTALLABLE_TYPES:
             pk = self._installable_entity_index(type, kwargs['portfolio_id'])
             sk = new_id
@@ -1953,6 +2033,14 @@ class AuthController:
 
         if type in self.INSTALLABLE_TYPES:
             data['roles'] = self._normalize_roles_list(kwargs.get('roles'))
+
+        if type == 'ring':
+            data['document_count'] = 0
+            data['blueprint'] = {
+                'handle': kwargs.get('blueprint_handle') or kwargs.get('portfolio_id') or '',
+                'name': kwargs.get('blueprint_name') or kwargs.get('name') or '',
+                'version': kwargs.get('blueprint_version') or '1.0.0',
+            }
 
     
         self.logger.debug('Entity to Create:'+str(data))
@@ -2216,6 +2304,10 @@ class AuthController:
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
             rel = data['org_id']
 
+        elif reltype == 'team:ring':
+            index = 'irn:rel:team:ring:' + data['team_id'] + ':*'
+            rel = data['org_id'] + '/' + data['ring_name']
+
         elif reltype == 'email:hash:ttl': #One to Many
             index = 'irn:rel:email:hash:ttl:*:*:*'
             rel = data['email']+':'+data['hash']+':'+str(data['ttl'])
@@ -2321,6 +2413,10 @@ class AuthController:
         elif reltype == 'team:org': #One to Many
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
             rel = data['org_id']
+
+        elif reltype == 'team:ring':
+            index = 'irn:rel:team:ring:' + data['team_id'] + ':*'
+            rel = data['org_id'] + '/' + data['ring_name']
         
         elif reltype == 'email:hash:ttl': #One to Many
             index = 'irn:rel:email:hash:ttl:*:*:*'
@@ -2430,6 +2526,10 @@ class AuthController:
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
             rel = data['org_id']
 
+        elif reltype == 'team:ring':
+            index = 'irn:rel:team:ring:' + data['team_id'] + ':*'
+            rel = data['org_id'] + '/' + data['ring_name']
+
         elif reltype == 'email:hash:ttl': #One to Many
             index = 'irn:rel:email:hash:ttl:*:*:*'
             rel = data['email']+':'+data['hash']+':'+str(data['ttl'])
@@ -2496,6 +2596,9 @@ class AuthController:
 
         elif reltype == 'team:org': #One to Many
             index = 'irn:rel:team:org:' + data['team_id'] + ':*'
+
+        elif reltype == 'team:ring':
+            index = 'irn:rel:team:ring:' + data['team_id'] + ':*'
 
         elif reltype == 'email:hash:ttl': #One to Many
             index = 'irn:rel:email:hash:ttl:*:*:*'
@@ -3564,12 +3667,13 @@ class AuthController:
 
     def _soft_delete_entity(self, entity_type, **lookup):
         """
-        Mark a portfolio or org deleted and leave every relationship in place.
+        Mark a portfolio, org, or ring deleted and leave every relationship in place.
 
         Tree generation and get/list skip the row. The document stays so the
         data under that id can be recovered.
         """
-        label = 'Portfolio' if entity_type == 'portfolio' else 'Org'
+        labels = {'portfolio': 'Portfolio', 'org': 'Org', 'ring': 'Collection'}
+        label = labels.get(entity_type, 'Entity')
         if entity_type == 'portfolio' and not lookup.get('portfolio_id'):
             return {
                 "success": False,
@@ -3578,6 +3682,14 @@ class AuthController:
             }
         if entity_type == 'org' and not (
             lookup.get('portfolio_id') and lookup.get('org_id')
+        ):
+            return {
+                "success": False,
+                "message": "Missing attributes",
+                "status": 400,
+            }
+        if entity_type == 'ring' and not (
+            lookup.get('portfolio_id') and lookup.get('org_id') and lookup.get('ring_id')
         ):
             return {
                 "success": False,
@@ -3630,6 +3742,48 @@ class AuthController:
             'org',
             portfolio_id=kwargs.get('portfolio_id'),
             org_id=kwargs.get('org_id'),
+        )
+
+    def remove_ring_funnel(self, **kwargs):
+        """Tombstone a ring entity. Leave its rels, blueprint, and documents."""
+        self.logger.debug('Initiating DELETE RING')
+        return self._soft_delete_entity(
+            'ring',
+            portfolio_id=kwargs.get('portfolio_id'),
+            org_id=kwargs.get('org_id'),
+            ring_id=kwargs.get('ring_id'),
+        )
+
+    def ring_index(self, portfolio_id, org_id):
+        return 'irn:entity:portfolio/org/ring:' + portfolio_id + '/' + org_id + '/*'
+
+    def adjust_document_count(self, portfolio_id, org_id, ring_id, delta):
+        """ADD document_count so concurrent creates do not lose increments."""
+        adder = getattr(self.AUM, 'add_entity_number', None)
+        if adder is None:
+            return {'success': False, 'message': 'Counter is unavailable', 'status': 500}
+        return adder(self.ring_index(portfolio_id, org_id), ring_id, 'document_count', int(delta))
+
+    def set_ring_blueprint(self, portfolio_id, org_id, ring_id, blueprint):
+        """SET the blueprint pointer without rewriting document_count."""
+        setter = getattr(self.AUM, 'set_entity_attributes', None)
+        if setter is None:
+            return {'success': False, 'message': 'Attribute update is unavailable', 'status': 500}
+        return setter(
+            self.ring_index(portfolio_id, org_id),
+            ring_id,
+            {'blueprint': blueprint},
+        )
+
+    def set_ring_data_type(self, portfolio_id, org_id, ring_id, data_type):
+        """Remember which data type this collection follows. No version is stored."""
+        setter = getattr(self.AUM, 'set_entity_attributes', None)
+        if setter is None:
+            return {'success': False, 'message': 'Attribute update is unavailable', 'status': 500}
+        return setter(
+            self.ring_index(portfolio_id, org_id),
+            ring_id,
+            {'data_type': data_type},
         )
     
 

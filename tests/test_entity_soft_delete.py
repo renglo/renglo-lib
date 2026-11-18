@@ -48,9 +48,15 @@ class EntityStatusTests(unittest.TestCase):
         self.assertTrue(entity_is_deleted({"status": "deleted"}))
         self.assertTrue(entity_is_deleted({"status": " Deleted "}))
 
-    def test_hard_delete_guard_matches_portfolio_and_org_only(self):
+    def test_hard_delete_guard_matches_portfolio_org_and_ring(self):
         self.assertTrue(entity_forbids_hard_delete({"type": "portfolio"}))
         self.assertTrue(entity_forbids_hard_delete({"type": "Org"}))
+        self.assertTrue(entity_forbids_hard_delete({"type": "ring"}))
+        self.assertTrue(
+            entity_forbids_hard_delete(
+                {"index": "irn:entity:portfolio/org/ring:p1/o1/*"}
+            )
+        )
         self.assertTrue(
             entity_forbids_hard_delete({"index": "irn:entity:portfolio:*"})
         )
@@ -154,6 +160,16 @@ class FakeAuthModel:
             "success": True,
             "message": "Documents found",
             "document": {"items": items, "lastkey": None},
+            "status": 200,
+        }
+
+    def create_rel(self, **rel_document):
+        index = rel_document["index"]
+        self.rels.setdefault(index, []).append(dict(rel_document))
+        return {
+            "success": True,
+            "message": "Rel created",
+            "document": rel_document,
             "status": 200,
         }
 
@@ -329,6 +345,67 @@ class SoftDeleteControllerTests(unittest.TestCase):
         self.assertEqual(document["type"], "extension")
         self.assertEqual(document["index"], "irn:entity:portfolio/extension:p_live/*")
         self.assertTrue(document["irn"].startswith("irn:entity:portfolio/extension:p_live/"))
+
+    def test_ring_uses_the_collection_name_and_soft_deletes(self):
+        created = self.auth.create_entity(
+            "ring",
+            portfolio_id="p_live",
+            org_id="o_live",
+            name="projects",
+            blueprint_version="1.0.0",
+        )
+        self.assertTrue(created["success"])
+        document = created["document"]
+        self.assertEqual(document["_id"], "projects")
+        self.assertEqual(document["type"], "ring")
+        self.assertEqual(document["document_count"], 0)
+        self.assertEqual(
+            document["index"],
+            "irn:entity:portfolio/org/ring:p_live/o_live/*",
+        )
+        self.assertEqual(document["blueprint"]["handle"], "p_live")
+        linked = self.auth.create_rel(
+            "team:ring",
+            team_id="t1",
+            org_id="o_live",
+            ring_name="projects",
+        )
+        self.assertTrue(linked["success"])
+        self.assertEqual(
+            self.store.rels["irn:rel:team:ring:t1:*"][0]["rel"],
+            "o_live/projects",
+        )
+
+        hidden = self.auth.create_entity(
+            "ring",
+            portfolio_id="p_live",
+            org_id="o_live",
+            name="archive",
+        )
+        self.assertTrue(hidden["success"])
+        self.auth.remove_ring_funnel(
+            portfolio_id="p_live", org_id="o_live", ring_id="archive"
+        )
+        listed = self.auth.list_entity(
+            "ring", portfolio_id="p_live", org_id="o_live", team_id="t1"
+        )
+        names = [item["name"] for item in listed["document"]["items"]]
+        self.assertEqual(names, ["projects"])
+        self.assertEqual(
+            self.auth.get_entity(
+                "ring", portfolio_id="p_live", org_id="o_live", ring_id="archive"
+            )["status"],
+            404,
+        )
+        again = self.auth.create_entity(
+            "ring",
+            portfolio_id="p_live",
+            org_id="o_live",
+            name="archive",
+        )
+        self.assertEqual(again["status"], 409)
+        refused = self.auth.unlink_entity(**document)
+        self.assertEqual(refused["message"], HARD_DELETE_REFUSED)
 
     def test_team_delete_still_removes_a_team(self):
         removed = self.auth.remove_team_funnel(portfolio_id="p_live", team_id="t1")

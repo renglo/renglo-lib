@@ -12,6 +12,7 @@ from renglo.data.data_model import DataModel
 from renglo.files.files_model import FilesModel
 from renglo.blueprint.blueprint_controller import BlueprintController
 from renglo.auth.auth_controller import AuthController
+from renglo.auth.entity_status import entity_is_deleted
 from renglo.auth.authorize import authorize
 from renglo.search.search_controller import SearchController
 from renglo.graph.graph_controller import GraphController
@@ -575,10 +576,21 @@ class DataController:
         if indexes is None:
             return False  # No index string needs to be generated if "indexes" doesn't exist
 
-        # Ensure "indexes" has a "path" key and it is a list
+        # A path index is the default. Geo is stored the same way when path is absent.
+        # A time-only index stores a seconds timestamp so chrono can read the ring.
         path = indexes.get('path')
-        if not isinstance(path, list):
-            return False  # Invalid indexes object, exit with False
+        if not isinstance(path, list) or not path:
+            geo = indexes.get('geo')
+            if isinstance(geo, str) and geo.strip():
+                path = [geo.strip()]
+            elif isinstance(geo, list) and geo:
+                path = geo
+            else:
+                time_fields = indexes.get('time') or []
+                if isinstance(time_fields, list) and time_fields:
+                    timestamp = int(datetime.now().timestamp())
+                    return f"irn:h_index:{org}:{blueprint.get('name')}:{timestamp}"
+                return False
 
         # Check if all fields in the path exist in the blueprint's fields
         valid_fields = {field['name'] for field in blueprint.get('fields', [])}
@@ -1113,6 +1125,8 @@ class DataController:
         
         
     def get_a_b_query(self,query):
+        if self.ring_is_deleted(query.get('portfolio'), query.get('org'), query.get('ring')):
+            return self._deleted_collection()
         
         '''
         Incoming query object must have the following shape
@@ -1259,6 +1273,8 @@ class DataController:
           [{(item)}]
 
         '''
+        if self.ring_is_deleted(portfolio, org, ring):
+            return self._deleted_collection()
         items = []
 
         response = self.DAM.get_a_b(portfolio,org,ring,limit=limit,lastkey=lastkey)
@@ -1341,16 +1357,52 @@ class DataController:
         self.logger.debug('NUMBER OF ITEMS:'+str(i))
         
         return result
+
+    def ring_is_deleted(self, portfolio, org, ring):
+        """True only when a ring entity exists and its tombstone is set."""
+        try:
+            found = self.AUC.get_entity(
+                'ring',
+                portfolio_id=portfolio,
+                org_id=org,
+                ring_id=ring,
+                include_deleted=True,
+            )
+        except Exception:
+            return False
+        if not found or not found.get('success'):
+            return False
+        return entity_is_deleted(found.get('document'))
+
+    def _deleted_collection(self):
+        return {
+            'success': False,
+            'message': 'Collection is deleted',
+            'error': {'type': 'CollectionDeleted', 'message': 'Collection is deleted'},
+            'status': 409,
+        }
+
+    def _note_document_count(self, portfolio, org, ring, delta):
+        try:
+            noted = self.AUC.adjust_document_count(portfolio, org, ring, delta)
+            if not noted.get('success'):
+                self.logger.info('document_count not adjusted: %s', noted.get('message'))
+        except Exception as exc:
+            self.logger.info('document_count not adjusted: %s', exc)
     
 
 
     @authorize(return_status=True)
-    def post_a_b(self,portfolio,org,ring,payload):
+    def post_a_b(self,portfolio,org,ring,payload,document_id=None):
         '''
         Creates new item
         '''
+        if self.ring_is_deleted(portfolio, org, ring):
+            return self._deleted_collection(), 409
         try:
             item = self.construct_post_item(portfolio,org,ring,payload)
+            if document_id:
+                item['_id'] = str(document_id)
             
             self.logger.debug('Prepared Item:'+str(item))
 
@@ -1365,6 +1417,7 @@ class DataController:
                 result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+item['_id'])
                 result['item'] = item
                 status = 200
+                self._note_document_count(portfolio, org, ring, 1)
                 self._sync_saved_document(
                     result, portfolio, org, ring, item['_id'], item, 'POST',
                 )
@@ -1396,6 +1449,8 @@ class DataController:
         '''
         Gets an existing item
         '''
+        if self.ring_is_deleted(portfolio, org, ring):
+            return self._deleted_collection()
         self.logger.debug('IDX:'+str(idx))
         
         response = self.DAM.get_a_b_c(portfolio,org,ring,idx)
@@ -1448,6 +1503,8 @@ class DataController:
         Partial updates to an existing document. 
         FE only needs to send the field to be updated. No need to send the entire document.
         '''
+        if self.ring_is_deleted(portfolio, org, ring):
+            return self._deleted_collection(), 409
         result = {}
 
         #self.logger.debug('Icoming put object:'+str(payload))
@@ -1491,6 +1548,8 @@ class DataController:
         '''
         Delete an existing document.
         '''
+        if self.ring_is_deleted(portfolio, org, ring):
+            return self._deleted_collection(), 409
         self.logger.debug('Item to delete:'+str(idx))
 
         doc_before_delete = self.get_a_b_c(portfolio, org, ring, idx)
@@ -1507,6 +1566,7 @@ class DataController:
             result['message'] = 'Item deleted'
             result['path'] = str(portfolio+'/'+org+'/'+ring+'/'+idx)
             status = 200
+            self._note_document_count(portfolio, org, ring, -1)
             self.logger.debug('Returned object:'+str(result))
             self._sync_saved_document(
                 result, portfolio, org, ring, idx, graph_attrs, 'DELETE',
