@@ -1,0 +1,1593 @@
+{
+    "name": "infrastructure.ontology.v2",
+    "version": "2.1.0",
+    "dictionaries": [
+      "infrastructure.2.0.0"
+    ],
+    "description": "Universal infrastructure ontology for modeling cloud, identity, network, application, data, platform, observability, integration, and governance resources with normalized relationship semantics. Universal types and functional domains are provider-agnostic; provider dictionaries map vendor-native types into these terms.",
+    "classification_policy": {
+      "description": "functional_domains group universal node_types only \u2014 never provider-native types such as AWS::IAM::User or OktaUser. Handlers and dictionaries translate provider types to universal_type, then functional_domain is derived from this ontology.",
+      "derivation": "An element's functional_domain is resolved by matching its universal_type against functional_domains[].types, or by inheritance from the abstract parent_type chain."
+    },
+    "relationship_classes": [
+      {
+        "id": "structural",
+        "description": "Topology or placement relationship discovered directly from provider resource metadata."
+      },
+      {
+        "id": "binding",
+        "description": "Configuration relationship such as memberships, attachments, and role-policy bindings."
+      },
+      {
+        "id": "authorization",
+        "description": "Declared permission relationship parsed from policy documents."
+      }
+    ],
+    "node_types": [
+      {
+        "type": "InfrastructureObject",
+        "semantic": "infrastructure.object",
+        "abstract": true,
+        "description": "Root type for any infrastructure resource represented in the graph.",
+        "examples": []
+      },
+      {
+        "type": "IdentityResource",
+        "semantic": "infrastructure.domain.identity",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for identity, account, and access-principal resources.",
+        "examples": []
+      },
+      {
+        "type": "NetworkResource",
+        "semantic": "infrastructure.domain.network",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for network topology, DNS, and network security boundaries.",
+        "examples": []
+      },
+      {
+        "type": "ComputeResource",
+        "semantic": "infrastructure.domain.compute",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for runtimes and executable workloads.",
+        "examples": []
+      },
+      {
+        "type": "ApplicationResource",
+        "semantic": "infrastructure.domain.application",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for business applications and request-facing interfaces.",
+        "examples": []
+      },
+      {
+        "type": "StorageResource",
+        "semantic": "infrastructure.domain.storage",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for object and block/blob storage systems.",
+        "examples": []
+      },
+      {
+        "type": "DatabaseResource",
+        "semantic": "infrastructure.domain.database",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for structured and semi-structured data persistence.",
+        "examples": []
+      },
+      {
+        "type": "SecretResource",
+        "semantic": "infrastructure.domain.secret",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for secrets, keys, and certificates.",
+        "examples": []
+      },
+      {
+        "type": "PolicyResource",
+        "semantic": "infrastructure.domain.policy",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for authorization, protection, and compliance-control policies.",
+        "examples": []
+      },
+      {
+        "type": "EndpointResource",
+        "semantic": "infrastructure.domain.endpoint",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for private connectivity endpoints and attachment points.",
+        "examples": []
+      },
+      {
+        "type": "IntegrationResource",
+        "semantic": "infrastructure.domain.integration",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for messaging, eventing, and workflow integration.",
+        "examples": []
+      },
+      {
+        "type": "PlatformResource",
+        "semantic": "infrastructure.domain.platform",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for IaC, CI/CD, deployment, and platform tooling.",
+        "examples": []
+      },
+      {
+        "type": "ObservabilityResource",
+        "semantic": "infrastructure.domain.observability",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for logs, metrics, alarms, traces, and audit telemetry.",
+        "examples": []
+      },
+      {
+        "type": "GovernanceResource",
+        "semantic": "infrastructure.domain.governance",
+        "parent_type": "InfrastructureObject",
+        "abstract": true,
+        "description": "Abstract facet for tagging, ownership metadata, and organizational governance.",
+        "examples": []
+      },
+      {
+        "type": "Account",
+        "semantic": "infrastructure.account",
+        "parent_type": "IdentityResource",
+        "description": "A cloud, SaaS, or platform account that owns or contains infrastructure resources.",
+        "examples": [
+          "AWSAccount",
+          "AzureSubscription",
+          "GCPProject",
+          "OktaOrg"
+        ]
+      },
+      {
+        "type": "OrganizationalUnit",
+        "semantic": "infrastructure.organizational_unit",
+        "parent_type": "IdentityResource",
+        "description": "An organizational subdivision such as an AWS OU or enterprise business unit.",
+        "examples": [
+          "AWSOrganizationsOU"
+        ]
+      },
+      {
+        "type": "Region",
+        "semantic": "infrastructure.region",
+        "parent_type": "InfrastructureObject",
+        "description": "A geographic or logical provider region.",
+        "examples": [
+          "us-east-1",
+          "eastus",
+          "europe-west1"
+        ]
+      },
+      {
+        "type": "IdentityProvider",
+        "semantic": "infrastructure.identity_provider",
+        "parent_type": "IdentityResource",
+        "description": "A system that authenticates users or applications.",
+        "examples": [
+          "CognitoUserPool",
+          "OktaOrg",
+          "AzureADTenant"
+        ]
+      },
+      {
+        "type": "User",
+        "semantic": "infrastructure.user",
+        "parent_type": "IdentityResource",
+        "description": "A human identity.",
+        "examples": [
+          "IAMUser",
+          "CognitoUser",
+          "OktaUser"
+        ]
+      },
+      {
+        "type": "Group",
+        "semantic": "infrastructure.group",
+        "parent_type": "IdentityResource",
+        "description": "A collection of users or identities.",
+        "examples": [
+          "IAMGroup",
+          "OktaGroup",
+          "AzureADGroup"
+        ]
+      },
+      {
+        "type": "Role",
+        "semantic": "infrastructure.role",
+        "parent_type": "IdentityResource",
+        "description": "An assumable identity used by users, services, or workloads.",
+        "examples": [
+          "IAMRole",
+          "ServiceAccount",
+          "OktaAdminRole"
+        ]
+      },
+      {
+        "type": "Network",
+        "semantic": "infrastructure.network",
+        "parent_type": "NetworkResource",
+        "description": "A logical network boundary.",
+        "examples": [
+          "VPC",
+          "VNet"
+        ]
+      },
+      {
+        "type": "Subnet",
+        "semantic": "infrastructure.subnet",
+        "parent_type": "NetworkResource",
+        "description": "A segmented network range inside a network.",
+        "examples": [
+          "AWSSubnet",
+          "AzureSubnet"
+        ]
+      },
+      {
+        "type": "DNSZone",
+        "semantic": "infrastructure.dns_zone",
+        "parent_type": "NetworkResource",
+        "description": "A DNS namespace.",
+        "examples": [
+          "Route53HostedZone",
+          "CloudDNSManagedZone"
+        ]
+      },
+      {
+        "type": "DNSRecord",
+        "semantic": "infrastructure.dns_record",
+        "parent_type": "NetworkResource",
+        "description": "A DNS record that routes names to targets.",
+        "examples": [
+          "ARecord",
+          "CNAMERecord",
+          "AliasRecord"
+        ]
+      },
+      {
+        "type": "SecurityBoundary",
+        "semantic": "infrastructure.security_boundary",
+        "parent_type": "NetworkResource",
+        "description": "A network or access-control boundary.",
+        "examples": [
+          "SecurityGroup",
+          "NACL",
+          "FirewallRule",
+          "NetworkSecurityGroup",
+          "WAFWebACL"
+        ]
+      },
+      {
+        "type": "NetworkInterface",
+        "semantic": "infrastructure.network_interface",
+        "parent_type": "NetworkResource",
+        "description": "A virtual network interface attached to a compute or endpoint resource.",
+        "examples": [
+          "EC2NetworkInterface",
+          "AzureNIC"
+        ]
+      },
+      {
+        "type": "Compute",
+        "semantic": "infrastructure.compute",
+        "parent_type": "ComputeResource",
+        "description": "A runtime capable of executing workloads.",
+        "examples": [
+          "EC2Instance",
+          "VM",
+          "Container",
+          "ECSService"
+        ]
+      },
+      {
+        "type": "Function",
+        "semantic": "infrastructure.function",
+        "parent_type": "ComputeResource",
+        "description": "A serverless compute function.",
+        "examples": [
+          "Lambda",
+          "AzureFunction",
+          "CloudFunction"
+        ]
+      },
+      {
+        "type": "Application",
+        "semantic": "infrastructure.application",
+        "parent_type": "ApplicationResource",
+        "description": "A logical grouping of infrastructure, services, identities, and data resources that collectively deliver a business capability.",
+        "examples": [
+          "CustomerPortal",
+          "TravelBookingPlatform",
+          "SalesforceCRM",
+          "OktaApplication"
+        ]
+      },
+      {
+        "type": "API",
+        "semantic": "infrastructure.api",
+        "parent_type": "ApplicationResource",
+        "description": "A network-accessible application interface.",
+        "examples": [
+          "APIGateway",
+          "LoadBalancer",
+          "Ingress",
+          "OktaInlineHook",
+          "CloudFrontDistribution"
+        ]
+      },
+      {
+        "type": "ObjectStorage",
+        "semantic": "infrastructure.object_storage",
+        "parent_type": "StorageResource",
+        "description": "Blob or file-like storage.",
+        "examples": [
+          "S3Bucket",
+          "BlobContainer",
+          "GCSBucket",
+          "EBSVolume",
+          "EFSFileSystem"
+        ]
+      },
+      {
+        "type": "DataStore",
+        "semantic": "infrastructure.datastore",
+        "parent_type": "DatabaseResource",
+        "description": "A structured or semi-structured data persistence system.",
+        "examples": [
+          "DynamoDBTable",
+          "RDSDatabase",
+          "PostgreSQLDatabase",
+          "ElastiCacheCluster"
+        ]
+      },
+      {
+        "type": "Secret",
+        "semantic": "infrastructure.secret",
+        "parent_type": "SecretResource",
+        "description": "Sensitive credential or configuration material.",
+        "examples": [
+          "SecretsManagerSecret",
+          "SSMParameter",
+          "KMSKey",
+          "OktaApiToken"
+        ]
+      },
+      {
+        "type": "Certificate",
+        "semantic": "infrastructure.certificate",
+        "parent_type": "SecretResource",
+        "description": "A TLS or identity certificate.",
+        "examples": [
+          "ACMCertificate",
+          "AzureKeyVaultCertificate"
+        ]
+      },
+      {
+        "type": "Policy",
+        "semantic": "infrastructure.policy",
+        "parent_type": "PolicyResource",
+        "description": "A permission document, rule set, or governance policy.",
+        "examples": [
+          "IAMPolicy",
+          "BucketPolicy",
+          "OktaPolicy",
+          "AzureRoleDefinition",
+          "ServiceControlPolicy"
+        ]
+      },
+      {
+        "type": "ComplianceRule",
+        "semantic": "infrastructure.compliance_rule",
+        "parent_type": "PolicyResource",
+        "description": "An automated compliance or configuration evaluation rule.",
+        "examples": [
+          "AWSConfigRule",
+          "AzurePolicyAssignment"
+        ]
+      },
+      {
+        "type": "Endpoint",
+        "semantic": "infrastructure.endpoint",
+        "parent_type": "EndpointResource",
+        "description": "A private or hybrid connectivity endpoint into a network or service.",
+        "examples": [
+          "VPCEndpoint",
+          "PrivateLinkEndpoint",
+          "GlobalAccelerator"
+        ]
+      },
+      {
+        "type": "Queue",
+        "semantic": "infrastructure.queue",
+        "parent_type": "IntegrationResource",
+        "description": "An asynchronous point-to-point message queue.",
+        "examples": [
+          "SQSQueue",
+          "AzureServiceBusQueue"
+        ]
+      },
+      {
+        "type": "Topic",
+        "semantic": "infrastructure.topic",
+        "parent_type": "IntegrationResource",
+        "description": "A publish/subscribe notification topic.",
+        "examples": [
+          "SNSTopic",
+          "AzureEventGridTopic"
+        ]
+      },
+      {
+        "type": "EventBus",
+        "semantic": "infrastructure.event_bus",
+        "parent_type": "IntegrationResource",
+        "description": "An event router or bus for event-driven architectures.",
+        "examples": [
+          "EventBridgeBus",
+          "AzureEventGridDomain"
+        ]
+      },
+      {
+        "type": "Stream",
+        "semantic": "infrastructure.stream",
+        "parent_type": "IntegrationResource",
+        "description": "A durable ordered event or data stream.",
+        "examples": [
+          "KinesisStream",
+          "KafkaTopic"
+        ]
+      },
+      {
+        "type": "DeliveryStream",
+        "semantic": "infrastructure.delivery_stream",
+        "parent_type": "IntegrationResource",
+        "description": "A managed stream delivery pipeline to sinks such as storage or analytics.",
+        "examples": [
+          "KinesisFirehose"
+        ]
+      },
+      {
+        "type": "Workflow",
+        "semantic": "infrastructure.workflow",
+        "parent_type": "IntegrationResource",
+        "description": "An orchestrated multi-step integration or state machine workflow.",
+        "examples": [
+          "StepFunctionsStateMachine",
+          "OktaWorkflow"
+        ]
+      },
+      {
+        "type": "Subscription",
+        "semantic": "infrastructure.subscription",
+        "parent_type": "IntegrationResource",
+        "description": "A subscription binding between an event source and a consumer.",
+        "examples": [
+          "LogSubscriptionFilter",
+          "SNSSubscription",
+          "EventBridgeRuleTarget"
+        ]
+      },
+      {
+        "type": "Stack",
+        "semantic": "infrastructure.stack",
+        "parent_type": "PlatformResource",
+        "description": "An infrastructure-as-code stack or deployment unit.",
+        "examples": [
+          "CloudFormationStack",
+          "TerraformStack",
+          "ARMDeployment"
+        ]
+      },
+      {
+        "type": "Pipeline",
+        "semantic": "infrastructure.pipeline",
+        "parent_type": "PlatformResource",
+        "description": "A continuous integration or delivery pipeline.",
+        "examples": [
+          "CodePipeline",
+          "AzureDevOpsPipeline",
+          "GitHubActionsWorkflow"
+        ]
+      },
+      {
+        "type": "BuildProject",
+        "semantic": "infrastructure.build_project",
+        "parent_type": "PlatformResource",
+        "description": "A managed build or compile project.",
+        "examples": [
+          "CodeBuildProject",
+          "CloudBuildTrigger"
+        ]
+      },
+      {
+        "type": "ArtifactRepository",
+        "semantic": "infrastructure.artifact_repository",
+        "parent_type": "PlatformResource",
+        "description": "A repository for build artifacts such as container images or packages.",
+        "examples": [
+          "ECRRepository",
+          "AzureContainerRegistry",
+          "ArtifactRegistry"
+        ]
+      },
+      {
+        "type": "DeploymentApplication",
+        "semantic": "infrastructure.deployment_application",
+        "parent_type": "PlatformResource",
+        "description": "A deployment controller or release application.",
+        "examples": [
+          "CodeDeployApplication",
+          "ArgoCDApplication"
+        ]
+      },
+      {
+        "type": "CatalogProduct",
+        "semantic": "infrastructure.catalog_product",
+        "parent_type": "PlatformResource",
+        "description": "A reusable platform catalog product or template offering.",
+        "examples": [
+          "ServiceCatalogProduct",
+          "AzureMarketplaceProduct"
+        ]
+      },
+      {
+        "type": "SourceRepository",
+        "semantic": "infrastructure.source_repository",
+        "parent_type": "PlatformResource",
+        "description": "A source-control repository consumed by platform pipelines.",
+        "examples": [
+          "CodeCommitRepository",
+          "GitHubRepository"
+        ]
+      },
+      {
+        "type": "LogStore",
+        "semantic": "infrastructure.log_store",
+        "parent_type": "ObservabilityResource",
+        "description": "A durable log group or log storage container.",
+        "examples": [
+          "CloudWatchLogGroup",
+          "LogAnalyticsWorkspace"
+        ]
+      },
+      {
+        "type": "LogStream",
+        "semantic": "infrastructure.log_stream",
+        "parent_type": "ObservabilityResource",
+        "description": "A stream or partition within a log store.",
+        "examples": [
+          "CloudWatchLogStream"
+        ]
+      },
+      {
+        "type": "Alert",
+        "semantic": "infrastructure.alert",
+        "parent_type": "ObservabilityResource",
+        "description": "A threshold or signal-based alert.",
+        "examples": [
+          "CloudWatchAlarm",
+          "AzureMetricAlert"
+        ]
+      },
+      {
+        "type": "Metric",
+        "semantic": "infrastructure.metric",
+        "parent_type": "ObservabilityResource",
+        "description": "A measured signal emitted by infrastructure or applications.",
+        "examples": [
+          "CloudWatchMetric",
+          "PrometheusMetric"
+        ]
+      },
+      {
+        "type": "AuditTrail",
+        "semantic": "infrastructure.audit_trail",
+        "parent_type": "ObservabilityResource",
+        "description": "An audit or activity trail for control-plane and data-plane events.",
+        "examples": [
+          "CloudTrailTrail",
+          "AzureActivityLog"
+        ]
+      },
+      {
+        "type": "TraceGroup",
+        "semantic": "infrastructure.trace_group",
+        "parent_type": "ObservabilityResource",
+        "description": "A distributed tracing group or sampling domain.",
+        "examples": [
+          "XRayGroup"
+        ]
+      },
+      {
+        "type": "Dashboard",
+        "semantic": "infrastructure.dashboard",
+        "parent_type": "ObservabilityResource",
+        "description": "An observability or operational dashboard.",
+        "examples": [
+          "CloudWatchDashboard",
+          "GrafanaDashboard"
+        ]
+      },
+      {
+        "type": "Recorder",
+        "semantic": "infrastructure.recorder",
+        "parent_type": "ObservabilityResource",
+        "description": "A configuration or inventory recorder for ongoing observation.",
+        "examples": [
+          "AWSConfigRecorder"
+        ]
+      },
+      {
+        "type": "Tag",
+        "semantic": "infrastructure.tag",
+        "parent_type": "GovernanceResource",
+        "description": "A metadata tag or label attached to a resource for ownership or classification.",
+        "examples": [
+          "ResourceTag",
+          "AzureTag"
+        ]
+      },
+      {
+        "type": "TagPolicy",
+        "semantic": "infrastructure.tag_policy",
+        "parent_type": "GovernanceResource",
+        "description": "An organizational policy governing tag keys and values.",
+        "examples": [
+          "AWSTagPolicy",
+          "AzurePolicyTagRule"
+        ]
+      },
+      {
+        "type": "ResourceMetadata",
+        "semantic": "infrastructure.resource_metadata",
+        "parent_type": "GovernanceResource",
+        "description": "Synthetic or aggregate metadata describing account or scope ownership.",
+        "examples": [
+          "AccountMetadata",
+          "SubscriptionMetadata"
+        ]
+      }
+    ],
+    "functional_domains": [
+      {
+        "id": "identity",
+        "label": "Identity",
+        "semantic": "infrastructure.domain.identity",
+        "root_type": "IdentityResource",
+        "types": [
+          "Account",
+          "OrganizationalUnit",
+          "IdentityProvider",
+          "User",
+          "Group",
+          "Role"
+        ]
+      },
+      {
+        "id": "network",
+        "label": "Network",
+        "semantic": "infrastructure.domain.network",
+        "root_type": "NetworkResource",
+        "types": [
+          "Network",
+          "Subnet",
+          "DNSZone",
+          "DNSRecord",
+          "SecurityBoundary",
+          "NetworkInterface"
+        ]
+      },
+      {
+        "id": "compute",
+        "label": "Compute",
+        "semantic": "infrastructure.domain.compute",
+        "root_type": "ComputeResource",
+        "types": [
+          "Compute",
+          "Function"
+        ]
+      },
+      {
+        "id": "storage",
+        "label": "Storage",
+        "semantic": "infrastructure.domain.storage",
+        "root_type": "StorageResource",
+        "types": [
+          "ObjectStorage"
+        ]
+      },
+      {
+        "id": "database",
+        "label": "Database",
+        "semantic": "infrastructure.domain.database",
+        "root_type": "DatabaseResource",
+        "types": [
+          "DataStore"
+        ]
+      },
+      {
+        "id": "application",
+        "label": "Application",
+        "semantic": "infrastructure.domain.application",
+        "root_type": "ApplicationResource",
+        "types": [
+          "Application",
+          "API"
+        ]
+      },
+      {
+        "id": "secret",
+        "label": "Secret",
+        "semantic": "infrastructure.domain.secret",
+        "root_type": "SecretResource",
+        "types": [
+          "Secret",
+          "Certificate"
+        ]
+      },
+      {
+        "id": "policy",
+        "label": "Policy",
+        "semantic": "infrastructure.domain.policy",
+        "root_type": "PolicyResource",
+        "types": [
+          "Policy",
+          "ComplianceRule"
+        ]
+      },
+      {
+        "id": "endpoint",
+        "label": "Endpoint",
+        "semantic": "infrastructure.domain.endpoint",
+        "root_type": "EndpointResource",
+        "types": [
+          "Endpoint"
+        ]
+      },
+      {
+        "id": "integration",
+        "label": "Integration",
+        "semantic": "infrastructure.domain.integration",
+        "root_type": "IntegrationResource",
+        "types": [
+          "Queue",
+          "Topic",
+          "EventBus",
+          "Stream",
+          "DeliveryStream",
+          "Workflow",
+          "Subscription"
+        ]
+      },
+      {
+        "id": "platform",
+        "label": "Platform",
+        "semantic": "infrastructure.domain.platform",
+        "root_type": "PlatformResource",
+        "types": [
+          "Stack",
+          "Pipeline",
+          "BuildProject",
+          "ArtifactRepository",
+          "DeploymentApplication",
+          "CatalogProduct",
+          "SourceRepository"
+        ]
+      },
+      {
+        "id": "observability",
+        "label": "Observability",
+        "semantic": "infrastructure.domain.observability",
+        "root_type": "ObservabilityResource",
+        "types": [
+          "LogStore",
+          "LogStream",
+          "Alert",
+          "Metric",
+          "AuditTrail",
+          "TraceGroup",
+          "Dashboard",
+          "Recorder"
+        ]
+      },
+      {
+        "id": "governance",
+        "label": "Governance",
+        "semantic": "infrastructure.domain.governance",
+        "root_type": "GovernanceResource",
+        "types": [
+          "Tag",
+          "TagPolicy",
+          "ResourceMetadata"
+        ]
+      },
+      {
+        "id": "other",
+        "label": "Other",
+        "semantic": "infrastructure.domain.other",
+        "root_type": "InfrastructureObject",
+        "types": [
+          "Region"
+        ]
+      }
+    ],
+    "relationship_types": [
+      {
+        "label": "CONTAINS",
+        "semantic": "infrastructure.contains",
+        "reverse_label": "BELONGS_TO",
+        "reverse_semantic": "infrastructure.belongs_to",
+        "description": "Structural containment.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "BELONGS_TO",
+        "semantic": "infrastructure.belongs_to",
+        "reverse_label": "CONTAINS",
+        "reverse_semantic": "infrastructure.contains",
+        "description": "Inverse containment.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "DEPLOYED_IN",
+        "semantic": "infrastructure.deployed_in",
+        "reverse_label": "HOSTS",
+        "reverse_semantic": "infrastructure.hosts",
+        "description": "Resource placement into a logical location.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "HOSTS",
+        "semantic": "infrastructure.hosts",
+        "reverse_label": "DEPLOYED_IN",
+        "reverse_semantic": "infrastructure.deployed_in",
+        "description": "Location hosts a runtime/resource.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "IN_SUBNET",
+        "semantic": "infrastructure.in_subnet",
+        "reverse_label": "HOSTS_ENDPOINT",
+        "reverse_semantic": "infrastructure.hosts_endpoint",
+        "description": "Endpoint or interface resides in a subnet.",
+        "edge_taxonomy": "network",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "USES",
+        "semantic": "infrastructure.uses",
+        "reverse_label": "USED_BY",
+        "reverse_semantic": "infrastructure.used_by",
+        "description": "Generic dependency or operational use.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "USED_BY",
+        "semantic": "infrastructure.used_by",
+        "reverse_label": "USES",
+        "reverse_semantic": "infrastructure.uses",
+        "description": "Inverse of USES.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "USES_KEY",
+        "semantic": "infrastructure.uses_key",
+        "reverse_label": "KEY_USED_BY",
+        "reverse_semantic": "infrastructure.key_used_by",
+        "description": "Resource uses a cryptographic key for encryption or signing.",
+        "edge_taxonomy": "credential",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "USES_KEY_PAIR",
+        "semantic": "infrastructure.uses_key_pair",
+        "reverse_label": "KEY_PAIR_USED_BY",
+        "reverse_semantic": "infrastructure.key_pair_used_by",
+        "description": "Compute resource uses an SSH key pair.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "USES_LAYER",
+        "semantic": "infrastructure.uses_layer",
+        "reverse_label": "LAYER_USED_BY",
+        "reverse_semantic": "infrastructure.layer_used_by",
+        "description": "Function or runtime uses a shared layer/package.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "INVOKES",
+        "semantic": "infrastructure.invokes",
+        "reverse_label": "INVOKED_BY",
+        "reverse_semantic": "infrastructure.invoked_by",
+        "description": "Execution or request flow.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "TRIGGERS",
+        "semantic": "infrastructure.triggers",
+        "reverse_label": "TRIGGERED_BY",
+        "reverse_semantic": "infrastructure.triggered_by",
+        "description": "Event-driven invocation or activation.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "READS",
+        "semantic": "infrastructure.reads",
+        "reverse_label": "READ_BY",
+        "reverse_semantic": "infrastructure.read_by",
+        "description": "Read access to data.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "READS_FROM",
+        "semantic": "infrastructure.reads_from",
+        "reverse_label": "READ_BY",
+        "reverse_semantic": "infrastructure.read_by",
+        "description": "Read flow with explicit source target semantics.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "WRITES",
+        "semantic": "infrastructure.writes",
+        "reverse_label": "WRITTEN_BY",
+        "reverse_semantic": "infrastructure.written_by",
+        "description": "Write access to data.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "WRITES_TO",
+        "semantic": "infrastructure.writes_to",
+        "reverse_label": "WRITTEN_BY",
+        "reverse_semantic": "infrastructure.written_by",
+        "description": "Write flow with explicit destination semantics.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "STORES_IN",
+        "semantic": "infrastructure.stores_in",
+        "reverse_label": "STORES_FOR",
+        "reverse_semantic": "infrastructure.stores_for",
+        "description": "Resource stores artifacts/state/output in a target.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "STREAMS_TO",
+        "semantic": "infrastructure.streams_to",
+        "reverse_label": "STREAMED_FROM",
+        "reverse_semantic": "infrastructure.streamed_from",
+        "description": "Continuous event or log stream destination.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "DELIVERS_TO",
+        "semantic": "infrastructure.delivers_to",
+        "reverse_label": "DELIVERED_FROM",
+        "reverse_semantic": "infrastructure.delivered_from",
+        "description": "Message/event delivery destination.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "ROUTES_TO",
+        "semantic": "infrastructure.routes_to",
+        "reverse_label": "ROUTED_FROM",
+        "reverse_semantic": "infrastructure.routed_from",
+        "description": "Network, DNS, or request routing.",
+        "edge_taxonomy": "network",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "ROUTES_INTO",
+        "semantic": "infrastructure.routes_into",
+        "reverse_label": "ROUTED_FROM",
+        "reverse_semantic": "infrastructure.routed_from",
+        "description": "Traffic/integration routes into a boundary or network.",
+        "edge_taxonomy": "network",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "ROUTES_THROUGH",
+        "semantic": "infrastructure.routes_through",
+        "reverse_label": "TRANSITS",
+        "reverse_semantic": "infrastructure.transits",
+        "description": "Traffic path traverses a network intermediary.",
+        "edge_taxonomy": "network",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "FORWARDS_TO",
+        "semantic": "infrastructure.forwards_to",
+        "reverse_label": "FORWARDED_FROM",
+        "reverse_semantic": "infrastructure.forwarded_from",
+        "description": "Proxy/load-balancer forwarding relationship.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "FRONTED_BY",
+        "semantic": "infrastructure.fronted_by",
+        "reverse_label": "FRONTS",
+        "reverse_semantic": "infrastructure.fronts",
+        "description": "Resource is exposed or fronted by another endpoint/gateway.",
+        "edge_taxonomy": "network",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "CONNECTS_TO",
+        "semantic": "infrastructure.connects_to",
+        "reverse_label": "CONNECTED_FROM",
+        "reverse_semantic": "infrastructure.connected_from",
+        "description": "Directed connectivity or peering edge.",
+        "edge_taxonomy": "network",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "CONNECTS",
+        "semantic": "infrastructure.connects",
+        "reverse_label": "CONNECTED_BY",
+        "reverse_semantic": "infrastructure.connected_by",
+        "description": "Undirected or symmetric connectivity edge.",
+        "edge_taxonomy": "network",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "ASSOCIATED_WITH",
+        "semantic": "infrastructure.associated_with",
+        "reverse_label": "ASSOCIATED_WITH",
+        "reverse_semantic": "infrastructure.associated_with",
+        "description": "Generic association when stronger semantics are unavailable.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "ASSUMES",
+        "semantic": "infrastructure.assumes",
+        "reverse_label": "ASSUMED_BY",
+        "reverse_semantic": "infrastructure.assumed_by",
+        "description": "Identity assumption.",
+        "edge_taxonomy": "trust",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "ASSUMES_ROLE",
+        "semantic": "infrastructure.assumes_role",
+        "reverse_label": "ROLE_ASSUMED_BY",
+        "reverse_semantic": "infrastructure.role_assumed_by",
+        "description": "Specialized identity assumption where target is a role.",
+        "edge_taxonomy": "trust",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "GRANTS",
+        "semantic": "infrastructure.grants",
+        "reverse_label": "GRANTED_BY",
+        "reverse_semantic": "infrastructure.granted_by",
+        "description": "Permission granted by policy/identity boundary.",
+        "edge_taxonomy": "authorization",
+        "relationship_class": "authorization"
+      },
+      {
+        "label": "HAS_POLICY",
+        "semantic": "infrastructure.has_policy",
+        "reverse_label": "POLICY_OF",
+        "reverse_semantic": "infrastructure.policy_of",
+        "description": "Principal has or references a policy.",
+        "edge_taxonomy": "authorization",
+        "relationship_class": "authorization"
+      },
+      {
+        "label": "HAS_MEMBER",
+        "semantic": "infrastructure.has_member",
+        "reverse_label": "MEMBER_OF",
+        "reverse_semantic": "infrastructure.member_of",
+        "description": "Group/container membership.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "MEMBER_OF",
+        "semantic": "infrastructure.member_of",
+        "reverse_label": "HAS_MEMBER",
+        "reverse_semantic": "infrastructure.has_member",
+        "description": "Principal/member belongs to a group/container.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "ATTACHED_TO",
+        "semantic": "infrastructure.attached_to",
+        "reverse_label": "HAS_ATTACHMENT",
+        "reverse_semantic": "infrastructure.has_attachment",
+        "description": "Attachment between resources.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "PROTECTS",
+        "semantic": "infrastructure.protects",
+        "reverse_label": "PROTECTED_BY",
+        "reverse_semantic": "infrastructure.protected_by",
+        "description": "Protection applied by control, key, or boundary.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "PROTECTED_BY",
+        "semantic": "infrastructure.protected_by",
+        "reverse_label": "PROTECTS",
+        "reverse_semantic": "infrastructure.protects",
+        "description": "Resource is protected by a control, key, or boundary.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "ROTATED_BY",
+        "semantic": "infrastructure.rotated_by",
+        "reverse_label": "ROTATES",
+        "reverse_semantic": "infrastructure.rotates",
+        "description": "Secret/key is rotated by a function/system.",
+        "edge_taxonomy": "credential",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "EVALUATED_BY",
+        "semantic": "infrastructure.evaluated_by",
+        "reverse_label": "EVALUATES",
+        "reverse_semantic": "infrastructure.evaluates",
+        "description": "Policy/control is evaluated by an assessment service.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "TRUSTS",
+        "semantic": "infrastructure.trusts",
+        "reverse_label": "TRUSTED_BY",
+        "reverse_semantic": "infrastructure.trusted_by",
+        "description": "Trust relationship between identities or systems.",
+        "edge_taxonomy": "trust",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "REPLICATES_TO",
+        "semantic": "infrastructure.replicates_to",
+        "reverse_label": "REPLICATED_FROM",
+        "reverse_semantic": "infrastructure.replicated_from",
+        "description": "Replication target for data/object resources.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "REPLICATED_IN",
+        "semantic": "infrastructure.replicated_in",
+        "reverse_label": "REPLICATES_FROM",
+        "reverse_semantic": "infrastructure.replicates_from",
+        "description": "Region/account where data resource has replicas.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "DEAD_LETTER_TO",
+        "semantic": "infrastructure.dead_letter_to",
+        "reverse_label": "DEAD_LETTER_FROM",
+        "reverse_semantic": "infrastructure.dead_letter_from",
+        "description": "Dead-letter destination relationship.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "INTEGRATES_WITH",
+        "semantic": "infrastructure.integrates_with",
+        "reverse_label": "INTEGRATED_BY",
+        "reverse_semantic": "infrastructure.integrated_by",
+        "description": "Application/API integration relationship.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "RUNS_IN",
+        "semantic": "infrastructure.runs_in",
+        "reverse_label": "RUNS",
+        "reverse_semantic": "infrastructure.runs",
+        "description": "Workload runtime placement.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "HAS_PROFILE",
+        "semantic": "infrastructure.has_profile",
+        "reverse_label": "PROFILE_OF",
+        "reverse_semantic": "infrastructure.profile_of",
+        "description": "Resource associated with an identity/profile descriptor.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "REGISTERED_WITH",
+        "semantic": "infrastructure.registered_with",
+        "reverse_label": "REGISTERS",
+        "reverse_semantic": "infrastructure.registers",
+        "description": "Resource registered with control plane/target group.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "SERVES_FROM",
+        "semantic": "infrastructure.serves_from",
+        "reverse_label": "SERVES_TO",
+        "reverse_semantic": "infrastructure.serves_to",
+        "description": "Content/resource serving origin.",
+        "edge_taxonomy": "descriptive",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "NESTED_IN",
+        "semantic": "infrastructure.nested_in",
+        "reverse_label": "CONTAINS_NESTED",
+        "reverse_semantic": "infrastructure.contains_nested",
+        "description": "Nested stack/template/module containment.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "NOTIFIES",
+        "semantic": "infrastructure.notifies",
+        "reverse_label": "NOTIFIED_BY",
+        "reverse_semantic": "infrastructure.notified_by",
+        "description": "Notification destination relationship.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "SCALES",
+        "semantic": "infrastructure.scales",
+        "reverse_label": "SCALED_BY",
+        "reverse_semantic": "infrastructure.scaled_by",
+        "description": "Scaling action relationship.",
+        "edge_taxonomy": "structural",
+        "relationship_class": "structural"
+      },
+      {
+        "label": "OBSERVES",
+        "semantic": "infrastructure.observes",
+        "reverse_label": "OBSERVED_BY",
+        "reverse_semantic": "infrastructure.observed_by",
+        "description": "Telemetry or monitoring observation of a resource.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      },
+      {
+        "label": "EMITS",
+        "semantic": "infrastructure.emits",
+        "reverse_label": "EMITTED_BY",
+        "reverse_semantic": "infrastructure.emitted_by",
+        "description": "Resource emits telemetry such as logs or metrics.",
+        "edge_taxonomy": "data_flow",
+        "relationship_class": "binding"
+      }
+    ],
+    "canonical_alignment": [
+      {
+        "label": "ASSUMES_ROLE",
+        "canonical_label": "ASSUMES",
+        "notes": "Specialized alias when target type is Role."
+      },
+      {
+        "label": "READS_FROM",
+        "canonical_label": "READS"
+      },
+      {
+        "label": "WRITES_TO",
+        "canonical_label": "WRITES"
+      },
+      {
+        "label": "USES_KEY",
+        "canonical_label": "PROTECTED_BY",
+        "notes": "Use PROTECTED_BY when key itself is modeled as protection boundary."
+      },
+      {
+        "label": "FORWARDS_TO",
+        "canonical_label": "ROUTES_TO"
+      },
+      {
+        "label": "ROUTES_INTO",
+        "canonical_label": "ROUTES_TO"
+      },
+      {
+        "label": "MEMBER_OF",
+        "canonical_label": "BELONGS_TO"
+      }
+    ],
+    "rules": [
+      {
+        "source_type": "Account",
+        "relationship": "CONTAINS",
+        "target_type": "Region"
+      },
+      {
+        "source_type": "Account",
+        "relationship": "CONTAINS",
+        "target_type": "OrganizationalUnit"
+      },
+      {
+        "source_type": "Region",
+        "relationship": "CONTAINS",
+        "target_type": "Network"
+      },
+      {
+        "source_type": "Network",
+        "relationship": "CONTAINS",
+        "target_type": "Subnet"
+      },
+      {
+        "source_type": "Application",
+        "relationship": "CONTAINS",
+        "target_type": "InfrastructureObject"
+      },
+      {
+        "source_type": "Subnet",
+        "relationship": "HOSTS",
+        "target_type": "Compute"
+      },
+      {
+        "source_type": "Subnet",
+        "relationship": "HOSTS",
+        "target_type": "Function"
+      },
+      {
+        "source_type": "API",
+        "relationship": "INVOKES",
+        "target_type": "Function"
+      },
+      {
+        "source_type": "API",
+        "relationship": "ROUTES_TO",
+        "target_type": "Compute"
+      },
+      {
+        "source_type": "Function",
+        "relationship": "ASSUMES",
+        "target_type": "Role"
+      },
+      {
+        "source_type": "Compute",
+        "relationship": "ASSUMES",
+        "target_type": "Role"
+      },
+      {
+        "source_type": "Role",
+        "relationship": "HAS_POLICY",
+        "target_type": "Policy"
+      },
+      {
+        "source_type": "Group",
+        "relationship": "HAS_POLICY",
+        "target_type": "Policy"
+      },
+      {
+        "source_type": "User",
+        "relationship": "MEMBER_OF",
+        "target_type": "Group"
+      },
+      {
+        "source_type": "Policy",
+        "relationship": "GRANTS",
+        "target_type": "InfrastructureObject"
+      },
+      {
+        "source_type": "User",
+        "relationship": "GRANTS",
+        "target_type": "InfrastructureObject"
+      },
+      {
+        "source_type": "Role",
+        "relationship": "GRANTS",
+        "target_type": "InfrastructureObject"
+      },
+      {
+        "source_type": "Group",
+        "relationship": "GRANTS",
+        "target_type": "InfrastructureObject"
+      },
+      {
+        "source_type": "ComplianceRule",
+        "relationship": "EVALUATED_BY",
+        "target_type": "Function"
+      },
+      {
+        "source_type": "Function",
+        "relationship": "READS",
+        "target_type": "DataStore"
+      },
+      {
+        "source_type": "Function",
+        "relationship": "WRITES",
+        "target_type": "DataStore"
+      },
+      {
+        "source_type": "Function",
+        "relationship": "READS",
+        "target_type": "ObjectStorage"
+      },
+      {
+        "source_type": "Function",
+        "relationship": "WRITES",
+        "target_type": "ObjectStorage"
+      },
+      {
+        "source_type": "Compute",
+        "relationship": "READS",
+        "target_type": "DataStore"
+      },
+      {
+        "source_type": "Compute",
+        "relationship": "WRITES",
+        "target_type": "DataStore"
+      },
+      {
+        "source_type": "DNSZone",
+        "relationship": "CONTAINS",
+        "target_type": "DNSRecord"
+      },
+      {
+        "source_type": "DNSRecord",
+        "relationship": "ROUTES_TO",
+        "target_type": "API"
+      },
+      {
+        "source_type": "DNSRecord",
+        "relationship": "ROUTES_TO",
+        "target_type": "Compute"
+      },
+      {
+        "source_type": "InfrastructureObject",
+        "relationship": "PROTECTED_BY",
+        "target_type": "SecurityBoundary"
+      },
+      {
+        "source_type": "InfrastructureObject",
+        "relationship": "PROTECTED_BY",
+        "target_type": "Secret"
+      },
+      {
+        "source_type": "IdentityProvider",
+        "relationship": "CONTAINS",
+        "target_type": "User"
+      },
+      {
+        "source_type": "IdentityProvider",
+        "relationship": "CONTAINS",
+        "target_type": "Group"
+      },
+      {
+        "source_type": "Queue",
+        "relationship": "TRIGGERS",
+        "target_type": "Function"
+      },
+      {
+        "source_type": "Topic",
+        "relationship": "TRIGGERS",
+        "target_type": "Function"
+      },
+      {
+        "source_type": "EventBus",
+        "relationship": "TRIGGERS",
+        "target_type": "Function"
+      },
+      {
+        "source_type": "Workflow",
+        "relationship": "INVOKES",
+        "target_type": "Function"
+      },
+      {
+        "source_type": "Function",
+        "relationship": "WRITES",
+        "target_type": "Queue"
+      },
+      {
+        "source_type": "Function",
+        "relationship": "WRITES",
+        "target_type": "Topic"
+      },
+      {
+        "source_type": "Pipeline",
+        "relationship": "TRIGGERS",
+        "target_type": "BuildProject"
+      },
+      {
+        "source_type": "Stack",
+        "relationship": "CONTAINS",
+        "target_type": "InfrastructureObject"
+      },
+      {
+        "source_type": "LogStore",
+        "relationship": "CONTAINS",
+        "target_type": "LogStream"
+      },
+      {
+        "source_type": "Alert",
+        "relationship": "OBSERVES",
+        "target_type": "Metric"
+      },
+      {
+        "source_type": "AuditTrail",
+        "relationship": "WRITES",
+        "target_type": "LogStore"
+      },
+      {
+        "source_type": "AuditTrail",
+        "relationship": "WRITES",
+        "target_type": "ObjectStorage"
+      },
+      {
+        "source_type": "LogStore",
+        "relationship": "EMITS",
+        "target_type": "InfrastructureObject"
+      },
+      {
+        "source_type": "Tag",
+        "relationship": "ASSOCIATED_WITH",
+        "target_type": "InfrastructureObject"
+      }
+    ],
+    "edge_taxonomies": [
+      {
+        "id": "trust",
+        "description": "Identity trust or role assumption hop.",
+        "default_weight": 1.0
+      },
+      {
+        "id": "credential",
+        "description": "Credential, key, or secret reuse hop.",
+        "default_weight": 1.0
+      },
+      {
+        "id": "authorization",
+        "description": "Declared permission or policy grant hop.",
+        "default_weight": 1.5
+      },
+      {
+        "id": "network",
+        "description": "Network routing or connectivity hop.",
+        "default_weight": 2.0
+      },
+      {
+        "id": "data_flow",
+        "description": "Data access, invocation, or message flow hop.",
+        "default_weight": 2.5
+      },
+      {
+        "id": "structural",
+        "description": "Topology, placement, or membership hop.",
+        "default_weight": 4.0
+      },
+      {
+        "id": "descriptive",
+        "description": "Non-traversal or weakly reachability-relevant association.",
+        "default_weight": 8.0
+      }
+    ]
+  }
+  

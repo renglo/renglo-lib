@@ -29,6 +29,36 @@ class BlueprintModel:
     def delete_blueprint(self, handle, name, v):
         return self._impl.delete_blueprint(handle, name, v)
 
+    def put_ontology(self, data):
+        return self._impl.put_ontology(data)
+
+    def get_ontology(self, handle, name, v):
+        return self._impl.get_ontology(handle, name, v)
+
+    def list_ontology_versions(self, handle, name):
+        return self._impl.list_ontology_versions(handle, name)
+
+    def list_ontology_names(self, handle):
+        return self._impl.list_ontology_names(handle)
+
+    def delete_ontology(self, handle, name, v):
+        return self._impl.delete_ontology(handle, name, v)
+
+    def put_dictionary(self, data):
+        return self._impl.put_dictionary(data)
+
+    def get_dictionary(self, handle, name, v):
+        return self._impl.get_dictionary(handle, name, v)
+
+    def list_dictionary_versions(self, handle, name):
+        return self._impl.list_dictionary_versions(handle, name)
+
+    def list_dictionary_names(self, handle):
+        return self._impl.list_dictionary_names(handle)
+
+    def delete_dictionary(self, handle, name, v):
+        return self._impl.delete_dictionary(handle, name, v)
+
     def __getattr__(self, name):
         return getattr(object.__getattribute__(self, "_impl"), name)
 

@@ -1,0 +1,413 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:renglo:contracts:schema",
+  "title": "Renglo schema",
+  "description": "A Renglo schema, also called a blueprint. It describes the fields of documents stored in the collection of the same name. Property names are a closed set. The server also rejects a repeated field name, an index entry that does not name a field, and an index entry that names a source field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "label", "fields"],
+  "properties": {
+    "name": {
+      "description": "Schema name. A letter followed by letters, digits, or underscores. The collection that stores these documents uses this name.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+    },
+    "label": {
+      "description": "Display name.",
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "description": {
+      "description": "What documents of this schema represent.",
+      "type": "string"
+    },
+    "fields": {
+      "description": "Field definitions. Names are unique within this list.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/field" }
+    },
+    "indexes": {
+      "description": "Optional path, time, and geo indexes. Each entry names a field on this schema, once. A source field cannot be indexed.",
+      "$ref": "#/$defs/indexes"
+    },
+    "dictionaries": {
+      "description": "Semantic dictionary ids this schema cites, such as animals.1.0.0. Absent on older blueprints. A new schema starts as an empty list.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    },
+    "public": { "type": "boolean" },
+    "singleton": { "type": "boolean" },
+    "is_legacy": { "type": "boolean" },
+    "license": { "type": "string" },
+    "version": {
+      "description": "x.y.z while the schema is a draft. A semantic version after publish.",
+      "type": "string"
+    },
+    "status": {
+      "description": "draft, final, or deprecated.",
+      "enum": ["draft", "final", "deprecated"]
+    },
+    "origin": {
+      "description": "URI of the schema this copy was cloned from. Empty when the schema was created here.",
+      "type": "string"
+    },
+    "blueprint_origin": { "type": "string" },
+    "uri": { "type": "string" },
+    "handle": { "type": "string" },
+    "irn": { "type": "string" },
+    "_id": { "type": "string" },
+    "added": { "type": "string" },
+    "modified": { "type": "string" }
+  },
+  "$defs": {
+    "field": {
+      "description": "One field. type chooses the stored value. widget chooses the control, and only some widgets belong to each type. A select lists options, unless source points at another schema.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "label", "type", "widget", "cardinality", "layer", "required", "default"],
+      "properties": {
+        "name": {
+          "description": "Field name stored on the document. A letter followed by letters, digits, or underscores.",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "label": {
+          "description": "Display name.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "type": {
+          "description": "Stored value type.",
+          "enum": ["string", "number", "boolean", "object", "json", "file"]
+        },
+        "widget": {
+          "description": "Editor for the field. string allows text, textarea, select, list, or document. number allows number. boolean allows checkbox. object allows textarea, json, or list. json allows textarea. file allows document.",
+          "enum": ["text", "textarea", "select", "list", "document", "number", "checkbox", "json"]
+        },
+        "cardinality": {
+          "description": "single stores one value. multiple stores a list.",
+          "enum": ["single", "multiple"]
+        },
+        "layer": {
+          "description": "Display layer. The value is the string 0, 1, or 2.",
+          "enum": ["0", "1", "2"]
+        },
+        "required": {
+          "description": "Whether a document must supply this field.",
+          "type": "boolean"
+        },
+        "default": {
+          "description": "Value used when the field is omitted. A single string, json, or file field defaults to a string. A single number defaults to a number, or to an empty string when the field is blank. A single boolean defaults to true or false. A single object defaults to an object. A multiple field defaults to a list of those values. A multiple number field does not use an empty string."
+        },
+        "hint": { "type": "string" },
+        "multilingual": { "type": "boolean" },
+        "order": {
+          "description": "Display order. A non-negative integer, or the digits of one.",
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^[0-9]+$" }
+          ]
+        },
+        "semantic": {
+          "description": "Dictionary term this field cites, such as animals.common_name.",
+          "type": "string"
+        },
+        "search": {
+          "description": "Search weight. 1, 2, or 3.",
+          "type": "integer",
+          "enum": [1, 2, 3]
+        },
+        "source": {
+          "description": "Empty when the field does not point at another schema. An object when the stored value is the _id of a document in another schema.",
+          "oneOf": [
+            { "const": "" },
+            { "$ref": "#/$defs/source" }
+          ]
+        },
+        "options": {
+          "description": "Value-to-label map for a select that has no source. At least one entry. The keys are the stored values.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/widgetForType" },
+        { "$ref": "#/$defs/defaultForType" },
+        { "$ref": "#/$defs/selectOptions" }
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "target_key", "preview", "label", "projection"],
+      "properties": {
+        "target": {
+          "description": "Schema that holds the referenced documents.",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "target_key": {
+          "description": "The referenced document id. Always _id.",
+          "const": "_id"
+        },
+        "preview": {
+          "description": "Fields shown while choosing a document.",
+          "$ref": "#/$defs/nonBlankStrings"
+        },
+        "label": {
+          "description": "Two strings: the relationship label and its reverse.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "string", "pattern": "\\S" }
+        },
+        "projection": {
+          "description": "Fields copied onto the reference.",
+          "$ref": "#/$defs/nonBlankStrings"
+        }
+      }
+    },
+    "nonBlankStrings": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "\\S" }
+    },
+    "indexes": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "path": { "$ref": "#/$defs/indexFields" },
+        "time": { "$ref": "#/$defs/indexFields" },
+        "geo": { "$ref": "#/$defs/indexFields" }
+      }
+    },
+    "indexFields": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "\\S" }
+    },
+    "widgetForType": {
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "string" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "widget": { "enum": ["text", "textarea", "select", "list", "document"] }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "number" } },
+            "required": ["type"]
+          },
+          "then": { "properties": { "widget": { "const": "number" } } }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "boolean" } },
+            "required": ["type"]
+          },
+          "then": { "properties": { "widget": { "const": "checkbox" } } }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "object" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": { "widget": { "enum": ["textarea", "json", "list"] } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "json" } },
+            "required": ["type"]
+          },
+          "then": { "properties": { "widget": { "const": "textarea" } } }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "file" } },
+            "required": ["type"]
+          },
+          "then": { "properties": { "widget": { "const": "document" } } }
+        }
+      ]
+    },
+    "defaultForType": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": { "enum": ["string", "json", "file"] },
+              "cardinality": { "const": "single" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": { "properties": { "default": { "type": "string" } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "enum": ["string", "json", "file"] },
+              "cardinality": { "const": "multiple" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": {
+            "properties": {
+              "default": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "number" },
+              "cardinality": { "const": "single" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "anyOf": [{ "type": "number" }, { "const": "" }]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "number" },
+              "cardinality": { "const": "multiple" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": {
+            "properties": {
+              "default": { "type": "array", "items": { "type": "number" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "boolean" },
+              "cardinality": { "const": "single" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": { "properties": { "default": { "type": "boolean" } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "boolean" },
+              "cardinality": { "const": "multiple" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": {
+            "properties": {
+              "default": { "type": "array", "items": { "type": "boolean" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "object" },
+              "cardinality": { "const": "single" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": { "properties": { "default": { "type": "object" } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "object" },
+              "cardinality": { "const": "multiple" }
+            },
+            "required": ["type", "cardinality"]
+          },
+          "then": {
+            "properties": {
+              "default": { "type": "array", "items": { "type": "object" } }
+            }
+          }
+        }
+      ]
+    },
+    "selectOptions": {
+      "allOf": [
+        {
+          "if": {
+            "required": ["widget"],
+            "properties": { "widget": { "const": "select" } },
+            "not": {
+              "required": ["source"],
+              "properties": { "source": { "type": "object" } }
+            }
+          },
+          "then": { "required": ["options"] }
+        },
+        {
+          "if": { "required": ["options"] },
+          "then": {
+            "required": ["widget"],
+            "properties": { "widget": { "const": "select" } },
+            "not": {
+              "required": ["source"],
+              "properties": { "source": { "type": "object" } }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "name": "animals",
+      "label": "Animals",
+      "dictionaries": ["animals.1.0.0"],
+      "fields": [
+        {
+          "name": "common_name",
+          "label": "Common name",
+          "type": "string",
+          "widget": "text",
+          "cardinality": "single",
+          "layer": "0",
+          "required": true,
+          "default": "",
+          "semantic": "animals.common_name"
+        },
+        {
+          "name": "node_type",
+          "label": "Node type",
+          "type": "string",
+          "widget": "select",
+          "cardinality": "single",
+          "layer": "0",
+          "required": true,
+          "default": "",
+          "options": { "Mammal": "Mammal", "Bird": "Bird" }
+        }
+      ]
+    }
+  ]
+}

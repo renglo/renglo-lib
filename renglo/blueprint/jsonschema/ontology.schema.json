@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:renglo:contracts:ontology",
+  "title": "Renglo ontology",
+  "description": "A Renglo ontology. It names types, groups the instantiable ones into functional domains, and declares the relationships that may connect them. Property names are a closed set. The server also requires one type with no parent_type when node_types is not empty, a parent_type that names another type, no parent cycles, unique type names and semantics, and every instantiable type in exactly one domain. A domain type list cannot include an abstract type. relationship_class names a relationship class, and edge_taxonomy names an edge taxonomy. When both directions of a relationship are listed, their labels and semantics reverse each other. canonical_alignment and rules cite types and relationships that exist in this document, and a rule triple is listed once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "description",
+    "dictionaries",
+    "classification_policy",
+    "relationship_classes",
+    "node_types",
+    "functional_domains",
+    "relationship_types",
+    "canonical_alignment",
+    "rules",
+    "edge_taxonomies"
+  ],
+  "properties": {
+    "name": {
+      "description": "Stable document name. A letter followed by letters, digits, underscores, or dots, such as animals.ontology.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.]*$"
+    },
+    "description": {
+      "description": "Which subjects this ontology covers. May be empty on a new draft.",
+      "type": "string"
+    },
+    "dictionaries": {
+      "description": "Dictionary ids that map external names into these types, such as animals.1.0.0. Cite each id once.",
+      "type": "array",
+      "items": { "type": "string", "pattern": "\\S" }
+    },
+    "classification_policy": {
+      "description": "How an instance receives its functional_domain.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "derivation"],
+      "properties": {
+        "description": {
+          "description": "What functional_domain means in this ontology. May be empty on a new draft.",
+          "type": "string"
+        },
+        "derivation": {
+          "description": "How the domain is chosen. Membership in functional_domains[].types, or a walk up parent_type. May be empty on a new draft.",
+          "type": "string"
+        }
+      }
+    },
+    "relationship_classes": {
+      "description": "Provenance of an edge: where the fact came from. Ids are unique.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/relationshipClass" }
+    },
+    "node_types": {
+      "description": "The is-a tree. One entry is the root and has no parent_type. Abstract entries are not instantiated. type and semantic are unique.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/nodeType" }
+    },
+    "functional_domains": {
+      "description": "A partition of the instantiable types. Each instantiable type appears in exactly one domain. A domain may follow parent_type, or cut across it. id and semantic are unique.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/functionalDomain" }
+    },
+    "relationship_types": {
+      "description": "Directed relationships and the inverse of each. label and semantic are unique.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/relationshipType" }
+    },
+    "canonical_alignment": {
+      "description": "A specialized label aligned to a preferred label when both assert the same kind of fact. Each label appears once, and both labels are relationship types.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/alignment" }
+    },
+    "rules": {
+      "description": "Legal source type, relationship, and target type triples. Types and relationship labels come from this document.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "edge_taxonomies": {
+      "description": "How a hop counts during traversal. A lower default_weight matters more. Ids are unique.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/edgeTaxonomy" }
+    },
+    "version": {
+      "description": "x.y.z while the ontology is a draft. A semantic version after publish.",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["draft", "final", "deprecated"]
+    },
+    "origin": {
+      "description": "URI of the ontology this copy was cloned from. Empty when the ontology was created here.",
+      "type": "string"
+    },
+    "handle": { "type": "string" },
+    "irn": { "type": "string" },
+    "_id": { "type": "string" },
+    "added": { "type": "string" },
+    "modified": { "type": "string" }
+  },
+  "$defs": {
+    "token": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+    },
+    "semantic": {
+      "description": "A dotted name, such as animals.mammal or animals.domain.chordate.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)*$"
+    },
+    "text": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "relationshipClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": {
+          "description": "Class id stored on a relationship type, such as structural or interaction.",
+          "$ref": "#/$defs/token"
+        },
+        "description": { "$ref": "#/$defs/text" }
+      }
+    },
+    "nodeType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "semantic", "description", "examples"],
+      "properties": {
+        "type": {
+          "description": "Universal type name stored on a graph node.",
+          "$ref": "#/$defs/token"
+        },
+        "semantic": { "$ref": "#/$defs/semantic" },
+        "parent_type": {
+          "description": "The type this one specializes. Omit it on the single root. It names another type in node_types.",
+          "$ref": "#/$defs/token"
+        },
+        "abstract": {
+          "description": "True on a facet that must not be instantiated. Omit it, or set false, on an instantiable type.",
+          "type": "boolean"
+        },
+        "description": { "$ref": "#/$defs/text" },
+        "examples": {
+          "description": "External names that dictionaries map into this type. Empty on an abstract type.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "functionalDomain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "semantic", "root_type", "types"],
+      "properties": {
+        "id": {
+          "description": "Domain id stored as functional_domain.",
+          "$ref": "#/$defs/token"
+        },
+        "label": { "$ref": "#/$defs/text" },
+        "semantic": {
+          "description": "Identity of the branch. Often the same semantic as the abstract parent named by root_type.",
+          "$ref": "#/$defs/semantic"
+        },
+        "root_type": {
+          "description": "A node type in this ontology, usually the abstract facet for the branch.",
+          "$ref": "#/$defs/token"
+        },
+        "types": {
+          "description": "Instantiable node types in this domain. Each name is a node type, none of them abstract, and none repeated.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        }
+      }
+    },
+    "relationshipType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "semantic",
+        "reverse_label",
+        "reverse_semantic",
+        "description",
+        "relationship_class",
+        "edge_taxonomy"
+      ],
+      "properties": {
+        "label": {
+          "description": "Edge label, such as LIVES_IN.",
+          "$ref": "#/$defs/token"
+        },
+        "semantic": { "$ref": "#/$defs/semantic" },
+        "reverse_label": {
+          "description": "Label of the inverse edge. When that label has its own entry, the two entries reverse each other.",
+          "$ref": "#/$defs/token"
+        },
+        "reverse_semantic": { "$ref": "#/$defs/semantic" },
+        "description": { "$ref": "#/$defs/text" },
+        "relationship_class": {
+          "description": "An id from relationship_classes.",
+          "$ref": "#/$defs/token"
+        },
+        "edge_taxonomy": {
+          "description": "An id from edge_taxonomies.",
+          "$ref": "#/$defs/token"
+        }
+      }
+    },
+    "alignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "canonical_label"],
+      "properties": {
+        "label": {
+          "description": "Specialized relationship label.",
+          "$ref": "#/$defs/token"
+        },
+        "canonical_label": {
+          "description": "Preferred relationship label for the same fact.",
+          "$ref": "#/$defs/token"
+        },
+        "notes": {
+          "description": "When the alignment applies.",
+          "type": "string"
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_type", "relationship", "target_type"],
+      "properties": {
+        "source_type": {
+          "description": "A node type in this ontology.",
+          "$ref": "#/$defs/token"
+        },
+        "relationship": {
+          "description": "A relationship label in this ontology.",
+          "$ref": "#/$defs/token"
+        },
+        "target_type": {
+          "description": "A node type in this ontology.",
+          "$ref": "#/$defs/token"
+        }
+      }
+    },
+    "edgeTaxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "default_weight"],
+      "properties": {
+        "id": { "$ref": "#/$defs/token" },
+        "description": { "$ref": "#/$defs/text" },
+        "default_weight": {
+          "description": "Traversal cost. Zero or greater. A lower weight is a hop that matters more.",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "name": "food.groups",
+      "description": "Edible things grouped for a menu.",
+      "dictionaries": [],
+      "classification_policy": {
+        "description": "Domains group edible types.",
+        "derivation": "Match the type against functional_domains[].types."
+      },
+      "relationship_classes": [],
+      "node_types": [
+        {
+          "type": "Food",
+          "semantic": "food.item",
+          "abstract": true,
+          "description": "Anything eaten.",
+          "examples": []
+        },
+        {
+          "type": "Fruit",
+          "semantic": "food.fruit",
+          "parent_type": "Food",
+          "description": "A sweet plant food.",
+          "examples": []
+        }
+      ],
+      "functional_domains": [
+        {
+          "id": "sweet",
+          "label": "Sweet",
+          "semantic": "food.domain.sweet",
+          "root_type": "Food",
+          "types": ["Fruit"]
+        }
+      ],
+      "relationship_types": [],
+      "canonical_alignment": [],
+      "rules": [],
+      "edge_taxonomies": []
+    }
+  ]
+}

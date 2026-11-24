@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:renglo:contracts:dictionary",
+  "title": "Renglo semantic dictionary",
+  "description": "The shared vocabulary a Renglo ontology or schema cites. Property names are a closed set. The document id is name + '.' + version, such as animals.1.0.0. A term id is name + '.' + the term key, such as animals.mammal. Term ids are unique. A term with inverse is a relationship: inverse is the id of another term in this dictionary, and the two terms name each other. A term may be its own inverse.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "description", "terms", "version"],
+  "properties": {
+    "id": {
+      "description": "name.version. This is the string an ontology or a schema puts in dictionaries. The server fills it on write.",
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "name": {
+      "description": "Dictionary name. A letter followed by letters, digits, underscores, or dots.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.]*$"
+    },
+    "description": {
+      "description": "What this vocabulary covers. May be empty on a new draft.",
+      "type": "string"
+    },
+    "terms": {
+      "description": "Terms keyed by a lowercase name. The key is the part of the term id after the dictionary name.",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$" },
+      "additionalProperties": { "$ref": "#/$defs/term" }
+    },
+    "version": {
+      "description": "x.y.z while the dictionary is a draft. A semantic version after publish.",
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "status": {
+      "description": "draft, final, or deprecated. This is the document status. A term has its own status.",
+      "enum": ["draft", "final", "deprecated"]
+    },
+    "origin": {
+      "description": "URI of the dictionary this copy was cloned from. Empty when the dictionary was created here.",
+      "type": "string"
+    },
+    "handle": { "type": "string" },
+    "irn": { "type": "string" },
+    "_id": { "type": "string" },
+    "added": { "type": "string" },
+    "modified": { "type": "string" }
+  },
+  "$defs": {
+    "term": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "description", "external_mappings", "status"],
+      "properties": {
+        "id": {
+          "description": "name.key, where key is this term's property name in terms.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "label": {
+          "description": "Display name.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "description": {
+          "description": "What the term means, independent of any one schema or ontology.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "inverse": {
+          "description": "Term id of the relationship that reverses this one. Omit it on a term that is not a relationship. The other term's inverse is this term's id.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "external_mappings": {
+          "description": "External names that mean this term. Each name appears once.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "\\S" }
+        },
+        "status": {
+          "description": "active or deprecated. Deprecating a term is a major change of the dictionary.",
+          "enum": ["active", "deprecated"]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "id": "food.1.0.0",
+      "name": "food",
+      "version": "1.0.0",
+      "status": "final",
+      "origin": "",
+      "description": "Terms for edible things.",
+      "terms": {
+        "fruit": {
+          "id": "food.fruit",
+          "label": "Fruit",
+          "description": "A sweet plant food.",
+          "external_mappings": ["fruit"],
+          "status": "active"
+        },
+        "contains": {
+          "id": "food.contains",
+          "label": "Contains",
+          "description": "The dish includes the ingredient.",
+          "inverse": "food.belongs_to",
+          "external_mappings": [],
+          "status": "active"
+        },
+        "belongs_to": {
+          "id": "food.belongs_to",
+          "label": "Belongs to",
+          "description": "The ingredient is part of the dish.",
+          "inverse": "food.contains",
+          "external_mappings": [],
+          "status": "active"
+        }
+      }
+    }
+  ]
+}

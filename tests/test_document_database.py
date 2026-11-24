@@ -63,6 +63,14 @@ class SemverTests(unittest.TestCase):
         self.assertEqual(classify_change(BLUEPRINT, labeled), "patch")
         self.assertEqual(next_version("1.2.3", "patch"), "1.2.4")
 
+    def test_a_dictionary_reference_is_minor_until_one_is_removed(self):
+        added = dict(BLUEPRINT)
+        added["dictionaries"] = ["infrastructure.1.2.0"]
+        self.assertEqual(classify_change(BLUEPRINT, added), "minor")
+        removed = dict(added)
+        removed["dictionaries"] = []
+        self.assertEqual(classify_change(added, removed), "major")
+
     def test_post_ignores_the_incoming_version(self):
         saved = {}
 
@@ -93,6 +101,35 @@ class SemverTests(unittest.TestCase):
         self.assertEqual(updated["document"]["version"], "1.0.1")
         self.assertEqual(saved[("portfolio", "projects")]["version"], "1.0.1")
         self.assertEqual(saved[("portfolio", "projects")]["label"], "Renamed")
+
+    def test_create_refuses_a_field_outside_the_schema_shape(self):
+        saved = {}
+
+        class Store:
+            def get_blueprint(self, handle, name, version):
+                item = saved.get((handle, name))
+                if not item:
+                    return {"success": False, "message": "Document not found"}
+                return item
+
+            def put_blueprint(self, data):
+                saved[(data["handle"], data["name"])] = dict(data)
+                return {"success": True, "document": dict(data), "status": 201}
+
+        with patch("renglo.blueprint.blueprint_controller.BlueprintModel", return_value=Store()), \
+                patch("renglo.auth.auth_controller.AuthModel", return_value=object()):
+            controller = BlueprintController(config={})
+        created = controller.create_blueprint(
+            {
+                "name": "projects",
+                "label": "Projects",
+                "fields": [{"name": "title", "type": "timestamp"}],
+            },
+            user_handle="portfolio",
+        )
+        self.assertEqual(created["status"], 400)
+        self.assertIn("type", created["message"])
+        self.assertEqual(saved, {})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,269 @@
+{
+  "id": "evidence.1.1.0",
+  "name": "evidence",
+  "version": "1.1.0",
+  "description": "Semantic dictionary defining evidence ontology terms, fields, and relationships.",
+  "terms": {
+    "evidence_object": {
+      "id": "evidence.evidence_object",
+      "label": "Evidence Object",
+      "description": "A generic parent term for any observed, collected, or generated evidence used to support facts, findings, risks, or decisions.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "log_event": {
+      "id": "evidence.log_event",
+      "label": "Log Event",
+      "description": "A timestamped event emitted by an application, infrastructure resource, identity system, security tool, or operating system.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "alert": {
+      "id": "evidence.alert",
+      "label": "Alert",
+      "description": "A signal raised by a monitoring, security, or detection system indicating a condition that may require attention.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "metric": {
+      "id": "evidence.metric",
+      "label": "Metric",
+      "description": "A measured numeric observation over time.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "trace": {
+      "id": "evidence.trace",
+      "label": "Trace",
+      "description": "A recorded execution or request path across services, functions, APIs, or infrastructure components.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "audit_record": {
+      "id": "evidence.audit_record",
+      "label": "Audit Record",
+      "description": "A record of an administrative, identity, access, configuration, or governance action.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "configuration_snapshot": {
+      "id": "evidence.configuration_snapshot",
+      "label": "Configuration Snapshot",
+      "description": "A captured state of an infrastructure, identity, application, or security object at a point in time.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "scanner_result": {
+      "id": "evidence.scanner_result",
+      "label": "Scanner Result",
+      "description": "A result produced by a vulnerability scanner, posture scanner, compliance scanner, or detection engine.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "query_result": {
+      "id": "evidence.query_result",
+      "label": "Query Result",
+      "description": "A result set produced by a search, query, report, rule, or investigation.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "ticket": {
+      "id": "evidence.ticket",
+      "label": "Ticket",
+      "description": "A human or workflow record used to track investigation, remediation, approval, or exception handling.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "document_evidence": {
+      "id": "evidence.document_evidence",
+      "label": "Document Evidence",
+      "description": "A document, file, policy, report, screenshot, attachment, or text artifact used as supporting evidence.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "observed": {
+      "id": "evidence.observed",
+      "label": "Observed",
+      "description": "Indicates that evidence observed an infrastructure, identity, security, or application object.",
+      "inverse": "evidence.observed_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "observed_by": {
+      "id": "evidence.observed_by",
+      "label": "Observed By",
+      "description": "Reverse observation relationship.",
+      "inverse": "evidence.observed",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "emitted_by": {
+      "id": "evidence.emitted_by",
+      "label": "Emitted By",
+      "description": "Indicates that evidence was emitted by a specific source object.",
+      "inverse": "evidence.emitted",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "emitted": {
+      "id": "evidence.emitted",
+      "label": "Emitted",
+      "description": "Reverse emission relationship.",
+      "inverse": "evidence.emitted_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "collected_by": {
+      "id": "evidence.collected_by",
+      "label": "Collected By",
+      "description": "Indicates that evidence was collected by a monitoring, logging, security, or ingestion system.",
+      "inverse": "evidence.collected",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "collected": {
+      "id": "evidence.collected",
+      "label": "Collected",
+      "description": "Reverse collection relationship.",
+      "inverse": "evidence.collected_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "supports": {
+      "id": "evidence.supports",
+      "label": "Supports",
+      "description": "Indicates that evidence supports a finding, claim, fact, risk, impact, remediation, or decision.",
+      "inverse": "evidence.supported_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "supported_by": {
+      "id": "evidence.supported_by",
+      "label": "Supported By",
+      "description": "Reverse support relationship.",
+      "inverse": "evidence.supports",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "contradicts": {
+      "id": "evidence.contradicts",
+      "label": "Contradicts",
+      "description": "Indicates that evidence weakens or contradicts a finding, claim, fact, risk, impact, remediation, or decision.",
+      "inverse": "evidence.contradicted_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "contradicted_by": {
+      "id": "evidence.contradicted_by",
+      "label": "Contradicted By",
+      "description": "Reverse contradiction relationship.",
+      "inverse": "evidence.contradicts",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "correlates_with": {
+      "id": "evidence.correlates_with",
+      "label": "Correlates With",
+      "description": "Indicates that two evidence objects are related by time, identity, source, target, session, request, or another correlation key.",
+      "inverse": "evidence.correlates_with",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "derived_from": {
+      "id": "evidence.derived_from",
+      "label": "Derived From",
+      "description": "Indicates that evidence, a finding, or a conclusion was generated from another evidence object.",
+      "inverse": "evidence.derives",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "derives": {
+      "id": "evidence.derives",
+      "label": "Derives",
+      "description": "Reverse derivation relationship.",
+      "inverse": "evidence.derived_from",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "has_source": {
+      "id": "evidence.has_source",
+      "label": "Has Source",
+      "description": "Indicates that evidence has a source system, data stream, index, log group, collector, or integration.",
+      "inverse": "evidence.source_of",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "source_of": {
+      "id": "evidence.source_of",
+      "label": "Source Of",
+      "description": "Reverse evidence source relationship.",
+      "inverse": "evidence.has_source",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "has_subject": {
+      "id": "evidence.has_subject",
+      "label": "Has Subject",
+      "description": "Indicates the infrastructure object, identity, application, resource, or security object the evidence is about.",
+      "inverse": "evidence.subject_of",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "subject_of": {
+      "id": "evidence.subject_of",
+      "label": "Subject Of",
+      "description": "Reverse subject relationship.",
+      "inverse": "evidence.has_subject",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "has_actor": {
+      "id": "evidence.has_actor",
+      "label": "Has Actor",
+      "description": "Indicates the actor responsible for an action recorded in evidence.",
+      "inverse": "evidence.actor_in",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "actor_in": {
+      "id": "evidence.actor_in",
+      "label": "Actor In",
+      "description": "Reverse actor relationship.",
+      "inverse": "evidence.has_actor",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "has_target": {
+      "id": "evidence.has_target",
+      "label": "Has Target",
+      "description": "Indicates the object acted upon in an evidence record.",
+      "inverse": "evidence.target_of",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "target_of": {
+      "id": "evidence.target_of",
+      "label": "Target Of",
+      "description": "Reverse target relationship.",
+      "inverse": "evidence.has_target",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "occurred_at": {
+      "id": "evidence.occurred_at",
+      "label": "Occurred At",
+      "description": "Indicates the specific timestamp or time window when evidence occurred.",
+      "inverse": "evidence.time_of",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "time_of": {
+      "id": "evidence.time_of",
+      "label": "Time Of",
+      "description": "Reverse occurrence-time relationship.",
+      "inverse": "evidence.occurred_at",
+      "external_mappings": [],
+      "status": "active"
+    }
+  }
+}

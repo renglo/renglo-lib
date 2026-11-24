@@ -407,6 +407,52 @@ class SoftDeleteControllerTests(unittest.TestCase):
         refused = self.auth.unlink_entity(**document)
         self.assertEqual(refused["message"], HARD_DELETE_REFUSED)
 
+    def test_collection_entity_has_no_schema_version_and_a_deleted_row_returns(self):
+        created = self.auth.create_entity(
+            "collection",
+            portfolio_id="p_live",
+            org_id="o_live",
+            name="projects",
+        )
+        self.assertTrue(created["success"])
+        document = created["document"]
+        self.assertEqual(document["type"], "collection")
+        self.assertEqual(document["_id"], "projects")
+        self.assertEqual(document["document_count"], 0)
+        self.assertNotIn("blueprint", document)
+        self.assertEqual(
+            document["index"],
+            "irn:entity:portfolio/org/collection:p_live/o_live/*",
+        )
+        linked = self.auth.create_rel(
+            "team:collection",
+            team_id="t1",
+            org_id="o_live",
+            collection_name="projects",
+        )
+        self.assertTrue(linked["success"])
+        self.assertEqual(
+            self.store.rels["irn:rel:team:collection:t1:*"][0]["rel"],
+            "o_live/projects",
+        )
+        document["status"] = "deleted"
+        self.store.entities[(document["index"], document["_id"])] = document
+        restored = self.auth.create_entity(
+            "collection",
+            portfolio_id="p_live",
+            org_id="o_live",
+            name="projects",
+        )
+        self.assertTrue(restored["success"])
+        self.assertEqual(restored["document"]["status"], "active")
+        duplicate = self.auth.create_entity(
+            "collection",
+            portfolio_id="p_live",
+            org_id="o_live",
+            name="projects",
+        )
+        self.assertEqual(duplicate["status"], 409)
+
     def test_team_delete_still_removes_a_team(self):
         removed = self.auth.remove_team_funnel(portfolio_id="p_live", team_id="t1")
         self.assertTrue(removed["success"])

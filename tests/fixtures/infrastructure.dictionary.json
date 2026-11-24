@@ -1,0 +1,370 @@
+{
+  "id": "infrastructure.1.2.0",
+  "name": "infrastructure",
+  "version": "1.2.0",
+  "description": "Semantic dictionary defining infrastructure ontology terms, fields, and relationships.",
+  "terms": {
+    "object": {
+      "id": "infrastructure.object",
+      "label": "Infrastructure Object",
+      "description": "A generic parent term for any infrastructure, identity, application, network, data, security boundary, or platform object represented in the graph.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "account": {
+      "id": "infrastructure.account",
+      "label": "Account",
+      "description": "A cloud, SaaS, or platform account that owns or contains infrastructure resources.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "region": {
+      "id": "infrastructure.region",
+      "label": "Region",
+      "description": "A geographic or logical provider region, zone, site, or locality.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "network": {
+      "id": "infrastructure.network",
+      "label": "Network",
+      "description": "A logical network boundary.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "subnet": {
+      "id": "infrastructure.subnet",
+      "label": "Subnet",
+      "description": "A segmented network range inside a network.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "compute": {
+      "id": "infrastructure.compute",
+      "label": "Compute",
+      "description": "A runtime capable of executing workloads.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "function": {
+      "id": "infrastructure.function",
+      "label": "Function",
+      "description": "A serverless compute function or event-driven execution unit.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "application": {
+      "id": "infrastructure.application",
+      "label": "Application",
+      "description": "A logical grouping of infrastructure, services, identities, and data resources that collectively deliver a business capability.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "api": {
+      "id": "infrastructure.api",
+      "label": "API",
+      "description": "A network-accessible application interface, endpoint, gateway, ingress, or load-balanced interface.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "datastore": {
+      "id": "infrastructure.datastore",
+      "label": "Data Store",
+      "description": "A structured or semi-structured data persistence system.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "object_storage": {
+      "id": "infrastructure.object_storage",
+      "label": "Object Storage",
+      "description": "Blob, object, or file-like storage.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "identity_provider": {
+      "id": "infrastructure.identity_provider",
+      "label": "Identity Provider",
+      "description": "A system that authenticates users, applications, services, or identities.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "user": {
+      "id": "infrastructure.user",
+      "label": "User",
+      "description": "A human identity.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "group": {
+      "id": "infrastructure.group",
+      "label": "Group",
+      "description": "A collection of users or identities.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "role": {
+      "id": "infrastructure.role",
+      "label": "Role",
+      "description": "An assumable identity used by users, services, or workloads.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "policy": {
+      "id": "infrastructure.policy",
+      "label": "Policy",
+      "description": "A permission document, rule set, access control policy, or governance policy.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "secret": {
+      "id": "infrastructure.secret",
+      "label": "Secret",
+      "description": "Sensitive credential, key, token, or configuration material.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "dns_zone": {
+      "id": "infrastructure.dns_zone",
+      "label": "DNS Zone",
+      "description": "A DNS namespace.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "dns_record": {
+      "id": "infrastructure.dns_record",
+      "label": "DNS Record",
+      "description": "A DNS record that routes names to targets.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "certificate": {
+      "id": "infrastructure.certificate",
+      "label": "Certificate",
+      "description": "A TLS, signing, or identity certificate.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "security_boundary": {
+      "id": "infrastructure.security_boundary",
+      "label": "Security Boundary",
+      "description": "A network, identity, or access-control boundary.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "queue": {
+      "id": "infrastructure.queue",
+      "label": "Queue",
+      "description": "An asynchronous messaging, event, topic, bus, or queue resource.",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "contains": {
+      "id": "infrastructure.contains",
+      "label": "Contains",
+      "description": "Structural containment between infrastructure objects.",
+      "inverse": "infrastructure.belongs_to",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "belongs_to": {
+      "id": "infrastructure.belongs_to",
+      "label": "Belongs To",
+      "description": "Reverse structural containment relationship.",
+      "inverse": "infrastructure.contains",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "deployed_in": {
+      "id": "infrastructure.deployed_in",
+      "label": "Deployed In",
+      "description": "Runtime or resource placement inside another infrastructure object.",
+      "inverse": "infrastructure.hosts",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "hosts": {
+      "id": "infrastructure.hosts",
+      "label": "Hosts",
+      "description": "Reverse placement relationship indicating that an object hosts another runtime or resource.",
+      "inverse": "infrastructure.deployed_in",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "uses": {
+      "id": "infrastructure.uses",
+      "label": "Uses",
+      "description": "Generic dependency or operational use relationship.",
+      "inverse": "infrastructure.used_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "used_by": {
+      "id": "infrastructure.used_by",
+      "label": "Used By",
+      "description": "Reverse generic dependency or usage relationship.",
+      "inverse": "infrastructure.uses",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "invokes": {
+      "id": "infrastructure.invokes",
+      "label": "Invokes",
+      "description": "Execution, request flow, trigger, or call relationship.",
+      "inverse": "infrastructure.invoked_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "invoked_by": {
+      "id": "infrastructure.invoked_by",
+      "label": "Invoked By",
+      "description": "Reverse invocation relationship.",
+      "inverse": "infrastructure.invokes",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "reads": {
+      "id": "infrastructure.reads",
+      "label": "Reads",
+      "description": "Read access to data or stored objects.",
+      "inverse": "infrastructure.read_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "read_by": {
+      "id": "infrastructure.read_by",
+      "label": "Read By",
+      "description": "Reverse read-access relationship.",
+      "inverse": "infrastructure.reads",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "writes": {
+      "id": "infrastructure.writes",
+      "label": "Writes",
+      "description": "Write access to data, stored objects, queues, topics, or event targets.",
+      "inverse": "infrastructure.written_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "written_by": {
+      "id": "infrastructure.written_by",
+      "label": "Written By",
+      "description": "Reverse write-access relationship.",
+      "inverse": "infrastructure.writes",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "assumes": {
+      "id": "infrastructure.assumes",
+      "label": "Assumes",
+      "description": "Identity assumption relationship.",
+      "inverse": "infrastructure.assumed_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "assumed_by": {
+      "id": "infrastructure.assumed_by",
+      "label": "Assumed By",
+      "description": "Reverse identity-assumption relationship.",
+      "inverse": "infrastructure.assumes",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "grants": {
+      "id": "infrastructure.grants",
+      "label": "Grants",
+      "description": "Permission granted by a policy, role, group, ACL, or access rule.",
+      "inverse": "infrastructure.granted_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "granted_by": {
+      "id": "infrastructure.granted_by",
+      "label": "Granted By",
+      "description": "Reverse permission grant relationship.",
+      "inverse": "infrastructure.grants",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "attached_to": {
+      "id": "infrastructure.attached_to",
+      "label": "Attached To",
+      "description": "Attachment between an infrastructure object and another object.",
+      "inverse": "infrastructure.has_attachment",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "has_attachment": {
+      "id": "infrastructure.has_attachment",
+      "label": "Has Attachment",
+      "description": "Reverse attachment relationship.",
+      "inverse": "infrastructure.attached_to",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "authenticates": {
+      "id": "infrastructure.authenticates",
+      "label": "Authenticates",
+      "description": "Authentication relationship between an identity provider and an identity or application.",
+      "inverse": "infrastructure.authenticated_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "authenticated_by": {
+      "id": "infrastructure.authenticated_by",
+      "label": "Authenticated By",
+      "description": "Reverse authentication relationship.",
+      "inverse": "infrastructure.authenticates",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "routes_to": {
+      "id": "infrastructure.routes_to",
+      "label": "Routes To",
+      "description": "Network, DNS, endpoint, gateway, or request routing relationship.",
+      "inverse": "infrastructure.routed_from",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "routed_from": {
+      "id": "infrastructure.routed_from",
+      "label": "Routed From",
+      "description": "Reverse routing relationship.",
+      "inverse": "infrastructure.routes_to",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "protects": {
+      "id": "infrastructure.protects",
+      "label": "Protects",
+      "description": "Protection relationship from a security boundary, certificate, secret, key, or control to another infrastructure object.",
+      "inverse": "infrastructure.protected_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "protected_by": {
+      "id": "infrastructure.protected_by",
+      "label": "Protected By",
+      "description": "Reverse protection relationship.",
+      "inverse": "infrastructure.protects",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "trusts": {
+      "id": "infrastructure.trusts",
+      "label": "Trusts",
+      "description": "Trust relationship between identities, systems, accounts, providers, or applications.",
+      "inverse": "infrastructure.trusted_by",
+      "external_mappings": [],
+      "status": "active"
+    },
+    "trusted_by": {
+      "id": "infrastructure.trusted_by",
+      "label": "Trusted By",
+      "description": "Reverse trust relationship.",
+      "inverse": "infrastructure.trusts",
+      "external_mappings": [],
+      "status": "active"
+    }
+  }
+}

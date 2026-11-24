@@ -1359,20 +1359,21 @@ class DataController:
         return result
 
     def ring_is_deleted(self, portfolio, org, ring):
-        """True only when a ring entity exists and its tombstone is set."""
-        try:
-            found = self.AUC.get_entity(
-                'ring',
-                portfolio_id=portfolio,
-                org_id=org,
-                ring_id=ring,
-                include_deleted=True,
-            )
-        except Exception:
-            return False
-        if not found or not found.get('success'):
-            return False
-        return entity_is_deleted(found.get('document'))
+        """True when the collection entity, or a legacy ring, is tombstoned."""
+        for entity_type, id_key in (('collection', 'collection_id'), ('ring', 'ring_id')):
+            try:
+                found = self.AUC.get_entity(
+                    entity_type,
+                    portfolio_id=portfolio,
+                    org_id=org,
+                    include_deleted=True,
+                    **{id_key: ring},
+                )
+            except Exception:
+                continue
+            if found and found.get('success'):
+                return entity_is_deleted(found.get('document'))
+        return False
 
     def _deleted_collection(self):
         return {

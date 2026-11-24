@@ -4,6 +4,9 @@ from datetime import datetime
 import uuid
 import re
 from renglo.blueprint.blueprint_model import BlueprintModel
+from renglo.blueprint.dictionary_format import dictionary_errors
+from renglo.blueprint.ontology_format import ontology_errors
+from renglo.blueprint.schema_format import schema_errors
 from renglo.blueprint.semver import classify_change, merge_blueprint, next_version
 from renglo.auth.auth_controller import AuthController
 from renglo.logger import get_logger
@@ -51,11 +54,23 @@ class BlueprintController:
             incoming['added'] = datetime.now().isoformat()
             incoming['irn'] = 'irn:blueprint:' + handle + ':' + name
             incoming['version'] = '1.0.0'
+            refused = self._refuse_schema(incoming)
+            if refused:
+                return refused
             return self.BPM.put_blueprint(incoming)
         merged = merge_blueprint(latest, incoming)
         merged['version'] = next_version(latest.get('version'), classify_change(latest, merged))
         merged['modified'] = datetime.now().isoformat()
+        refused = self._refuse_schema(merged)
+        if refused:
+            return refused
         return self.BPM.put_blueprint(merged)
+
+    def _refuse_schema(self, document):
+        message = schema_errors(document)
+        if not message:
+            return None
+        return {'success': False, 'message': message, 'status': 400}
 
     def create_blueprint(self, data, user_handle=None):
 
@@ -108,10 +123,187 @@ class BlueprintController:
         return self._publish_version(handle, name, data)
 
 
+    def put_blueprint_document(self, handle, name, document):
+        """Write one schema version as given. Does not assign the next semver."""
+        stored = dict(document or {})
+        stored['handle'] = handle
+        stored['name'] = name
+        stored['irn'] = 'irn:blueprint:' + handle + ':' + name
+        if not stored.get('_id'):
+            stored['_id'] = str(uuid.uuid4())
+        if not stored.get('added'):
+            stored['added'] = datetime.now().isoformat()
+        stored['modified'] = datetime.now().isoformat()
+        if not stored.get('version'):
+            return {'success': False, 'message': 'Schema version is required', 'status': 400}
+        refused = self._refuse_schema(stored)
+        if refused:
+            return refused
+        return self.BPM.put_blueprint(stored)
+
+
+    def list_blueprint_versions(self, handle, name):
+        listed = self.BPM.list_versions(handle, name)
+        if not isinstance(listed, dict):
+            return {'success': False, 'message': 'Schemas could not be listed', 'status': 500}
+        return listed
+
+
+    def list_blueprint_names(self, handle):
+        listed = self.BPM.list_names(handle)
+        if not isinstance(listed, dict):
+            return {'success': False, 'message': 'Schemas could not be listed', 'status': 500}
+        return listed
+
+
+    def fetch_blueprint(self, uri):
+        """Read a schema document from a URI. The caller decides what to store."""
+        try:
+            response = requests.get(uri, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError, TypeError):
+            return {'success': False, 'message': 'Schema URI could not be read', 'status': 400}
+        if isinstance(data, dict) and isinstance(data.get('document'), dict):
+            data = data['document']
+        if not isinstance(data, dict) or not str(data.get('name') or '').strip():
+            return {'success': False, 'message': 'Schema URI did not return a schema', 'status': 400}
+        return data
+
+
     def delete_blueprint(self,handle,name,v):
 
         return self.BPM.delete_blueprint(handle,name,v)
-    
+
+
+    def _refuse_ontology(self, document):
+        message = ontology_errors(document)
+        if not message:
+            return None
+        return {'success': False, 'message': message, 'status': 400}
+
+
+    def put_ontology_document(self, handle, name, document):
+        """Write one ontology version as given. Does not assign the next semver."""
+        stored = dict(document or {})
+        stored['handle'] = handle
+        stored['name'] = name
+        stored['irn'] = 'irn:ontology:' + handle + ':' + name
+        if not stored.get('_id'):
+            stored['_id'] = str(uuid.uuid4())
+        if not stored.get('added'):
+            stored['added'] = datetime.now().isoformat()
+        stored['modified'] = datetime.now().isoformat()
+        if not stored.get('version'):
+            return {'success': False, 'message': 'Ontology version is required', 'status': 400}
+        refused = self._refuse_ontology(stored)
+        if refused:
+            return refused
+        return self.BPM.put_ontology(stored)
+
+
+    def get_ontology(self, handle, name, v):
+        return self.BPM.get_ontology(handle, name, v)
+
+
+    def list_ontology_versions(self, handle, name):
+        listed = self.BPM.list_ontology_versions(handle, name)
+        if not isinstance(listed, dict):
+            return {'success': False, 'message': 'Ontologies could not be listed', 'status': 500}
+        return listed
+
+
+    def list_ontology_names(self, handle):
+        listed = self.BPM.list_ontology_names(handle)
+        if not isinstance(listed, dict):
+            return {'success': False, 'message': 'Ontologies could not be listed', 'status': 500}
+        return listed
+
+
+    def fetch_ontology(self, uri):
+        """Read an ontology document from a URI. The caller decides what to store."""
+        try:
+            response = requests.get(uri, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError, TypeError):
+            return {'success': False, 'message': 'Ontology URI could not be read', 'status': 400}
+        if isinstance(data, dict) and isinstance(data.get('document'), dict):
+            data = data['document']
+        if not isinstance(data, dict) or not str(data.get('name') or '').strip():
+            return {'success': False, 'message': 'Ontology URI did not return an ontology', 'status': 400}
+        if 'node_types' not in data and 'functional_domains' not in data:
+            return {'success': False, 'message': 'Ontology URI did not return an ontology', 'status': 400}
+        return data
+
+
+    def delete_ontology(self, handle, name, v):
+        return self.BPM.delete_ontology(handle, name, v)
+
+
+    def _refuse_dictionary(self, document):
+        message = dictionary_errors(document)
+        if not message:
+            return None
+        return {'success': False, 'message': message, 'status': 400}
+
+
+    def put_dictionary_document(self, handle, name, document):
+        """Write one dictionary version as given. Does not assign the next semver."""
+        stored = dict(document or {})
+        stored['handle'] = handle
+        stored['name'] = name
+        stored['irn'] = 'irn:dictionary:' + handle + ':' + name
+        if not stored.get('_id'):
+            stored['_id'] = str(uuid.uuid4())
+        if not stored.get('added'):
+            stored['added'] = datetime.now().isoformat()
+        stored['modified'] = datetime.now().isoformat()
+        if not stored.get('version'):
+            return {'success': False, 'message': 'Dictionary version is required', 'status': 400}
+        refused = self._refuse_dictionary(stored)
+        if refused:
+            return refused
+        return self.BPM.put_dictionary(stored)
+
+
+    def get_dictionary(self, handle, name, v):
+        return self.BPM.get_dictionary(handle, name, v)
+
+
+    def list_dictionary_versions(self, handle, name):
+        listed = self.BPM.list_dictionary_versions(handle, name)
+        if not isinstance(listed, dict):
+            return {'success': False, 'message': 'Dictionaries could not be listed', 'status': 500}
+        return listed
+
+
+    def list_dictionary_names(self, handle):
+        listed = self.BPM.list_dictionary_names(handle)
+        if not isinstance(listed, dict):
+            return {'success': False, 'message': 'Dictionaries could not be listed', 'status': 500}
+        return listed
+
+
+    def fetch_dictionary(self, uri):
+        """Read a dictionary document from a URI. The caller decides what to store."""
+        try:
+            response = requests.get(uri, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError, TypeError):
+            return {'success': False, 'message': 'Dictionary URI could not be read', 'status': 400}
+        if isinstance(data, dict) and isinstance(data.get('document'), dict):
+            data = data['document']
+        if not isinstance(data, dict) or not str(data.get('name') or '').strip():
+            return {'success': False, 'message': 'Dictionary URI did not return a dictionary', 'status': 400}
+        if not isinstance(data.get('terms'), dict):
+            return {'success': False, 'message': 'Dictionary URI did not return a dictionary', 'status': 400}
+        return data
+
+
+    def delete_dictionary(self, handle, name, v):
+        return self.BPM.delete_dictionary(handle, name, v)
 
 
     def is_valid_semver(self,version):

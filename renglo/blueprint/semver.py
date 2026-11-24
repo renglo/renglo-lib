@@ -98,12 +98,29 @@ def classify_change(previous, merged):
             structural_indexes(previous)["geo"],
             structural_indexes(merged)["geo"],
         ),
+        _set_change(_dictionary_refs(previous), _dictionary_refs(merged)),
     ]
     if "major" in changes:
         return "major"
     if "minor" in changes:
         return "minor"
     return "patch"
+
+
+def _dictionary_refs(blueprint):
+    value = (blueprint or {}).get("dictionaries") or []
+    if not isinstance(value, list):
+        return set()
+    return {str(item) for item in value if str(item).strip()}
+
+
+def _set_change(previous, nxt):
+    """Adding a dictionary reference is minor. Removing one is major."""
+    if previous - nxt:
+        return "major"
+    if nxt - previous:
+        return "minor"
+    return None
 
 
 def next_version(current, kind):
