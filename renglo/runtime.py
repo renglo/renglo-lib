@@ -72,18 +72,26 @@ def get_current_jwt_claims() -> Optional[Dict[str, Any]]:
     return None
 
 
-def attach_jwt_claims_to_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def attach_jwt_claims_to_payload(
+    payload: Optional[Dict[str, Any]],
+    claims: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
-    Copy Cognito JWT claims from the current Flask request into payload for a peer handler.
-    No-op when not in a Flask app context or when claims are already present.
+    Stamp the caller's Cognito claims onto a payload sent to a peer handler.
+
+    Explicit claims win, then the Flask request. Either source overwrites a
+    ``_jwt_claims`` value already on the payload. With no server claims, a
+    payload value is removed so tool arguments cannot supply an identity.
     """
     if not isinstance(payload, dict):
         payload = {}
-    if payload.get(JWT_CLAIMS_PAYLOAD_KEY):
-        return payload
-    claims = get_current_jwt_claims()
-    if claims:
-        payload[JWT_CLAIMS_PAYLOAD_KEY] = claims
+    resolved = claims if isinstance(claims, dict) and claims else None
+    if not resolved:
+        resolved = get_current_jwt_claims()
+    if resolved:
+        payload[JWT_CLAIMS_PAYLOAD_KEY] = resolved
+    else:
+        payload.pop(JWT_CLAIMS_PAYLOAD_KEY, None)
     return payload
 
 
