@@ -519,6 +519,13 @@ class AuthController:
         """Set JWT claims for this invocation; get_current_user() will derive user_id from them."""
         self._invocation_jwt_claims = jwt_claims
 
+    def get_invocation_jwt_claims(self):
+        """Claims stamped on this process, when a peer hop has to forward them."""
+        claims = getattr(self, "_invocation_jwt_claims", None)
+        if isinstance(claims, dict) and claims:
+            return claims
+        return None
+
     @staticmethod
     def _user_id_from_claims(claims):
         if not claims:

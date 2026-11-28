@@ -2,6 +2,8 @@ import json
 
 import boto3
 
+from renglo.schd.peer_json import dumps_peer_event
+
 
 
 class PeerModel:
@@ -10,7 +12,7 @@ class PeerModel:
 
     def invoke(self, function_name, payload, invocation_type, region):
         client = boto3.client("lambda", region_name=region)
-        body = payload if isinstance(payload, str) else json.dumps(payload)
+        body = dumps_peer_event(payload)
         return client.invoke(
             FunctionName=function_name,
             InvocationType=invocation_type,

@@ -23,6 +23,24 @@ from renglo.schd.peer_runner import (
     write_async_result,
 )
 from renglo.runtime import attach_auth_roles_to_payload, attach_jwt_claims_to_payload
+
+
+def peer_handler_failure(response):
+    """Surface the peer error when the invoke returned no handler output.
+
+    An empty dict becomes ``[{}]`` if it is wrapped as a list. The chat then
+    hides the message that explains why the call never ran.
+    """
+    if not isinstance(response, dict):
+        message = "Peer handler execution failed [SCOH]"
+        return message, [message]
+    message = response.get("error") or "Peer handler execution failed [SCOH]"
+    output = response.get("output")
+    if not output:
+        return message, [message]
+    if isinstance(output, list):
+        return message, output
+    return message, [output]
 from renglo.schd.channel_reply import reply_route
 
 from datetime import datetime
@@ -60,6 +78,14 @@ class SchdController(SchdScheduleMixin):
         if include_stack:
             result["stack"] = stack
         return result
+
+    def _attach_peer_identity(self, payload):
+        """Forward the identity already stamped on this process to a peer call."""
+        claims = None
+        getter = getattr(self.AUC, "get_invocation_jwt_claims", None)
+        if callable(getter):
+            claims = getter()
+        return attach_jwt_claims_to_payload(payload, claims)
 
     def find_rule(self,portfolio,org,timer):
         
@@ -139,7 +165,7 @@ class SchdController(SchdScheduleMixin):
 
         if placed_on_peer(extension) and peer_is_active(extension):
             print(f'Calling peer handler:{handler}')
-            attach_jwt_claims_to_payload(payload)
+            self._attach_peer_identity(payload)
             response = run_peer_handler(
                 extension_name=extension,
                 handler_name=handler_name,
@@ -228,7 +254,7 @@ class SchdController(SchdScheduleMixin):
             # A peer-placed extension runs on that peer. A hub-placed one stays in-process.
             if placed_on_peer(resolved_extension):
                 if peer_is_active(resolved_extension):
-                    attach_jwt_claims_to_payload(payload)
+                    self._attach_peer_identity(payload)
                     response = run_peer_handler(
                         extension_name=resolved_extension,
                         handler_name=handler,
@@ -237,21 +263,14 @@ class SchdController(SchdScheduleMixin):
                     
                     # Peer runner returns {'success', 'output'}. SchdLoader nests output again.
                     if not response.get('success'):
-                        error_output = response.get('output', {})
-                        error_msg = response.get('error', 'Peer handler execution failed [SCOH]')
-                        
-                        # Create error output in SchdLoader format
-                        formatted_output = {
-                            'output': error_output if isinstance(error_output, list) else [error_output],
-                            'error': error_msg
-                        }
-                        
+                        error_msg, shown = peer_handler_failure(response)
                         return self._maybe_stack({
                             'success': False,
                             'action': action,
                             'handler': handler,
                             'input': payload,
-                            'output': formatted_output.get('output', [error_msg]),
+                            'output': shown,
+                            'error': error_msg,
                         }, response, include_stack)
                     else:
                         peer_output = response.get('output', {})
@@ -365,7 +384,7 @@ class SchdController(SchdScheduleMixin):
         params["tool"] = resolved
         if connection_id:
             params["connectionId"] = connection_id
-        attach_jwt_claims_to_payload(params)
+        self._attach_peer_identity(params)
         completion = {
             "call_id": call_id,
             "tool": f"{resolved}/{handler}",
@@ -480,7 +499,7 @@ class SchdController(SchdScheduleMixin):
 
         if placed_on_peer(resolved_extension) and peer_is_active(resolved_extension):
             if attach_jwt:
-                attach_jwt_claims_to_payload(payload)
+                self._attach_peer_identity(payload)
             if use_dev_docker(resolved_extension):
                 response = call_local_docker_handler_async_start(
                     extension_name=resolved_extension,

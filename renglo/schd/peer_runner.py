@@ -14,6 +14,7 @@ import shlex
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from renglo.schd.peer_json import dumps_peer_event, peer_json_default
 from renglo.schd.peer_config import (
     get_lambda_config,
     get_local_config,
@@ -271,7 +272,7 @@ def call_local_docker_handler(
         'handler': handler_name,
         'payload': payload
     }
-    event_json = json.dumps(event)
+    event_json = dumps_peer_event(event)
     
     # Prepare AWS credentials
     aws_dir = os.path.expanduser('~/.aws')
@@ -558,8 +559,11 @@ def invoke_peer_event(
 
             response = requests.post(
                 f"{emulator}/2015-03-31/functions/{extension_name}/invocations",
-                json=event,
-                headers={"X-Amz-Invocation-Type": "Event"},
+                data=dumps_peer_event(event),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Amz-Invocation-Type": "Event",
+                },
                 timeout=5,
             )
         except Exception as e:
@@ -773,7 +777,7 @@ def call_ecs_handler(
     event = {'handler': handler_name, 'payload': payload}
     try:
         store = _object_store(ecs_cfg)
-        store.put_json(payload_key, event, bucket=bucket, region=region)
+        store.put_json(payload_key, event, bucket=bucket, region=region, default=peer_json_default)
         status_key = f"status/{request_id}.json"
         overrides = {
             'containerOverrides': [{
@@ -856,7 +860,9 @@ def call_ecs_handler_async(
     status_key = f"status/{request_id}.json"
     event = {'handler': handler_name, 'payload': payload}
     try:
-        _object_store(ecs_cfg).put_json(payload_key, event, bucket=bucket, region=region)
+        _object_store(ecs_cfg).put_json(
+            payload_key, event, bucket=bucket, region=region, default=peer_json_default
+        )
         overrides = {
             'containerOverrides': [{
                 'name': 'handler',
@@ -934,7 +940,9 @@ def call_local_docker_handler_async_start(
     event = {'handler': handler_name, 'payload': payload}
 
     try:
-        _object_store(s3_cfg).put_json(payload_key, event, bucket=bucket, region=region)
+        _object_store(s3_cfg).put_json(
+            payload_key, event, bucket=bucket, region=region, default=peer_json_default
+        )
     except Exception as e:
         return {'success': False, 'error': f'Failed to write payload to S3: {e}'}
 
@@ -1019,7 +1027,9 @@ def write_async_payload(extension_name: str, request_id: str, event: Dict[str, A
         raise RuntimeError('No object store config for batch payload')
     prefix = s3_cfg.get('payload_prefix', 'payloads')
     key = f"{prefix}/{request_id}.json"
-    _object_store(s3_cfg).put_json(key, event, bucket=s3_cfg['s3_bucket'], region=s3_cfg['region'])
+    _object_store(s3_cfg).put_json(
+        key, event, bucket=s3_cfg['s3_bucket'], region=s3_cfg['region'], default=peer_json_default
+    )
 
 
 def write_async_result(extension_name: str, request_id: str, run_response: Dict[str, Any]) -> None:
@@ -1036,7 +1046,9 @@ def write_async_result(extension_name: str, request_id: str, run_response: Dict[
     if not success and run_response.get('error'):
         body['error'] = run_response['error']
     key = f"{s3_cfg.get('result_prefix', 'results')}/{request_id}.json"
-    _object_store(s3_cfg).put_json(key, body, bucket=s3_cfg['s3_bucket'], region=s3_cfg['region'])
+    _object_store(s3_cfg).put_json(
+        key, body, bucket=s3_cfg['s3_bucket'], region=s3_cfg['region'], default=peer_json_default
+    )
 
 
 def get_async_result(extension_name: str, request_id: str) -> Dict[str, Any]:
